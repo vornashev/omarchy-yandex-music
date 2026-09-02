@@ -2,8 +2,10 @@
 """Local, browser-free Yandex Music player backend for Omarchy."""
 from __future__ import annotations
 
+import asyncio
 import json
 import os
+import re
 import signal
 import socket
 import subprocess
@@ -13,6 +15,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 import requests
+from dbus_next import Variant
+from dbus_next.aio import MessageBus
+from dbus_next.constants import PropertyAccess
+from dbus_next.service import ServiceInterface, dbus_property, method, signal as dbus_signal
 from yandex_music import Client
 from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET, _OAUTH_BASE_URL
 
@@ -30,6 +36,206 @@ def atomic_json(path: Path, value: Any) -> None:
     tmp.write_text(json.dumps(value, ensure_ascii=False))
     tmp.chmod(0o600)
     tmp.replace(path)
+
+
+class MprisRoot(ServiceInterface):
+    def __init__(self) -> None:
+        super().__init__("org.mpris.MediaPlayer2")
+
+    @method()
+    def Raise(self): pass
+
+    @method()
+    def Quit(self): pass
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanQuit(self) -> "b": return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanRaise(self) -> "b": return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def HasTrackList(self) -> "b": return False
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Identity(self) -> "s": return "Yandex Music"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def DesktopEntry(self) -> "s": return ""
+
+    @dbus_property(access=PropertyAccess.READ)
+    def SupportedUriSchemes(self) -> "as": return []
+
+    @dbus_property(access=PropertyAccess.READ)
+    def SupportedMimeTypes(self) -> "as": return []
+
+
+class MprisPlayer(ServiceInterface):
+    def __init__(self, player: Any) -> None:
+        super().__init__("org.mpris.MediaPlayer2.Player")
+        self.player = player
+        self.last_properties: dict[str, Any] = {}
+
+    def _state(self) -> dict[str, Any]:
+        with self.player.lock:
+            return dict(self.player.state)
+
+    @method()
+    def Next(self): self.player.next()
+
+    @method()
+    def Previous(self): self.player.previous()
+
+    @method()
+    def Pause(self):
+        if self.player.state.get("playing"): self.player.pause()
+
+    @method()
+    def PlayPause(self): self.player.pause()
+
+    @method()
+    def Stop(self): self.player.stop()
+
+    @method()
+    def Play(self):
+        if not self.player.state.get("playing"): self.player.pause()
+
+    @method()
+    def Seek(self, offset: "x"):
+        state = self._state()
+        self.player.seek(int(state.get("position", 0)) + int(offset) // 1_000_000)
+
+    @method()
+    def SetPosition(self, track_id: "o", position: "x"):
+        if track_id == self._track_path(): self.player.seek(int(position) // 1_000_000)
+
+    @method()
+    def OpenUri(self, uri: "s"): pass
+
+    @dbus_signal()
+    def Seeked(self, position: "x") -> "x": return position
+
+    def _track_path(self) -> str:
+        with self.player.lock:
+            track_id = self.player._track_id(self.player.queue[self.player.index]) \
+                if 0 <= self.player.index < len(self.player.queue) else "none"
+        safe_id = re.sub(r"[^A-Za-z0-9_]", "_", track_id) or "none"
+        return f"/org/mpris/MediaPlayer2/track/{safe_id}"
+
+    @dbus_property(access=PropertyAccess.READ)
+    def PlaybackStatus(self) -> "s":
+        state = self._state()
+        if not state.get("title"): return "Stopped"
+        return "Playing" if state.get("playing") else "Paused"
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def LoopStatus(self) -> "s": return "None"
+
+    @LoopStatus.setter
+    def LoopStatus(self, value: "s") -> None: pass
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def Rate(self) -> "d": return 1.0
+
+    @Rate.setter
+    def Rate(self, value: "d") -> None: pass
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def Shuffle(self) -> "b": return False
+
+    @Shuffle.setter
+    def Shuffle(self, value: "b") -> None: pass
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Metadata(self) -> "a{sv}":
+        state = self._state()
+        metadata = {
+            "mpris:trackid": Variant("o", self._track_path()),
+            "xesam:title": Variant("s", str(state.get("title", ""))),
+            "xesam:artist": Variant("as", [str(a.get("name", "")) for a in state.get("artists", [])]),
+            "xesam:album": Variant("s", str(state.get("album", ""))),
+            "mpris:length": Variant("x", int(state.get("duration", 0)) * 1_000_000),
+        }
+        art_url = str(state.get("artUrl", ""))
+        if art_url: metadata["mpris:artUrl"] = Variant("s", art_url)
+        return metadata
+
+    @dbus_property(access=PropertyAccess.READWRITE)
+    def Volume(self) -> "d": return float(self.player.volume) / 100
+
+    @Volume.setter
+    def Volume(self, value: "d") -> None: self.player.set_volume(round(value * 100))
+
+    @dbus_property(access=PropertyAccess.READ)
+    def Position(self) -> "x": return int(self._state().get("position", 0)) * 1_000_000
+
+    @dbus_property(access=PropertyAccess.READ)
+    def MinimumRate(self) -> "d": return 1.0
+
+    @dbus_property(access=PropertyAccess.READ)
+    def MaximumRate(self) -> "d": return 1.0
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanGoNext(self) -> "b": return bool(self.player.queue)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanGoPrevious(self) -> "b": return bool(self.player.queue)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanPlay(self) -> "b": return bool(self.player.queue)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanPause(self) -> "b": return bool(self.player.queue)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanSeek(self) -> "b": return bool(self.player.queue)
+
+    @dbus_property(access=PropertyAccess.READ)
+    def CanControl(self) -> "b": return True
+
+    def publish(self, seeked: bool = False) -> None:
+        properties = {
+            "PlaybackStatus": self.PlaybackStatus,
+            "Metadata": self.Metadata,
+            "Volume": self.Volume,
+            "CanGoNext": self.CanGoNext,
+            "CanGoPrevious": self.CanGoPrevious,
+            "CanPlay": self.CanPlay,
+            "CanPause": self.CanPause,
+            "CanSeek": self.CanSeek,
+        }
+        changed = {key: value for key, value in properties.items()
+                   if self.last_properties.get(key) != value}
+        self.last_properties = properties
+        if changed: self.emit_properties_changed(changed)
+        if seeked: self.Seeked(self.Position)
+
+
+class MprisBridge:
+    def __init__(self, player: Any) -> None:
+        self.player = player
+        self.loop: asyncio.AbstractEventLoop | None = None
+        self.interface: MprisPlayer | None = None
+        threading.Thread(target=self._run, daemon=True).start()
+
+    def _run(self) -> None:
+        self.loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(self.loop)
+        self.loop.run_until_complete(self._setup())
+        self.loop.run_forever()
+
+    async def _setup(self) -> None:
+        bus = await MessageBus().connect()
+        root = MprisRoot()
+        self.interface = MprisPlayer(self.player)
+        bus.export("/org/mpris/MediaPlayer2", root)
+        bus.export("/org/mpris/MediaPlayer2", self.interface)
+        await bus.request_name("org.mpris.MediaPlayer2.omarchy_yandex_music")
+        self.interface.publish()
+
+    def publish(self, seeked: bool = False) -> None:
+        if self.loop and self.interface:
+            self.loop.call_soon_threadsafe(self.interface.publish, seeked)
 
 
 class Player:
@@ -56,8 +262,12 @@ class Player:
             "artUrl": "", "artistId": "", "artists": [], "queueName": "", "position": 0, "duration": 0,
             "volume": self.volume, "muted": self.muted, "liked": False, "restoring": False,
         }
+        self.mpris = MprisBridge(self)
         threading.Thread(target=self._restore, daemon=True).start()
         threading.Thread(target=self._monitor, daemon=True).start()
+
+    def _publish_mpris(self, seeked: bool = False) -> None:
+        self.mpris.publish(seeked)
 
     def _set_error(self, exc: Any) -> None:
         with self.lock:
@@ -140,6 +350,7 @@ class Player:
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
                               liked=False, error="")
+        self._publish_mpris()
         TOKEN_FILE.unlink(missing_ok=True); STATE_FILE.unlink(missing_ok=True)
 
     def _load_playlists(self) -> None:
@@ -316,8 +527,9 @@ class Player:
         if self.mpv and self.mpv.poll() is None and MPV_SOCKET.exists(): return
         MPV_SOCKET.unlink(missing_ok=True)
         self.mpv = subprocess.Popen(["/usr/bin/mpv", "--idle=yes", "--no-video", "--audio-display=no",
-            "--no-terminal", "--load-scripts=no", f"--input-ipc-server={MPV_SOCKET}",
-            "--force-window=no", f"--volume={self.volume}"], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            "--no-terminal", "--load-scripts=no", "--audio-client-name=Yandex Music",
+            f"--input-ipc-server={MPV_SOCKET}", "--force-window=no", f"--volume={self.volume}"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(60):
             if MPV_SOCKET.exists(): return
             time.sleep(.05)
@@ -373,7 +585,7 @@ class Player:
                         # actually left its transient idle state. This avoids
                         # skipping a restored track while it is still opening.
                         self.had_file = False; self.active_ticks = 0; self.consecutive_failures = 0
-                    self._save_state(True); return
+                    self._publish_mpris(); self._save_state(True); return
                 except Exception as exc:
                     last_error = exc; time.sleep(1.5 * (attempt + 1))
             with self.lock: self.consecutive_failures += 1
@@ -386,7 +598,7 @@ class Player:
             paused = bool(self._mpv_command(["get_property", "pause"]))
             self._mpv_command(["set_property", "pause", not paused])
             with self.lock: self.state["playing"] = paused
-            self._save_state(True)
+            self._publish_mpris(); self._save_state(True)
         except Exception as exc: self._set_error(exc)
 
     def seek(self, seconds: int) -> None:
@@ -394,7 +606,7 @@ class Player:
             target = max(0, min(int(seconds), int(self.state["duration"] or seconds)))
             self._mpv_command(["seek", target, "absolute"])
             with self.lock: self.state["position"] = target
-            self._save_state(True)
+            self._publish_mpris(seeked=True); self._save_state(True)
         except Exception as exc: self._set_error(exc)
 
     def set_volume(self, value: int) -> None:
@@ -405,7 +617,7 @@ class Player:
             self._mpv_command(["set_property", "mute", False])
         except Exception as exc: self._set_error(exc)
         with self.lock: self.state.update(volume=self.volume, muted=False)
-        self._save_state(True)
+        self._publish_mpris(); self._save_state(True)
 
     def toggle_mute(self) -> None:
         try:
@@ -435,7 +647,7 @@ class Player:
         try: self._mpv_command(["stop"], False)
         except Exception: pass
         with self.lock: self.had_file = False; self.state["playing"] = False
-        self._save_state(True)
+        self._publish_mpris(); self._save_state(True)
 
     def shutdown(self) -> None:
         self._save_state(True)
@@ -478,7 +690,7 @@ class Player:
                     self.volume = volume; self.muted = muted
                     self.state.update(playing=not paused, position=position, duration=duration,
                                       volume=volume, muted=muted)
-                self._save_state()
+                self._publish_mpris(); self._save_state()
             except Exception: pass
 
     def status(self, include_queue: bool = False) -> dict[str, Any]:

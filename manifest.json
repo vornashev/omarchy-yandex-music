@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "id": "vornashev.yandex-music",
   "name": "Yandex Music",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "author": "vornashev",
   "description": "Yandex Music mini-player with queue, library, search and persistent playback",
   "kinds": ["bar-widget"],

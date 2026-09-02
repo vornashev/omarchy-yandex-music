@@ -17,6 +17,7 @@ The browser is used only for Yandex Device OAuth. Playback runs in a sandboxed u
 - Smooth volume slider and mute toggle
 - Queue, position, volume, and pause state restoration after restart
 - Automatic OAuth token refresh and stream retry/recovery
+- System media keys and MPRIS integration with sanitized metadata
 - No permanently open browser and no Yandex credentials stored
 
 ## Requirements
@@ -49,6 +50,7 @@ After installation, click the player in the bar and complete Yandex Device OAuth
 ### Bar
 
 - Previous / Play-Pause / Next buttons control playback
+- Keyboard media keys control previous, play/pause, and next through MPRIS
 - Click the cover or track information to open the popup
 
 ### Popup
@@ -91,7 +93,7 @@ omarchy-yandex-music status | jq
 omarchy restart shell
 ```
 
-OAuth token and playback state are stored under `~/.config/omarchy-yandex-music/` with mode `600` and are excluded from this repository.
+OAuth token and playback state are stored under `~/.config/omarchy-yandex-music/` with mode `600` and are excluded from this repository. The MPRIS interface publishes only track metadata and artwork—not temporary audio stream URLs.
 
 ---
 
