@@ -9,6 +9,7 @@ The browser is used only for Yandex Device OAuth. Playback runs in a sandboxed u
 
 - Mini-player in the Omarchy bar: previous, play/pause, next, cover, artist, title, and progress
 - Popup with Now Playing, Library, and Search tabs
+- “My Wave” personalized radio with automatic queue replenishment
 - Liked tracks and personal playlists
 - Add or remove the current track from “My Likes”
 - Scrollable playback queue with direct track selection
@@ -57,6 +58,7 @@ After installation, click the player in the bar and complete Yandex Device OAuth
 
 - Drag the progress slider; seeking is committed when released
 - Drag or click the volume slider; click the speaker to mute
+- Open Library and select “Моя волна” to start personalized radio
 - Click the heart button (or press `L`) to like/unlike the current track
 - Click any queue track to play it
 - Click an artist in the header or queue to load that artist's tracks

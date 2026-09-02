@@ -247,6 +247,10 @@ class Player:
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
         self.liked_ids: set[str] = set()
+        self.radio_station = ""
+        self.radio_batch_id = ""
+        self.radio_extending = False
+        self.radio_advance_pending = False
         self.mpv: subprocess.Popen | None = None
         self.had_file = False
         self.active_ticks = 0
@@ -347,6 +351,7 @@ class Player:
         self.stop()
         with self.lock:
             self.client = None; self.playlists = []; self.liked_ids = set(); self.queue = []; self.index = -1
+            self.radio_station = ""; self.radio_batch_id = ""; self.radio_extending = False
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
                               liked=False, error="")
@@ -376,7 +381,8 @@ class Player:
             value = {"queue": [self._track_id(t) for t in self.queue if self._track_id(t)],
                      "index": self.index, "queueName": self.state["queueName"],
                      "position": self.state["position"], "playing": self.state["playing"],
-                     "volume": self.volume, "muted": self.muted}
+                     "volume": self.volume, "muted": self.muted,
+                     "radioStation": self.radio_station, "radioBatchId": self.radio_batch_id}
         atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
 
     def _restore_queue(self) -> None:
@@ -393,6 +399,8 @@ class Player:
             with self.lock:
                 self.queue = tracks
                 self.index = max(0, min(int(saved.get("index", 0)), len(tracks) - 1))
+                self.radio_station = str(saved.get("radioStation", ""))
+                self.radio_batch_id = str(saved.get("radioBatchId", ""))
                 self.state["queueName"] = str(saved.get("queueName", ""))
             self._play_current(resume_position=int(saved.get("position", 0)),
                                start_paused=not bool(saved.get("playing", False)))
@@ -450,6 +458,61 @@ class Player:
         except Exception as exc:
             self._set_error(f"Не удалось изменить отметку «Мне нравится»: {exc}")
 
+    def play_wave(self) -> None:
+        def load() -> None:
+            try:
+                assert self.client
+                station = "user:onyourwave"
+                result = self.client.rotor_station_tracks(station)
+                tracks = [row.track for row in (result.sequence if result else [])
+                          if getattr(row, "track", None)]
+                self._set_queue(tracks, "Моя волна", station, result.batch_id if result else "")
+            except Exception as exc:
+                self._set_error(f"Не удалось запустить «Мою волну»: {exc}")
+        self._loading(load)
+
+    def _extend_wave(self, advance: bool = False) -> None:
+        with self.lock:
+            if not self.radio_station or not self.client: return
+            if self.radio_extending:
+                self.radio_advance_pending = self.radio_advance_pending or advance
+                return
+            self.radio_extending = True
+            self.radio_advance_pending = advance
+            station = self.radio_station
+            queue_id = self._track_id(self.queue[-1]) if self.queue else ""
+
+        def load() -> None:
+            should_advance = False
+            try:
+                assert self.client
+                result = self.client.rotor_station_tracks(station, queue=queue_id or None)
+                incoming = [row.track for row in (result.sequence if result else [])
+                            if getattr(row, "track", None)]
+                with self.lock:
+                    existing = {self._track_id(track) for track in self.queue}
+                    fresh = [track for track in incoming if self._track_id(track) not in existing]
+                    old_length = len(self.queue)
+                    self.queue.extend(fresh)
+                    if result: self.radio_batch_id = result.batch_id
+                    should_advance = self.radio_advance_pending and bool(fresh) and self.index >= old_length - 1
+                    if should_advance: self.index = old_length
+                    self.radio_advance_pending = False
+                    self.radio_extending = False
+                if should_advance:
+                    self._play_current()
+                self._save_state(True)
+            except Exception as exc:
+                with self.lock:
+                    self.radio_extending = False; self.radio_advance_pending = False
+                self._set_error(f"Не удалось продолжить «Мою волну»: {exc}")
+        threading.Thread(target=load, daemon=True).start()
+
+    def _maybe_extend_wave(self) -> None:
+        with self.lock:
+            should_extend = bool(self.radio_station) and len(self.queue) - self.index <= 5
+        if should_extend: self._extend_wave()
+
     def play_playlist(self, kind: str) -> None:
         def load() -> None:
             try:
@@ -497,10 +560,12 @@ class Player:
                 self._set_error(f"Не удалось загрузить треки исполнителя: {exc}")
         self._loading(load)
 
-    def _set_queue(self, tracks: list[Any], name: str) -> None:
+    def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "") -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         with self.lock:
             self.queue = tracks; self.index = 0
+            self.radio_station = station; self.radio_batch_id = batch_id
+            self.radio_extending = False; self.radio_advance_pending = False
             self.state.update(queueName=name, loading=False)
         self._save_state(True); self._play_current()
 
@@ -585,7 +650,7 @@ class Player:
                         # actually left its transient idle state. This avoids
                         # skipping a restored track while it is still opening.
                         self.had_file = False; self.active_ticks = 0; self.consecutive_failures = 0
-                    self._publish_mpris(); self._save_state(True); return
+                    self._publish_mpris(); self._save_state(True); self._maybe_extend_wave(); return
                 except Exception as exc:
                     last_error = exc; time.sleep(1.5 * (attempt + 1))
             with self.lock: self.consecutive_failures += 1
@@ -630,7 +695,13 @@ class Player:
     def next(self) -> None:
         with self.lock:
             if not self.queue: return
-            self.index = (self.index + 1) % len(self.queue)
+            if self.radio_station and self.index >= len(self.queue) - 1:
+                extend_wave = True
+            else:
+                extend_wave = False
+                self.index = (self.index + 1) % len(self.queue)
+        if extend_wave:
+            self._extend_wave(advance=True); return
         self._save_state(True); self._play_current()
 
     def previous(self) -> None:
@@ -715,6 +786,7 @@ class Player:
         if cmd == "auth": self.authenticate()
         elif cmd == "logout": self.logout()
         elif cmd == "likes": self.play_likes()
+        elif cmd == "wave": self.play_wave()
         elif cmd == "like": self.toggle_like()
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
         elif cmd == "search": self.search(str(req.get("query", "")))

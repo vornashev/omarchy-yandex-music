@@ -621,6 +621,21 @@ Panel {
             Column {
               visible: root.page === 1; width: parent.width; spacing: Style.space(6)
               BorderSurface {
+                width: parent.width; height: Style.space(48); radius: Style.cornerRadius
+                color: waveMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent)
+                  : Style.normalFillFor(root.foreground, Color.accent)
+                borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+                Text {
+                  anchors.left: parent.left; anchors.leftMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
+                  text: "󰝚   Моя волна"; color: root.foreground; font.family: root.fontFamily
+                  font.pixelSize: Style.font.body; font.bold: true
+                }
+                MouseArea {
+                  id: waveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                  onClicked: { root.action("wave"); root.selectPage(0) }
+                }
+              }
+              BorderSurface {
                 width: parent.width; height: Style.space(44); radius: Style.cornerRadius
                 color: likesMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
                 borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
