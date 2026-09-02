@@ -1,0 +1,18 @@
+[Unit]
+Description=Yandex Music backend for Omarchy Shell
+After=network-online.target pipewire.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=%h/.local/share/omarchy-yandex-music/venv/bin/python %h/.local/share/omarchy-yandex-music/backend.py
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=%h/.config/omarchy-yandex-music %t
+
+[Install]
+WantedBy=default.target

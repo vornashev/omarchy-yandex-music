@@ -1,0 +1,17 @@
+{
+  "schemaVersion": 1,
+  "id": "vornashev.yandex-music",
+  "name": "Yandex Music",
+  "version": "0.4.0",
+  "author": "vornashev",
+  "description": "Yandex Music mini-player with queue, library, search and persistent playback",
+  "kinds": ["bar-widget"],
+  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "barWidget": {
+    "displayName": "Yandex Music",
+    "description": "Play liked tracks and playlists without keeping a browser open",
+    "category": "Media",
+    "allowMultiple": false,
+    "defaultSection": "right"
+  }
+}

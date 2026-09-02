@@ -1,0 +1,15 @@
+# Local credentials and playback state must never be committed.
+token.json
+state.json
+.config/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+
+# Editors and temporary files
+*.swp
+*.tmp
+.DS_Store

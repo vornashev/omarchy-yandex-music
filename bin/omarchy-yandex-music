@@ -1,0 +1,56 @@
+#!/usr/bin/env python3
+"""Command-line client for the local Omarchy Yandex Music service."""
+import json
+import os
+import socket
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+sock_path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "omarchy-yandex-music.sock"
+args = sys.argv[1:]
+request = {"command": args[0] if args else "status"}
+if request["command"] == "playlist" and len(args) > 1:
+    request["kind"] = args[1]
+elif request["command"] == "search" and len(args) > 1:
+    request["query"] = " ".join(args[1:])
+elif request["command"] in ("play_search", "play_queue") and len(args) > 1:
+    request["index"] = int(args[1])
+elif request["command"] in ("seek", "volume") and len(args) > 1:
+    request["value"] = int(float(args[1]))
+elif request["command"] == "artist" and len(args) > 1:
+    request["artistId"] = args[1]
+
+
+def connect():
+    client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    client.settimeout(8)
+    client.connect(str(sock_path))
+    return client
+
+try:
+    conn = connect()
+except OSError:
+    subprocess.run(["systemctl", "--user", "start", "omarchy-yandex-music.service"], check=False)
+    conn = None
+    for _ in range(30):
+        time.sleep(0.1)
+        try:
+            conn = connect()
+            break
+        except OSError:
+            pass
+    if conn is None:
+        print(json.dumps({"error": "Сервис Яндекс Музыки не запущен"}, ensure_ascii=False))
+        raise SystemExit(1)
+
+with conn:
+    conn.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode())
+    data = b""
+    while b"\n" not in data:
+        chunk = conn.recv(65536)
+        if not chunk:
+            break
+        data += chunk
+print(data.decode().strip() or "{}")
