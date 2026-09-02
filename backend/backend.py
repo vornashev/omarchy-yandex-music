@@ -40,6 +40,7 @@ class Player:
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
+        self.liked_ids: set[str] = set()
         self.mpv: subprocess.Popen | None = None
         self.had_file = False
         self.active_ticks = 0
@@ -53,7 +54,7 @@ class Player:
             "authUrl": "", "authCode": "", "error": "", "playing": False,
             "loading": False, "title": "", "artist": "", "album": "",
             "artUrl": "", "artistId": "", "artists": [], "queueName": "", "position": 0, "duration": 0,
-            "volume": self.volume, "muted": self.muted, "restoring": False,
+            "volume": self.volume, "muted": self.muted, "liked": False, "restoring": False,
         }
         threading.Thread(target=self._restore, daemon=True).start()
         threading.Thread(target=self._monitor, daemon=True).start()
@@ -113,6 +114,7 @@ class Player:
             self.client = client
             self.state.update(authenticated=True, connecting=False, authPending=False, authCode="")
         self._load_playlists()
+        self._load_liked_ids()
 
     def authenticate(self) -> None:
         with self.lock:
@@ -134,9 +136,10 @@ class Player:
     def logout(self) -> None:
         self.stop()
         with self.lock:
-            self.client = None; self.playlists = []; self.queue = []; self.index = -1
+            self.client = None; self.playlists = []; self.liked_ids = set(); self.queue = []; self.index = -1
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
-                              title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="", error="")
+                              title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
+                              liked=False, error="")
         TOKEN_FILE.unlink(missing_ok=True); STATE_FILE.unlink(missing_ok=True)
 
     def _load_playlists(self) -> None:
@@ -192,14 +195,49 @@ class Player:
             self.state.update(loading=True, error="")
         threading.Thread(target=function, daemon=True).start()
 
+    def _load_liked_ids(self) -> None:
+        try:
+            assert self.client
+            liked = self.client.users_likes_tracks()
+            rows = list(liked.tracks or []) if liked else []
+            with self.lock:
+                self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
+                if 0 <= self.index < len(self.queue):
+                    self.state["liked"] = self._track_id(self.queue[self.index]) in self.liked_ids
+        except Exception as exc:
+            self._set_error(f"Не удалось получить отметки «Мне нравится»: {exc}")
+
     def play_likes(self) -> None:
         def load() -> None:
             try:
                 assert self.client
                 liked = self.client.users_likes_tracks()
-                self._set_queue([self._track_from_short(x) for x in (liked.tracks if liked else [])], "Мне нравится")
+                rows = list(liked.tracks or []) if liked else []
+                with self.lock:
+                    self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
+                self._set_queue([self._track_from_short(x) for x in rows], "Мне нравится")
             except Exception as exc: self._set_error(f"Не удалось загрузить любимые треки: {exc}")
         self._loading(load)
+
+    def toggle_like(self) -> None:
+        try:
+            assert self.client
+            with self.lock:
+                if not (0 <= self.index < len(self.queue)): return
+                track_id = self._track_id(self.queue[self.index])
+                was_liked = track_id in self.liked_ids
+            if not track_id: return
+            changed = (self.client.users_likes_tracks_remove(track_id) if was_liked
+                       else self.client.users_likes_tracks_add(track_id))
+            if not changed: raise RuntimeError("Яндекс не подтвердил изменение")
+            with self.lock:
+                if was_liked: self.liked_ids.discard(track_id)
+                else: self.liked_ids.add(track_id)
+                if 0 <= self.index < len(self.queue) and self._track_id(self.queue[self.index]) == track_id:
+                    self.state["liked"] = not was_liked
+                self.state["error"] = ""
+        except Exception as exc:
+            self._set_error(f"Не удалось изменить отметку «Мне нравится»: {exc}")
 
     def play_playlist(self, kind: str) -> None:
         def load() -> None:
@@ -329,7 +367,8 @@ class Player:
                     with self.lock:
                         if generation != self.play_generation: return
                         self.state.update(meta); self.state.update(playing=not start_paused, loading=False,
-                            position=resume_position, duration=int(getattr(track, "duration_ms", 0) or 0)//1000, error="")
+                            position=resume_position, duration=int(getattr(track, "duration_ms", 0) or 0)//1000,
+                            liked=self._track_id(track) in self.liked_ids, error="")
                         # The monitor marks the file active only after mpv has
                         # actually left its transient idle state. This avoids
                         # skipping a restored track while it is still opening.
@@ -464,6 +503,7 @@ class Player:
         if cmd == "auth": self.authenticate()
         elif cmd == "logout": self.logout()
         elif cmd == "likes": self.play_likes()
+        elif cmd == "like": self.toggle_like()
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
         elif cmd == "search": self.search(str(req.get("query", "")))
         elif cmd == "play_search": self.play_search(int(req.get("index", -1)))

@@ -193,6 +193,7 @@ Panel {
         else if (t === "2") root.selectPage(1)
         else if (t === "3" || t === "/") root.selectPage(2)
         else if (t === " " && root.hasTrack) root.action("pause")
+        else if ((t === "l" || t === "д") && root.hasTrack) root.action("like")
       }
 
       Flickable {
@@ -419,6 +420,15 @@ Panel {
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 20
                     iconText: "󰒭"; tooltipText: "Следующий"; foreground: root.foreground
                     onClicked: root.action("next")
+                  }
+                  Button {
+                    width: Style.space(34); height: Style.space(30)
+                    horizontalPadding: 0; verticalPadding: 0; iconSize: 19
+                    iconText: root.data.liked ? "󰋑" : "󰋕"
+                    tooltipText: root.data.liked ? "Убрать из «Мне нравится»" : "Добавить в «Мне нравится»"
+                    foreground: root.data.liked ? Color.accent : root.foreground
+                    enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                    onClicked: root.action("like")
                   }
                 }
 
