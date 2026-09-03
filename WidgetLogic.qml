@@ -10,7 +10,10 @@ Item {
   property var hostWidget: null
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ title: "", artist: "", playing: false })
+  property string statusError: ""
   readonly property bool hasTrack: String(data.title || "") !== ""
+  readonly property bool loading: data.loading === true || data.connecting === true || data.restoring === true
+  readonly property string error: statusError || String(data.error || "")
   readonly property bool playing: data.playing === true
   readonly property string shortTitle: {
     var title = String(data.title || "")
@@ -62,8 +65,16 @@ Item {
     command: []
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) return
-      try { root.data = JSON.parse(statusOut.text || "{}") } catch (e) {}
+      if (exitCode !== 0) {
+        root.statusError = "Фоновый музыкальный сервис недоступен"
+        return
+      }
+      try {
+        root.data = JSON.parse(statusOut.text || "{}")
+        root.statusError = ""
+      } catch (e) {
+        root.statusError = "Музыкальный сервис вернул некорректный ответ"
+      }
     }
   }
   Process {

@@ -1,25 +1,77 @@
 # Yandex Music for Omarchy
 
-A native, browser-free Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
-The browser is used only for Yandex Device OAuth. Playback runs in a sandboxed user service through `mpv`.
+[Русская версия](README.ru.md)
 
-> This project uses the unofficial [yandex-music-api](https://github.com/MarshalX/yandex-music-api) library and is not affiliated with Yandex. A Yandex Music subscription may be required for full tracks.
+A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell. The browser is used only for Yandex Device OAuth; playback runs in the background through `mpv`.
 
-## Features
+> This project uses the unofficial [yandex-music-api](https://github.com/MarshalX/yandex-music-api) library and is not affiliated with Yandex. A Yandex Music subscription may be required for full-track playback.
 
-- Mini-player in the Omarchy bar: previous, play/pause, next, cover, artist, title, and progress
-- Popup with Now Playing, Library, and Search tabs
-- “My Wave” personalized radio with automatic queue replenishment
-- Liked tracks and personal playlists
-- Add or remove the current track from “My Likes”
-- Scrollable playback queue with direct track selection
-- Clickable individual artists in the popup and queue
-- Drag-to-seek with a live target-time preview
-- Smooth volume slider and mute toggle
-- Queue, position, volume, and pause state restoration after restart
-- Automatic OAuth token refresh and stream retry/recovery
-- System media keys and MPRIS integration with sanitized metadata
-- No permanently open browser and no Yandex credentials stored
+## Highlights
+
+- Native mini-player in the Omarchy bar
+- Background playback without an open browser
+- Now Playing, Library, Search, queue, and artist browsing
+- “My Wave” with mood, discovery, and language controls
+- Likes, personal playlists, and individual clickable artists
+- Ordered, shuffle, repeat queue, and repeat track modes
+- System media keys and privacy-safe MPRIS integration
+- Persistent queue, position, volume, pause state, and preferences
+- Configurable bar layout, artwork shape, marquee text, and notifications
+- Retry/recovery for interrupted streams and expiring OAuth tokens
+
+## Screens and controls
+
+### Bar
+
+The bar player can show previous, play/pause, and next controls, album artwork, artist, track title, and progress. Click the artwork or track information to open the popup.
+
+Long artist/title text can be truncated or scrolled as one continuous line. The information width, controls, artwork, and progress line are configurable.
+
+### Now Playing
+
+- Drag the seek slider; the real position remains visible and the target time is shown in parentheses
+- Drag the volume slider or click the speaker to mute
+- Like or unlike the current track with the heart button or `L`
+- Change playback mode with the button beside the queue counter
+- Select any queue item directly
+- Click an individual artist to browse their tracks
+
+Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track.
+
+### Library
+
+- Browse “My Likes” without autoplay
+- Browse personal playlists without autoplay
+- Expand “My Wave” and configure:
+  - mood: any, fun, active, calm, or sad
+  - selection: balanced, favorites, popular, or discovery
+  - language: any, Russian, or non-Russian
+
+### Search
+
+Search for tracks and start playback from any result. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly.
+
+### Settings
+
+Open settings with the gear in the top-right corner of the popup.
+
+Available options:
+
+- Resume playback after service restart
+- Restore queue, track position, and volume independently
+- Best available or traffic-saving audio quality
+- Show/hide bar controls, artist, title, artwork, and progress
+- Square, rounded, or circular artwork
+- Compact, normal, or wide track information
+- Truncated or smoothly scrolling long text
+- Track-change notifications with album artwork
+- Sign out with confirmation
+
+Preferences are stored in `~/.config/omarchy-yandex-music/preferences.json` with mode `600`.
+
+## System media controls
+
+The backend exposes a sanitized MPRIS player named **Yandex Music**. Omarchy and keyboard media keys can control play/pause, previous, and next. MPRIS includes track metadata and artwork but never publishes temporary audio stream URLs.
 
 ## Requirements
 
@@ -27,9 +79,10 @@ The browser is used only for Yandex Device OAuth. Playback runs in a sandboxed u
 - Python 3
 - `mpv`
 - `git`
-- An active network connection
+- `jq`
+- Network access
 
-## Install
+## Installation
 
 ```bash
 git clone https://github.com/vornashev/omarchy-yandex-music.git
@@ -37,7 +90,7 @@ cd omarchy-yandex-music
 ./install.sh
 ```
 
-The installer works without `sudo`. It creates:
+The installer does not require `sudo`. It creates:
 
 - `~/.config/omarchy/plugins/vornashev.yandex-music/`
 - `~/.local/share/omarchy-yandex-music/`
@@ -46,25 +99,18 @@ The installer works without `sudo`. It creates:
 
 After installation, click the player in the bar and complete Yandex Device OAuth in your browser. The browser can then be closed.
 
-## Controls
+## Keyboard shortcuts
 
-### Bar
+Inside the popup:
 
-- Previous / Play-Pause / Next buttons control playback
-- Keyboard media keys control previous, play/pause, and next through MPRIS
-- Click the cover or track information to open the popup
+- `1`, `2`, `3` — Now Playing, Library, Search
+- `Space` — play/pause
+- `L` — like/unlike
+- `Escape` — return from settings or close the popup
 
-### Popup
+Hardware media keys are handled through MPRIS.
 
-- Drag the progress slider; seeking is committed when released
-- Drag or click the volume slider; click the speaker to mute
-- Open Library and select “Моя волна” to start personalized radio
-- Click the heart button (or press `L`) to like/unlike the current track
-- Click any queue track to play it
-- Click an artist in the header or queue to load that artist's tracks
-- Use `1`, `2`, `3` to switch tabs and `Escape` to close
-
-## Update
+## Updating
 
 ```bash
 cd omarchy-yandex-music
@@ -72,15 +118,15 @@ git pull --ff-only
 ./install.sh
 ```
 
-## Uninstall
+## Uninstalling
 
-Keep the local OAuth token and playback state:
+Keep the OAuth token, preferences, and playback state:
 
 ```bash
 ./uninstall.sh
 ```
 
-Remove everything, including the token:
+Remove all local data as well:
 
 ```bash
 ./uninstall.sh --purge
@@ -95,22 +141,15 @@ omarchy-yandex-music status | jq
 omarchy restart shell
 ```
 
-OAuth token and playback state are stored under `~/.config/omarchy-yandex-music/` with mode `600` and are excluded from this repository. The MPRIS interface publishes only track metadata and artwork—not temporary audio stream URLs.
+## Privacy and storage
 
----
+- OAuth token: `~/.config/omarchy-yandex-music/token.json`
+- Playback state: `~/.config/omarchy-yandex-music/state.json`
+- Preferences: `~/.config/omarchy-yandex-music/preferences.json`
+- Temporary notification artwork: `$XDG_RUNTIME_DIR/omarchy-yandex-music-covers/`
 
-## Русский
+Credential and state files use mode `600` and are excluded from the repository. Notification artwork is temporary and disappears after reboot.
 
-Нативный мини-плеер Яндекс Музыки для верхней панели Omarchy. Браузер нужен только один раз для Device OAuth; музыку в фоне воспроизводит `mpv`.
+## License
 
-### Установка
-
-```bash
-git clone https://github.com/vornashev/omarchy-yandex-music.git
-cd omarchy-yandex-music
-./install.sh
-```
-
-После установки нажмите на плеер в панели и подтвердите вход через Яндекс. Для полного воспроизведения может потребоваться подписка Яндекс Музыки.
-
-Проект использует неофициальный API и не связан с компанией Яндекс.
+[MIT](LICENSE)

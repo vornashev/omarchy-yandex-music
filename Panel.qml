@@ -13,10 +13,19 @@ Panel {
   property var anchorItem: null
   property var hostWidget: null
   property int page: 0
+  property int pageBeforeSettings: 0
+  property bool settingsOpen: false
+  property bool confirmLogout: false
+  property bool waveOptionsOpen: false
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ authenticated: false, playlists: [], searchResults: [] })
   property string lastError: ""
+  property string dismissedError: ""
+  property string errorSource: ""
+  property string lastActionCommand: ""
+  property var lastActionArgument: undefined
   property bool refreshing: false
+  property bool hasLoadedStatus: false
   property int pendingVolume: -1
   property int sentVolume: -1
   property int pendingSeek: -1
@@ -31,8 +40,77 @@ Panel {
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
   readonly property var queueDisplay: data.queueTracks || []
+  readonly property var artistDisplay: data.artistTracks || []
+  readonly property var libraryDisplay: data.libraryTracks || []
+  readonly property bool browsingArtist: artistDisplay.length > 0
+  readonly property bool browsingLibrary: libraryDisplay.length > 0
+  readonly property bool browsingCollection: browsingArtist || browsingLibrary
+  readonly property var trackListDisplay: browsingArtist ? artistDisplay
+    : (browsingLibrary ? libraryDisplay : queueDisplay)
+  readonly property string playbackMode: String(preference("playbackMode", "repeatQueue"))
+  readonly property string playbackModeIcon: playbackMode === "shuffle" ? "󰒟"
+    : (playbackMode === "repeatTrack" ? "󰑘" : (playbackMode === "repeatQueue" ? "󰑖" : "󰐕"))
+  readonly property string playbackModeLabel: playbackMode === "shuffle" ? "Перемешивание"
+    : (playbackMode === "repeatTrack" ? "Повтор трека"
+    : (playbackMode === "repeatQueue" ? "Повтор очереди" : "По порядку"))
+  readonly property bool busy: data.connecting === true || data.restoring === true
+    || data.loading === true || actionProcess.running || settingsProcess.running
+    || (refreshing && !hasLoadedStatus)
+  readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
+  readonly property bool queueListLoading: data.loading === true
+    && ["artist", "likes", "playlist", "wave"].indexOf(String(data.loadingKind || "")) >= 0
+  readonly property bool searchListLoading: data.loading === true
+    && String(data.loadingKind || "") === "search"
+  readonly property string errorTitle: errorSource === "status"
+    ? "Нет связи с музыкальным сервисом"
+    : (errorSource === "backend" ? "Ошибка Яндекс Музыки" : "Не удалось выполнить действие")
+  readonly property string loadingMessage: {
+    if (refreshing && !hasLoadedStatus) return "Проверяем состояние сервиса…"
+    if (data.connecting === true) return "Подключаемся к Яндекс Музыке…"
+    if (data.restoring === true) return "Восстанавливаем очередь и позицию…"
+    var kind = String(data.loadingKind || "")
+    if (kind === "wave") return "Настраиваем «Мою волну»…"
+    if (kind === "likes") return "Загружаем любимые треки…"
+    if (kind === "playlist") return "Загружаем плейлист…"
+    if (kind === "search") return "Ищем треки…"
+    if (kind === "artist") return "Загружаем треки исполнителя…"
+    if (kind === "track") return "Подготавливаем трек…"
+    if (settingsProcess.running) return "Сохраняем настройки…"
+    if (actionProcess.running && lastActionCommand === "like") return "Обновляем отметку «Мне нравится»…"
+    if (actionProcess.running) return "Выполняем действие…"
+    return "Загрузка…"
+  }
   property int previousQueueIndex: 0
 
+  function preference(key, fallback) {
+    var preferences = data.preferences || {}
+    return preferences[key] === undefined ? fallback : preferences[key]
+  }
+  function setPreference(key, value) {
+    if (settingsProcess.running) return
+    var preferences = {}
+    var current = data.preferences || {}
+    for (var preferenceKey in current) preferences[preferenceKey] = current[preferenceKey]
+    preferences[key] = value
+    var copy = {}
+    for (var dataKey in data) copy[dataKey] = data[dataKey]
+    copy.preferences = preferences
+    data = copy
+    settingsProcess.command = [cli, "setting", key, String(value)]
+    settingsProcess.running = true
+  }
+  function openSettings() {
+    pageBeforeSettings = page
+    confirmLogout = false
+    settingsOpen = true
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  function closeSettings() {
+    settingsOpen = false
+    confirmLogout = false
+    page = pageBeforeSettings
+    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
   function formatTime(value) {
     var seconds = Math.max(0, Math.round(Number(value || 0)))
     return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0")
@@ -43,9 +121,29 @@ Panel {
   }
   function action(command, argument) {
     if (actionProcess.running) return
+    lastActionCommand = command
+    lastActionArgument = argument
+    dismissedError = ""
+    errorSource = ""
+    var loadingKinds = { "artist": "artist", "likes": "likes", "playlist": "playlist",
+      "wave": "wave", "search": "search" }
+    if (loadingKinds[command] !== undefined) {
+      var optimistic = {}
+      for (var key in data) optimistic[key] = data[key]
+      optimistic.loading = true
+      optimistic.loadingKind = loadingKinds[command]
+      optimistic.error = ""
+      data = optimistic
+    }
     var args = [cli, command]
     if (argument !== undefined && argument !== null) args.push(String(argument))
     actionProcess.command = args; actionProcess.running = true
+  }
+  function retryLastOperation() {
+    dismissedError = ""
+    lastError = ""
+    if (errorSource === "status" || lastActionCommand === "") refresh()
+    else action(lastActionCommand, lastActionArgument)
   }
   function queueVolume(value) {
     var next = Math.max(0, Math.min(100, Math.round(Number(value))))
@@ -73,18 +171,30 @@ Panel {
     try {
       var parsed = JSON.parse(String(text || "{}"))
       var queueChanged = Number(parsed.queueIndex || 0) !== previousQueueIndex
+      var browseChanged = String(parsed.artistBrowseName || "") !== String(data.artistBrowseName || "")
+        || String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
       if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
         parsed.muted = false
       }
       data = parsed
-      lastError = String(parsed.error || "")
+      hasLoadedStatus = true
+      var nextError = String(parsed.error || "")
+      if (nextError !== lastError) dismissedError = ""
+      lastError = nextError
+      errorSource = lastError === "" ? "" : "backend"
       previousQueueIndex = Number(parsed.queueIndex || 0)
       if (queueChanged && page === 0) queueScrollTimer.restart()
-    } catch (e) { lastError = "Некорректный ответ музыкального сервиса" }
+      if (browseChanged && (String(parsed.artistBrowseName || "") !== ""
+          || String(parsed.libraryBrowseName || "") !== ""))
+        Qt.callLater(function() { queueList.contentY = 0 })
+    } catch (e) {
+      errorSource = "status"
+      lastError = "Музыкальный сервис вернул некорректный ответ"
+    }
   }
   function scrollToCurrentTrack() {
-    if (page !== 0 || !queueRepeater || !queueList) return
+    if (page !== 0 || browsingCollection || !queueRepeater || !queueList) return
     var index = Number(data.queueIndex || 0) - 1
     var item = queueRepeater.itemAt(index)
     if (!item) return
@@ -93,15 +203,22 @@ Panel {
     queueList.contentY = Math.min(maximum, Math.max(0, point.y))
   }
   function selectPage(index) {
+    settingsOpen = false
+    confirmLogout = false
     page = Math.max(0, Math.min(2, index))
     if (page === 0) queueScrollTimer.restart()
     if (page === 2) Qt.callLater(function() { searchField.forceActiveFocus() })
   }
 
-  onOpenedChanged: if (opened) {
-    refresh()
-    Qt.callLater(function() { keyCatcher.forceActiveFocus() })
-    queueScrollTimer.restart()
+  onOpenedChanged: {
+    if (opened) {
+      refresh()
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+      queueScrollTimer.restart()
+    } else {
+      settingsOpen = false
+      confirmLogout = false
+    }
   }
 
   Process {
@@ -111,7 +228,10 @@ Panel {
     onExited: function(exitCode) {
       root.refreshing = false
       if (exitCode === 0) root.applyStatus(statusOut.text)
-      else root.lastError = String(statusErr.text || "Сервис недоступен")
+      else {
+        root.errorSource = "status"
+        root.lastError = String(statusErr.text || "Фоновый музыкальный сервис недоступен")
+      }
     }
   }
   Process {
@@ -119,7 +239,23 @@ Panel {
     stdout: StdioCollector { id: actionOut; waitForEnd: true }
     stderr: StdioCollector { id: actionErr; waitForEnd: true }
     onExited: function(exitCode) {
-      if (exitCode !== 0) root.lastError = String(actionErr.text || actionOut.text || "Команда не выполнена")
+      if (exitCode !== 0) {
+        root.errorSource = "action"
+        root.lastError = String(actionErr.text || actionOut.text || "Не удалось выполнить действие")
+      }
+      settleTimer.restart()
+    }
+  }
+  Process {
+    id: settingsProcess
+    command: []
+    stdout: StdioCollector { id: settingsOut; waitForEnd: true }
+    stderr: StdioCollector { id: settingsErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        root.errorSource = "action"
+        root.lastError = String(settingsErr.text || settingsOut.text || "Не удалось сохранить настройку")
+      }
       settleTimer.restart()
     }
   }
@@ -171,6 +307,78 @@ Panel {
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
 
+  component SkeletonList: Column {
+    id: skeletonRoot
+    property color foreground: Color.foreground
+    property int rowCount: 5
+    spacing: 0
+
+    Repeater {
+      model: skeletonRoot.rowCount
+      Item {
+        id: skeletonRow
+        required property int index
+        width: skeletonRoot.width
+        height: Style.space(50)
+        clip: true
+
+        Row {
+          anchors.left: parent.left; anchors.right: parent.right
+          anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
+          anchors.verticalCenter: parent.verticalCenter
+          spacing: Style.space(10)
+
+          Rectangle {
+            width: Style.space(18); height: width; radius: width / 2
+            anchors.verticalCenter: parent.verticalCenter
+            color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
+              skeletonRoot.foreground.b, .09)
+          }
+          Column {
+            width: parent.width - Style.space(72)
+            anchors.verticalCenter: parent.verticalCenter
+            spacing: Style.space(6)
+            Rectangle {
+              width: parent.width * (.58 + (skeletonRow.index % 3) * .09)
+              height: Style.space(8); radius: height / 2
+              color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
+                skeletonRoot.foreground.b, .11)
+            }
+            Rectangle {
+              width: parent.width * (.32 + (skeletonRow.index % 2) * .13)
+              height: Style.space(6); radius: height / 2
+              color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
+                skeletonRoot.foreground.b, .07)
+            }
+          }
+          Rectangle {
+            width: Style.space(34); height: Style.space(6); radius: height / 2
+            anchors.verticalCenter: parent.verticalCenter
+            color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
+              skeletonRoot.foreground.b, .07)
+          }
+        }
+
+        Rectangle {
+          id: shimmer
+          width: parent.width * .18; height: parent.height
+          color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
+            skeletonRoot.foreground.b, .045)
+          rotation: 8
+          SequentialAnimation on x {
+            loops: Animation.Infinite
+            PauseAnimation { duration: skeletonRow.index * 55 }
+            NumberAnimation {
+              from: -shimmer.width; to: skeletonRow.width + shimmer.width
+              duration: 1050; easing.type: Easing.InOutQuad
+            }
+            PauseAnimation { duration: 300 }
+          }
+        }
+      }
+    }
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: root.anchorItem
@@ -185,10 +393,11 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       blocked: searchField.activeFocus
-      onCloseRequested: root.close()
-      onTabRequested: function(direction) { root.switchPanel(direction) }
-      onMoveRequested: function(dx, dy) { if (dx !== 0) root.selectPage(root.page + dx) }
+      onCloseRequested: if (root.settingsOpen) root.closeSettings(); else root.close()
+      onTabRequested: function(direction) { if (!root.settingsOpen) root.switchPanel(direction) }
+      onMoveRequested: function(dx, dy) { if (dx !== 0 && !root.settingsOpen) root.selectPage(root.page + dx) }
       onTextKey: function(t) {
+        if (root.settingsOpen) return
         if (t === "1") root.selectPage(0)
         else if (t === "2") root.selectPage(1)
         else if (t === "3" || t === "/") root.selectPage(2)
@@ -204,15 +413,20 @@ Panel {
         clip: true
         boundsBehavior: Flickable.StopAtBounds
         interactive: contentHeight > height
-        ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+        ScrollBar.vertical: ScrollBar {
+          policy: ScrollBar.AsNeeded
+          topPadding: root.settingsOpen ? Style.space(34) : 0
+          bottomPadding: Style.space(4)
+        }
 
         Column {
           id: content
-          width: parent.width
+          width: panelScroll.width - (panelScroll.contentHeight > panelScroll.height ? Style.space(14) : 0)
           spacing: Style.space(12)
 
           Row {
             id: hero
+            visible: !root.settingsOpen
             width: parent.width
             height: Style.space(68)
             spacing: Style.space(14)
@@ -241,6 +455,8 @@ Panel {
 
               Text {
                 width: parent.width
+                rightPadding: (root.authenticated ? Style.space(32) : 0)
+                  + (root.busy ? Style.space(28) : 0)
                 text: root.hasTrack ? String(root.data.title) : "Яндекс Музыка"
                 color: root.foreground; font.family: root.fontFamily
                 font.pixelSize: Style.font.subtitle; font.bold: true; elide: Text.ElideRight
@@ -288,19 +504,57 @@ Panel {
             }
           }
 
-          Text {
-            visible: root.lastError !== ""; width: parent.width; wrapMode: Text.WordWrap
-            text: root.lastError; color: Color.urgent; font.family: root.fontFamily
-            font.pixelSize: Style.font.bodySmall
+          BorderSurface {
+            visible: root.hasVisibleError
+            width: parent.width
+            height: visible ? errorContent.implicitHeight + Style.space(20) : 0
+            radius: Style.cornerRadius
+            color: Qt.rgba(Color.urgent.r, Color.urgent.g, Color.urgent.b, .08)
+            borderSpec: Border.controlSpec("normal", Color.urgent, Color.urgent)
+
+            Column {
+              id: errorContent
+              anchors.left: parent.left; anchors.right: parent.right
+              anchors.margins: Style.space(10)
+              anchors.verticalCenter: parent.verticalCenter
+              spacing: Style.space(5)
+
+              Row {
+                width: parent.width
+                spacing: Style.space(5)
+                Text {
+                  width: parent.width - retryErrorButton.width - dismissErrorButton.width - Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  text: root.errorTitle
+                  color: Color.urgent; font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall; font.bold: true
+                }
+                Button {
+                  id: retryErrorButton
+                  iconText: "󰑐"; iconSize: Style.font.icon
+                  horizontalPadding: Style.space(5); verticalPadding: Style.space(3)
+                  tooltipText: "Повторить"; foreground: Color.urgent
+                  onClicked: root.retryLastOperation()
+                }
+                Button {
+                  id: dismissErrorButton
+                  iconText: "󰅖"; iconSize: Style.font.icon
+                  horizontalPadding: Style.space(5); verticalPadding: Style.space(3)
+                  tooltipText: "Скрыть"; foreground: root.dim
+                  onClicked: root.dismissedError = root.lastError
+                }
+              }
+              Text {
+                width: parent.width
+                text: root.lastError; wrapMode: Text.WordWrap
+                color: root.foreground; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
           }
 
           Column {
             visible: !root.authenticated; width: parent.width; spacing: Style.space(10)
-            Text {
-              visible: root.data.connecting === true
-              text: "Проверяем сохранённую сессию…"; color: root.foreground
-              font.family: root.fontFamily; font.pixelSize: Style.font.body
-            }
             Text {
               visible: root.data.authPending === true && String(root.data.authCode || "") !== ""
               width: parent.width; horizontalAlignment: Text.AlignHCenter
@@ -327,6 +581,7 @@ Panel {
             visible: root.authenticated; width: parent.width; spacing: Style.space(12)
 
             Row {
+              visible: !root.settingsOpen
               width: parent.width; spacing: Style.space(4)
               Repeater {
                 model: ["СЕЙЧАС", "МЕДИАТЕКА", "ПОИСК"]
@@ -349,7 +604,7 @@ Panel {
             }
 
             Column {
-              visible: root.page === 0; width: parent.width; spacing: Style.space(14)
+              visible: !root.settingsOpen && root.page === 0; width: parent.width; spacing: Style.space(14)
 
               Item {
                 visible: root.hasTrack; width: parent.width; height: Style.space(28)
@@ -492,39 +747,104 @@ Panel {
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
               }
 
-              PanelSeparator { visible: root.queueDisplay.length > 0; foreground: root.foreground }
+              PanelSeparator {
+                visible: root.queueListLoading || root.trackListDisplay.length > 0
+                foreground: root.foreground
+              }
 
               Item {
-                visible: root.queueDisplay.length > 0
+                visible: root.queueListLoading || root.trackListDisplay.length > 0
                 width: parent.width
-                height: visible ? Math.max(queueHeading.implicitHeight, queuePosition.implicitHeight) : 0
+                height: visible ? Style.space(24) : 0
+                clip: true
 
                 Text {
                   id: queueHeading
-                  anchors.left: parent.left
+                  visible: !root.queueListLoading
+                  anchors.left: parent.left; anchors.right: queueModeButton.left
+                  anchors.rightMargin: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
-                  width: parent.width - queuePosition.width - Style.space(12)
-                  text: "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : "")
+                  text: root.browsingArtist
+                    ? "ТРЕКИ ИСПОЛНИТЕЛЯ · " + String(root.data.artistBrowseName || "")
+                    : (root.browsingLibrary
+                      ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
+                      : "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : ""))
                   elide: Text.ElideRight
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.letterSpacing: 1
                 }
 
+                Button {
+                  id: queueModeButton
+                  visible: !root.queueListLoading
+                  anchors.right: queuePosition.left; anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(26); height: Style.space(24)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: root.browsingCollection ? "󰁍" : root.playbackModeIcon
+                  iconSize: Style.font.icon
+                  tooltipText: root.browsingCollection ? "Вернуться к очереди"
+                    : root.playbackModeLabel + " · нажмите для смены"
+                  foreground: root.browsingCollection || root.playbackMode !== "order" ? Color.accent : root.dim
+                  onClicked: {
+                    if (root.browsingArtist) root.action("close_artist")
+                    else if (root.browsingLibrary) root.action("close_library")
+                    else root.action("mode")
+                  }
+                }
+
                 Text {
                   id: queuePosition
+                  visible: !root.queueListLoading
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : ""
+                  text: root.browsingCollection ? String(root.trackListDisplay.length)
+                    : (root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : "")
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
+
+                Rectangle {
+                  visible: root.queueListLoading
+                  anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                  width: parent.width * .48; height: Style.space(7); radius: height / 2
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .1)
+                }
+                Rectangle {
+                  visible: root.queueListLoading
+                  anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(48); height: Style.space(7); radius: height / 2
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .07)
+                }
+                Rectangle {
+                  id: queueHeaderShimmer
+                  visible: root.queueListLoading
+                  width: parent.width * .16; height: parent.height
+                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .045)
+                  rotation: 8
+                  NumberAnimation on x {
+                    from: -queueHeaderShimmer.width
+                    to: queueHeaderShimmer.parent.width + queueHeaderShimmer.width
+                    duration: 1050; loops: Animation.Infinite
+                    easing.type: Easing.InOutQuad
+                    running: root.queueListLoading
+                  }
+                }
+              }
+
+              SkeletonList {
+                visible: root.queueListLoading
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+                rowCount: 5
+                foreground: root.foreground
               }
 
               Flickable {
                 id: queueList
-                visible: root.queueDisplay.length > 0
+                visible: !root.queueListLoading && root.trackListDisplay.length > 0
                 width: parent.width
-                height: visible ? Math.min(queueColumn.implicitHeight, Style.space(260)) : 0
+                height: visible ? Style.space(260) : 0
                 contentWidth: width
                 contentHeight: queueColumn.implicitHeight
                 clip: true
@@ -540,7 +860,7 @@ Panel {
 
                   Repeater {
                     id: queueRepeater
-                    model: root.queueDisplay
+                    model: root.trackListDisplay
                     BorderSurface {
                       id: queueRow
                       required property var modelData
@@ -610,7 +930,11 @@ Panel {
                       MouseArea {
                         id: queueMouse; anchors.fill: parent; hoverEnabled: true
                         cursorShape: Qt.PointingHandCursor
-                        onClicked: if (!modelData.current) root.action("play_queue", modelData.index)
+                        onClicked: {
+                          if (root.browsingArtist) root.action("play_artist_track", modelData.index)
+                          else if (root.browsingLibrary) root.action("play_library_track", modelData.index)
+                          else if (!modelData.current) root.action("play_queue", modelData.index)
+                        }
                       }
                     }
                   }
@@ -619,7 +943,7 @@ Panel {
             }
 
             Column {
-              visible: root.page === 1; width: parent.width; spacing: Style.space(6)
+              visible: !root.settingsOpen && root.page === 1; width: parent.width; spacing: Style.space(6)
               BorderSurface {
                 width: parent.width; height: Style.space(48); radius: Style.cornerRadius
                 color: waveMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent)
@@ -630,11 +954,74 @@ Panel {
                   text: "󰝚   Моя волна"; color: root.foreground; font.family: root.fontFamily
                   font.pixelSize: Style.font.body; font.bold: true
                 }
+                Text {
+                  anchors.right: parent.right; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
+                  text: root.waveOptionsOpen ? "󰅃" : "󰅀"
+                  color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body
+                }
                 MouseArea {
                   id: waveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: { root.action("wave"); root.selectPage(0) }
+                  onClicked: root.waveOptionsOpen = !root.waveOptionsOpen
                 }
               }
+
+              Column {
+                visible: root.waveOptionsOpen
+                width: parent.width
+                spacing: Style.space(7)
+
+                Dropdown {
+                  x: Style.space(8); width: parent.width - Style.space(16)
+                  label: "Настроение"
+                  value: String(root.preference("waveMood", "all"))
+                  foreground: root.foreground; fontFamily: root.fontFamily
+                  options: [
+                    { value: "all", label: "Любое" },
+                    { value: "fun", label: "Весёлое" },
+                    { value: "active", label: "Энергичное" },
+                    { value: "calm", label: "Спокойное" },
+                    { value: "sad", label: "Грустное" }
+                  ]
+                  onChanged: function(value) { root.setPreference("waveMood", value) }
+                }
+                Dropdown {
+                  x: Style.space(8); width: parent.width - Style.space(16)
+                  label: "Подбор треков"
+                  value: String(root.preference("waveDiversity", "default"))
+                  foreground: root.foreground; fontFamily: root.fontFamily
+                  options: [
+                    { value: "default", label: "Сбалансированный" },
+                    { value: "favorite", label: "Больше любимого" },
+                    { value: "popular", label: "Популярное" },
+                    { value: "discover", label: "Больше нового" }
+                  ]
+                  onChanged: function(value) { root.setPreference("waveDiversity", value) }
+                }
+                Dropdown {
+                  x: Style.space(8); width: parent.width - Style.space(16)
+                  label: "Язык"
+                  value: String(root.preference("waveLanguage", "any"))
+                  foreground: root.foreground; fontFamily: root.fontFamily
+                  options: [
+                    { value: "any", label: "Любой" },
+                    { value: "russian", label: "Русская музыка" },
+                    { value: "not-russian", label: "Зарубежная музыка" }
+                  ]
+                  onChanged: function(value) { root.setPreference("waveLanguage", value) }
+                }
+                Button {
+                  x: Style.space(8); width: parent.width - Style.space(16)
+                  text: settingsProcess.running ? "Сохраняем настройки…" : "Запустить Мою волну"
+                  iconText: "󰐊"; foreground: root.foreground; bordered: true
+                  enabled: !settingsProcess.running; opacity: enabled ? 1 : .5
+                  onClicked: {
+                    root.action("wave")
+                    root.waveOptionsOpen = false
+                    root.selectPage(0)
+                  }
+                }
+              }
+
               BorderSurface {
                 width: parent.width; height: Style.space(44); radius: Style.cornerRadius
                 color: likesMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
@@ -667,7 +1054,7 @@ Panel {
             }
 
             Column {
-              visible: root.page === 2; width: parent.width; spacing: Style.space(6)
+              visible: !root.settingsOpen && root.page === 2; width: parent.width; spacing: Style.space(6)
               Row {
                 width: parent.width; spacing: Style.space(8)
                 TextField {
@@ -678,7 +1065,15 @@ Panel {
                 }
                 Button { id: searchButton; iconText: "󰍉"; tooltipText: "Найти"; foreground: root.foreground; onClicked: root.action("search", searchField.text) }
               }
+              SkeletonList {
+                visible: root.searchListLoading
+                width: parent.width
+                height: visible ? Style.space(450) : 0
+                rowCount: 9
+                foreground: root.foreground
+              }
               Repeater {
+                visible: !root.searchListLoading
                 model: root.data.searchResults || []
                 BorderSurface {
                   required property var modelData
@@ -694,17 +1089,296 @@ Panel {
               }
             }
 
-            Text {
-              visible: root.data.loading === true; text: "Загрузка…"; color: root.dim
-              font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
-            }
-            Text {
-              width: parent.width; horizontalAlignment: Text.AlignHCenter; text: "Выйти из аккаунта"
-              color: Qt.darker(root.foreground, 1.8); font.family: root.fontFamily; font.pixelSize: Style.font.caption
-              MouseArea { anchors.fill: parent; cursorShape: Qt.PointingHandCursor; onClicked: root.action("logout") }
+            Column {
+              visible: root.settingsOpen
+              width: parent.width
+              spacing: Style.space(10)
+
+              Text {
+                text: "НАСТРОЙКИ"
+                color: root.foreground; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1
+              }
+
+              Text {
+                text: "ВОСПРОИЗВЕДЕНИЕ"
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
+              }
+
+              Toggle {
+                width: parent.width
+                label: "Продолжать после перезапуска"
+                description: "Возобновлять игравший трек после запуска сервиса"
+                checked: Boolean(root.preference("autoResume", true))
+                foreground: root.foreground
+                onClicked: root.setPreference("autoResume", !checked)
+              }
+
+              Text {
+                text: "ВОССТАНОВЛЕНИЕ СЕССИИ"
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
+              }
+              Toggle {
+                width: parent.width; label: "Восстанавливать очередь"
+                checked: Boolean(root.preference("restoreQueue", true)); foreground: root.foreground
+                onClicked: root.setPreference("restoreQueue", !checked)
+              }
+              Toggle {
+                width: parent.width; label: "Восстанавливать позицию трека"
+                checked: Boolean(root.preference("restorePosition", true)); foreground: root.foreground
+                onClicked: root.setPreference("restorePosition", !checked)
+              }
+              Toggle {
+                width: parent.width; label: "Восстанавливать громкость"
+                checked: Boolean(root.preference("restoreVolume", true)); foreground: root.foreground
+                onClicked: root.setPreference("restoreVolume", !checked)
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Качество аудио"
+                value: String(root.preference("audioQuality", "best"))
+                foreground: root.foreground; fontFamily: root.fontFamily
+                options: [
+                  { value: "best", label: "Лучшее доступное" },
+                  { value: "economy", label: "Экономия трафика" }
+                ]
+                onChanged: function(nextValue) { root.setPreference("audioQuality", nextValue) }
+              }
+
+              Text {
+                text: "ВЕРХНИЙ БАР"
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
+              }
+
+              Toggle {
+                width: parent.width; label: "Показывать кнопки управления"
+                checked: Boolean(root.preference("showControls", true)); foreground: root.foreground
+                onClicked: root.setPreference("showControls", !checked)
+              }
+              Toggle {
+                width: parent.width; label: "Показывать исполнителя"
+                checked: Boolean(root.preference("showArtist", true)); foreground: root.foreground
+                onClicked: root.setPreference("showArtist", !checked)
+              }
+              Toggle {
+                width: parent.width; label: "Показывать название трека"
+                checked: Boolean(root.preference("showTitle", true)); foreground: root.foreground
+                onClicked: root.setPreference("showTitle", !checked)
+              }
+
+              Toggle {
+                width: parent.width
+                label: "Показывать обложку"
+                checked: Boolean(root.preference("showCover", true))
+                foreground: root.foreground
+                onClicked: root.setPreference("showCover", !checked)
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Форма обложки"
+                value: String(root.preference("coverShape", "rounded"))
+                foreground: root.foreground; fontFamily: root.fontFamily
+                options: [
+                  { value: "square", label: "Квадратная" },
+                  { value: "rounded", label: "Скруглённая" },
+                  { value: "circle", label: "Круглая" }
+                ]
+                onChanged: function(value) { root.setPreference("coverShape", value) }
+              }
+
+              Toggle {
+                width: parent.width
+                label: "Показывать линию прогресса"
+                checked: Boolean(root.preference("showProgress", true))
+                foreground: root.foreground
+                onClicked: root.setPreference("showProgress", !checked)
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Длинные названия"
+                value: String(root.preference("longTitleMode", "truncate"))
+                foreground: root.foreground; fontFamily: root.fontFamily
+                options: [
+                  { value: "truncate", label: "Обрезать многоточием" },
+                  { value: "scroll", label: "Плавно прокручивать" }
+                ]
+                onChanged: function(value) { root.setPreference("longTitleMode", value) }
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Ширина информации о треке"
+                value: String(root.preference("barWidth", "normal"))
+                foreground: root.foreground; fontFamily: root.fontFamily
+                options: [
+                  { value: "compact", label: "Компактная" },
+                  { value: "normal", label: "Обычная" },
+                  { value: "wide", label: "Широкая" }
+                ]
+                onChanged: function(nextValue) { root.setPreference("barWidth", nextValue) }
+              }
+
+              Dropdown {
+                width: parent.width
+                label: "Уведомления при смене трека"
+                value: String(root.preference("notifications", "off"))
+                foreground: root.foreground; fontFamily: root.fontFamily
+                options: [
+                  { value: "off", label: "Выключены" },
+                  { value: "all", label: "Показывать всегда" }
+                ]
+                onChanged: function(value) { root.setPreference("notifications", value) }
+              }
+
+              Text {
+                text: "АККАУНТ"
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
+              }
+
+              BorderSurface {
+                width: parent.width
+                height: accountContent.implicitHeight + Style.space(20)
+                radius: Style.cornerRadius
+                color: Style.normalFillFor(root.foreground, Color.accent)
+                borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+
+                Column {
+                  id: accountContent
+                  anchors.left: parent.left; anchors.right: parent.right
+                  anchors.margins: Style.space(10)
+                  anchors.verticalCenter: parent.verticalCenter
+                  spacing: Style.space(8)
+                  Text {
+                    width: parent.width
+                    text: "Яндекс Музыка подключена"
+                    color: root.foreground; font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall; font.bold: true
+                  }
+                  Text {
+                    visible: root.confirmLogout
+                    width: parent.width; wrapMode: Text.WordWrap
+                    text: "Токен авторизации будет удалён. Для повторного входа понадобится браузер."
+                    color: Color.urgent; font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption
+                  }
+                  Row {
+                    width: parent.width
+                    spacing: Style.space(8)
+                    Button {
+                      width: root.confirmLogout
+                        ? parent.width - cancelLogoutButton.width - parent.spacing : parent.width
+                      text: root.confirmLogout ? "Подтвердить выход" : "Выйти из аккаунта"
+                      foreground: Color.urgent; bordered: true
+                      onClicked: {
+                        if (root.confirmLogout) {
+                          root.action("logout")
+                          root.closeSettings()
+                        } else root.confirmLogout = true
+                      }
+                    }
+                    Button {
+                      id: cancelLogoutButton
+                      visible: root.confirmLogout
+                      text: "Отмена"; foreground: root.foreground; bordered: true
+                      onClicked: root.confirmLogout = false
+                    }
+                  }
+                }
+              }
             }
           }
         }
+      }
+    }
+
+    Item {
+      id: settingsButton
+      visible: root.authenticated
+      z: 101
+      anchors.top: parent.top; anchors.right: parent.right
+      anchors.topMargin: Style.space(7); anchors.rightMargin: Style.space(7)
+      width: Style.space(28); height: Style.space(28)
+
+      Rectangle {
+        anchors.fill: parent
+        radius: width / 2
+        color: settingsButtonMouse.containsMouse || root.settingsOpen
+          ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+      }
+      Text {
+        anchors.centerIn: parent
+        text: root.settingsOpen ? "󰁍" : "󰒓"
+        color: root.settingsOpen ? Color.accent : root.dim
+        font.family: root.fontFamily; font.pixelSize: Style.font.icon
+      }
+      MouseArea {
+        id: settingsButtonMouse
+        anchors.fill: parent
+        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+        onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
+        onEntered: if (root.bar) root.bar.showTooltip(settingsButton,
+          root.settingsOpen ? "Вернуться" : "Настройки")
+        onExited: if (root.bar) root.bar.hideTooltip(settingsButton)
+      }
+    }
+
+    Item {
+      id: cornerLoader
+      property real savedAngle: 0
+      visible: root.busy
+      z: 100
+      anchors.top: parent.top; anchors.right: parent.right
+      anchors.topMargin: Style.space(9); anchors.rightMargin: root.authenticated ? Style.space(40) : Style.space(10)
+      width: Style.space(24); height: Style.space(24)
+
+      Rectangle {
+        anchors.centerIn: parent
+        width: Style.space(18); height: width; radius: width / 2
+        color: "transparent"
+        border.width: Style.spacing.hairline
+        border.color: Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, .2)
+      }
+
+      Canvas {
+        id: loaderArc
+        anchors.centerIn: parent
+        width: Style.space(18); height: width
+        antialiasing: true
+        rotation: cornerLoader.savedAngle
+        onPaint: {
+          var context = getContext("2d")
+          context.clearRect(0, 0, width, height)
+          context.beginPath()
+          context.arc(width / 2, height / 2, width / 2 - Style.space(1.5),
+            -Math.PI / 2, Math.PI * .85, false)
+          context.lineWidth = Style.space(2)
+          context.lineCap = "round"
+          context.strokeStyle = Color.accent
+          context.stroke()
+        }
+      }
+
+      Timer {
+        interval: 16
+        repeat: true
+        running: root.busy
+        onTriggered: cornerLoader.savedAngle = (cornerLoader.savedAngle + 7.2) % 360
+      }
+
+      MouseArea {
+        id: cornerLoaderMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        cursorShape: Qt.ArrowCursor
+        onEntered: if (root.bar) root.bar.showTooltip(cornerLoader, root.loadingMessage)
+        onExited: if (root.bar) root.bar.hideTooltip(cornerLoader)
       }
     }
   }

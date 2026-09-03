@@ -15,12 +15,15 @@ if request["command"] == "playlist" and len(args) > 1:
     request["kind"] = args[1]
 elif request["command"] == "search" and len(args) > 1:
     request["query"] = " ".join(args[1:])
-elif request["command"] in ("play_search", "play_queue") and len(args) > 1:
+elif request["command"] in ("play_search", "play_queue", "play_artist_track", "play_library_track") and len(args) > 1:
     request["index"] = int(args[1])
 elif request["command"] in ("seek", "volume") and len(args) > 1:
     request["value"] = int(float(args[1]))
 elif request["command"] == "artist" and len(args) > 1:
     request["artistId"] = args[1]
+elif request["command"] == "setting" and len(args) > 2:
+    request["key"] = args[1]
+    request["value"] = args[2]
 
 
 def connect():

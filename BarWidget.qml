@@ -11,6 +11,8 @@ BarWidget {
   readonly property bool playing: logic ? logic.playing : false
   readonly property bool opened: logic ? logic.opened : false
   readonly property bool popoutSwitchClosing: logic ? logic.popoutSwitchClosing : false
+  // Suppress Omarchy's extra underline while this widget's popup is open.
+  readonly property real openPanelIndicatorWidth: 0.01
 
   function injectLogic() {
     if (!logic) return

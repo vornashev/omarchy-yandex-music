@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import os
+import random
 import re
 import signal
 import socket
@@ -25,6 +27,27 @@ from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"
+PREFERENCES_FILE = CONFIG / "preferences.json"
+DEFAULT_PREFERENCES = {
+    "autoResume": True,
+    "restoreQueue": True,
+    "restorePosition": True,
+    "restoreVolume": True,
+    "audioQuality": "best",
+    "playbackMode": "repeatQueue",
+    "waveMood": "all",
+    "waveDiversity": "default",
+    "waveLanguage": "any",
+    "showControls": True,
+    "showArtist": True,
+    "showTitle": True,
+    "showCover": True,
+    "coverShape": "rounded",
+    "showProgress": True,
+    "barWidth": "normal",
+    "longTitleMode": "scroll",
+    "notifications": "off",
+}
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 SOCKET = RUNTIME / "omarchy-yandex-music.sock"
 MPV_SOCKET = RUNTIME / "omarchy-yandex-music-mpv.sock"
@@ -129,10 +152,14 @@ class MprisPlayer(ServiceInterface):
         return "Playing" if state.get("playing") else "Paused"
 
     @dbus_property(access=PropertyAccess.READWRITE)
-    def LoopStatus(self) -> "s": return "None"
+    def LoopStatus(self) -> "s":
+        mode = self.player.preferences.get("playbackMode")
+        return "Track" if mode == "repeatTrack" else ("Playlist" if mode == "repeatQueue" else "None")
 
     @LoopStatus.setter
-    def LoopStatus(self, value: "s") -> None: pass
+    def LoopStatus(self, value: "s") -> None:
+        mode = "repeatTrack" if value == "Track" else ("repeatQueue" if value == "Playlist" else "order")
+        self.player.set_preference("playbackMode", mode)
 
     @dbus_property(access=PropertyAccess.READWRITE)
     def Rate(self) -> "d": return 1.0
@@ -141,10 +168,11 @@ class MprisPlayer(ServiceInterface):
     def Rate(self, value: "d") -> None: pass
 
     @dbus_property(access=PropertyAccess.READWRITE)
-    def Shuffle(self) -> "b": return False
+    def Shuffle(self) -> "b": return self.player.preferences.get("playbackMode") == "shuffle"
 
     @Shuffle.setter
-    def Shuffle(self, value: "b") -> None: pass
+    def Shuffle(self, value: "b") -> None:
+        self.player.set_preference("playbackMode", "shuffle" if value else "order")
 
     @dbus_property(access=PropertyAccess.READ)
     def Metadata(self) -> "a{sv}":
@@ -196,6 +224,8 @@ class MprisPlayer(ServiceInterface):
     def publish(self, seeked: bool = False) -> None:
         properties = {
             "PlaybackStatus": self.PlaybackStatus,
+            "LoopStatus": self.LoopStatus,
+            "Shuffle": self.Shuffle,
             "Metadata": self.Metadata,
             "Volume": self.Volume,
             "CanGoNext": self.CanGoNext,
@@ -246,6 +276,8 @@ class Player:
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
+        self.artist_results: list[Any] = []
+        self.library_results: list[Any] = []
         self.liked_ids: set[str] = set()
         self.radio_station = ""
         self.radio_batch_id = ""
@@ -259,12 +291,16 @@ class Player:
         self.last_saved_at = 0.0
         self.volume = 70
         self.muted = False
+        self.preferences = self._load_preferences()
         self.state: dict[str, Any] = {
             "authenticated": False, "connecting": False, "authPending": False,
             "authUrl": "", "authCode": "", "error": "", "playing": False,
-            "loading": False, "title": "", "artist": "", "album": "",
-            "artUrl": "", "artistId": "", "artists": [], "queueName": "", "position": 0, "duration": 0,
+            "loading": False, "loadingKind": "", "title": "", "artist": "", "album": "",
+            "artUrl": "", "artistId": "", "artists": [], "queueName": "", "artistBrowseName": "",
+            "libraryBrowseName": "",
+            "position": 0, "duration": 0,
             "volume": self.volume, "muted": self.muted, "liked": False, "restoring": False,
+            "preferences": dict(self.preferences),
         }
         self.mpris = MprisBridge(self)
         threading.Thread(target=self._restore, daemon=True).start()
@@ -277,7 +313,59 @@ class Player:
         with self.lock:
             self.state["error"] = str(exc).replace("\n", " ")[:300]
             self.state["loading"] = False
+            self.state["loadingKind"] = ""
             self.state["connecting"] = False
+
+    def _load_preferences(self) -> dict[str, Any]:
+        preferences = dict(DEFAULT_PREFERENCES)
+        try:
+            saved = json.loads(PREFERENCES_FILE.read_text()) if PREFERENCES_FILE.exists() else {}
+            if isinstance(saved, dict): preferences.update(saved)
+        except Exception:
+            pass
+        bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
+                     "showControls", "showArtist", "showTitle", "showCover", "showProgress")
+        for key in bool_keys: preferences[key] = bool(preferences.get(key, DEFAULT_PREFERENCES[key]))
+        allowed = {
+            "audioQuality": ("best", "economy"),
+            "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
+            "waveMood": ("all", "fun", "active", "calm", "sad"),
+            "waveDiversity": ("default", "favorite", "popular", "discover"),
+            "waveLanguage": ("any", "russian", "not-russian"),
+            "coverShape": ("square", "rounded", "circle"),
+            "barWidth": ("compact", "normal", "wide"),
+            "longTitleMode": ("truncate", "scroll"),
+            "notifications": ("off", "all"),
+        }
+        for key, values in allowed.items():
+            if preferences.get(key) not in values: preferences[key] = DEFAULT_PREFERENCES[key]
+        return preferences
+
+    def set_preference(self, key: str, value: Any) -> None:
+        if key not in DEFAULT_PREFERENCES: raise ValueError(f"Неизвестная настройка: {key}")
+        bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
+                     "showControls", "showArtist", "showTitle", "showCover", "showProgress")
+        allowed = {
+            "audioQuality": ("best", "economy"),
+            "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
+            "waveMood": ("all", "fun", "active", "calm", "sad"),
+            "waveDiversity": ("default", "favorite", "popular", "discover"),
+            "waveLanguage": ("any", "russian", "not-russian"),
+            "coverShape": ("square", "rounded", "circle"),
+            "barWidth": ("compact", "normal", "wide"),
+            "longTitleMode": ("truncate", "scroll"),
+            "notifications": ("off", "all"),
+        }
+        if key in bool_keys:
+            value = str(value).lower() in ("1", "true", "yes", "on")
+        elif key in allowed and value not in allowed[key]:
+            raise ValueError(f"Недопустимое значение настройки {key}")
+        with self.lock:
+            self.preferences[key] = value
+            self.state["preferences"] = dict(self.preferences)
+            self.state["error"] = ""
+        atomic_json(PREFERENCES_FILE, self.preferences)
+        if key == "playbackMode": self._publish_mpris()
 
     def _load_token(self) -> dict[str, Any]:
         return json.loads(TOKEN_FILE.read_text())
@@ -350,11 +438,13 @@ class Player:
     def logout(self) -> None:
         self.stop()
         with self.lock:
-            self.client = None; self.playlists = []; self.liked_ids = set(); self.queue = []; self.index = -1
+            self.client = None; self.playlists = []; self.artist_results = []; self.library_results = []
+            self.liked_ids = set()
+            self.queue = []; self.index = -1
             self.radio_station = ""; self.radio_batch_id = ""; self.radio_extending = False
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
-                              liked=False, error="")
+                              artistBrowseName="", libraryBrowseName="", liked=False, error="")
         self._publish_mpris()
         TOKEN_FILE.unlink(missing_ok=True); STATE_FILE.unlink(missing_ok=True)
 
@@ -390,10 +480,11 @@ class Player:
         try:
             saved = json.loads(STATE_FILE.read_text())
             ids = [str(x) for x in saved.get("queue", []) if x]
-            self.volume = max(0, min(100, int(saved.get("volume", 70))))
-            self.muted = bool(saved.get("muted", False))
+            if self.preferences["restoreVolume"]:
+                self.volume = max(0, min(100, int(saved.get("volume", 70))))
+                self.muted = bool(saved.get("muted", False))
             with self.lock: self.state.update(volume=self.volume, muted=self.muted)
-            if not ids: return
+            if not ids or not self.preferences["restoreQueue"]: return
             with self.lock: self.state["restoring"] = True
             tracks = self.client.tracks(ids) or []
             with self.lock:
@@ -402,16 +493,17 @@ class Player:
                 self.radio_station = str(saved.get("radioStation", ""))
                 self.radio_batch_id = str(saved.get("radioBatchId", ""))
                 self.state["queueName"] = str(saved.get("queueName", ""))
-            self._play_current(resume_position=int(saved.get("position", 0)),
-                               start_paused=not bool(saved.get("playing", False)))
+            should_resume = bool(saved.get("playing", False)) and bool(self.preferences["autoResume"])
+            resume_position = int(saved.get("position", 0)) if self.preferences["restorePosition"] else 0
+            self._play_current(resume_position=resume_position, start_paused=not should_resume)
         except Exception as exc: self._set_error(f"Не удалось восстановить очередь: {exc}")
         finally:
             with self.lock: self.state["restoring"] = False
 
-    def _loading(self, function: Callable[[], None]) -> None:
+    def _loading(self, function: Callable[[], None], kind: str) -> None:
         with self.lock:
             if not self.state["authenticated"] or self.state["loading"]: return
-            self.state.update(loading=True, error="")
+            self.state.update(loading=True, loadingKind=kind, error="")
         threading.Thread(target=function, daemon=True).start()
 
     def _load_liked_ids(self) -> None:
@@ -427,16 +519,23 @@ class Player:
             self._set_error(f"Не удалось получить отметки «Мне нравится»: {exc}")
 
     def play_likes(self) -> None:
+        with self.lock:
+            self.artist_results = []; self.library_results = []
+            self.state.update(artistBrowseName="", libraryBrowseName="")
         def load() -> None:
             try:
                 assert self.client
                 liked = self.client.users_likes_tracks()
                 rows = list(liked.tracks or []) if liked else []
+                tracks = [self._track_from_short(x) for x in rows]
+                if not tracks: raise RuntimeError("В списке нет доступных треков")
                 with self.lock:
                     self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
-                self._set_queue([self._track_from_short(x) for x in rows], "Мне нравится")
+                    self.library_results = tracks
+                    self.state.update(libraryBrowseName="Мне нравится", loading=False,
+                                      loadingKind="", error="")
             except Exception as exc: self._set_error(f"Не удалось загрузить любимые треки: {exc}")
-        self._loading(load)
+        self._loading(load, "likes")
 
     def toggle_like(self) -> None:
         try:
@@ -463,13 +562,26 @@ class Player:
             try:
                 assert self.client
                 station = "user:onyourwave"
+                # The current settings2 endpoint requires JSON, while the
+                # unofficial client's helper still submits form data.
+                settings_response = requests.post(
+                    f"{self.client.base_url}/rotor/station/{station}/settings2",
+                    headers=dict(self.client._request.headers),
+                    proxies=self.client._request.proxies,
+                    json={"moodEnergy": str(self.preferences["waveMood"]),
+                          "diversity": str(self.preferences["waveDiversity"]),
+                          "language": str(self.preferences["waveLanguage"]), "type": "rotor"},
+                    timeout=20)
+                settings_response.raise_for_status()
+                if settings_response.json().get("result") != "ok":
+                    raise RuntimeError("Яндекс не подтвердил настройки волны")
                 result = self.client.rotor_station_tracks(station)
                 tracks = [row.track for row in (result.sequence if result else [])
                           if getattr(row, "track", None)]
                 self._set_queue(tracks, "Моя волна", station, result.batch_id if result else "")
             except Exception as exc:
                 self._set_error(f"Не удалось запустить «Мою волну»: {exc}")
-        self._loading(load)
+        self._loading(load, "wave")
 
     def _extend_wave(self, advance: bool = False) -> None:
         with self.lock:
@@ -514,13 +626,21 @@ class Player:
         if should_extend: self._extend_wave()
 
     def play_playlist(self, kind: str) -> None:
+        with self.lock:
+            self.artist_results = []; self.library_results = []
+            self.state.update(artistBrowseName="", libraryBrowseName="")
         def load() -> None:
             try:
                 assert self.client
                 playlist = self.client.users_playlists(kind)
-                self._set_queue([self._track_from_short(x) for x in playlist.fetch_tracks()], playlist.title)
+                tracks = [self._track_from_short(x) for x in playlist.fetch_tracks()]
+                if not tracks: raise RuntimeError("В плейлисте нет доступных треков")
+                with self.lock:
+                    self.library_results = tracks
+                    self.state.update(libraryBrowseName=playlist.title, loading=False,
+                                      loadingKind="", error="")
             except Exception as exc: self._set_error(f"Не удалось загрузить плейлист: {exc}")
-        self._loading(load)
+        self._loading(load, "playlist")
 
     def search(self, query: str) -> None:
         query = query.strip()
@@ -531,9 +651,9 @@ class Player:
                 result = self.client.search(query, type_="track")
                 with self.lock:
                     self.search_results = list(result.tracks.results or [])[:30] if result and result.tracks else []
-                    self.state["loading"] = False
+                    self.state.update(loading=False, loadingKind="")
             except Exception as exc: self._set_error(f"Ошибка поиска: {exc}")
-        self._loading(load)
+        self._loading(load, "search")
 
     def play_search(self, index: int) -> None:
         with self.lock: tracks = list(self.search_results)
@@ -542,31 +662,64 @@ class Player:
     def play_queue(self, index: int) -> None:
         with self.lock:
             if not (0 <= index < len(self.queue)): return
+            self.artist_results = []; self.library_results = []
+            self.state.update(artistBrowseName="", libraryBrowseName="")
             self.index = index
         self._save_state(True)
         self._play_current()
 
+    def play_library_track(self, index: int) -> None:
+        with self.lock:
+            tracks = list(self.library_results)
+            name = str(self.state.get("libraryBrowseName", "Медиатека"))
+        if 0 <= index < len(tracks): self._set_queue(tracks, name, start_index=index)
+
+    def close_library(self) -> None:
+        with self.lock:
+            self.library_results = []
+            self.state["libraryBrowseName"] = ""
+
     def play_artist(self, artist_id: str) -> None:
         if not artist_id: return
+        with self.lock:
+            self.artist_results = []; self.library_results = []
+            self.state.update(artistBrowseName="", libraryBrowseName="")
         def load() -> None:
             try:
                 assert self.client
                 result = self.client.artists_tracks(artist_id, page=0, page_size=100)
                 tracks = list(result.tracks or []) if result else []
+                if not tracks: raise RuntimeError("У исполнителя нет доступных треков")
                 artists = self.client.artists(artist_id) or []
                 name = artists[0].name if artists else "Треки исполнителя"
-                self._set_queue(tracks, name)
+                with self.lock:
+                    self.artist_results = tracks
+                    self.state.update(artistBrowseName=name, loading=False, loadingKind="", error="")
             except Exception as exc:
                 self._set_error(f"Не удалось загрузить треки исполнителя: {exc}")
-        self._loading(load)
+        self._loading(load, "artist")
 
-    def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "") -> None:
+    def play_artist_track(self, index: int) -> None:
+        with self.lock:
+            tracks = list(self.artist_results)
+            name = str(self.state.get("artistBrowseName", "Треки исполнителя"))
+        if 0 <= index < len(tracks): self._set_queue(tracks, name, start_index=index)
+
+    def close_artist(self) -> None:
+        with self.lock:
+            self.artist_results = []
+            self.state["artistBrowseName"] = ""
+
+    def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "",
+                   start_index: int = 0) -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         with self.lock:
-            self.queue = tracks; self.index = 0
+            self.queue = tracks; self.index = max(0, min(start_index, len(tracks) - 1))
+            self.artist_results = []; self.library_results = []
+            self.state.update(artistBrowseName="", libraryBrowseName="")
             self.radio_station = station; self.radio_batch_id = batch_id
             self.radio_extending = False; self.radio_advance_pending = False
-            self.state.update(queueName=name, loading=False)
+            self.state.update(queueName=name, loading=False, loadingKind="")
         self._save_state(True); self._play_current()
 
     def _metadata(self, track: Any) -> dict[str, str]:
@@ -585,7 +738,10 @@ class Player:
     def _url(self, track: Any) -> str:
         infos = track.get_download_info(get_direct_links=True) or []
         if not infos: raise RuntimeError("Яндекс не вернул ссылку на аудио")
-        infos.sort(key=lambda x: (x.codec in ("mp3", "aac"), x.bitrate_in_kbps or 0), reverse=True)
+        if self.preferences["audioQuality"] == "economy":
+            infos.sort(key=lambda x: (x.bitrate_in_kbps or 10_000, x.codec not in ("aac", "mp3")))
+        else:
+            infos.sort(key=lambda x: (x.codec in ("mp3", "aac"), x.bitrate_in_kbps or 0), reverse=True)
         return infos[0].direct_link or infos[0].get_direct_link()
 
     def _ensure_mpv(self) -> None:
@@ -633,30 +789,68 @@ class Player:
                 try:
                     with self.lock:
                         if generation != self.play_generation or not (0 <= self.index < len(self.queue)): return
-                        track = self.queue[self.index]; self.state["loading"] = True
+                        track = self.queue[self.index]
+                        self.state.update(loading=True, loadingKind="track", error="")
                     meta, url = self._metadata(track), self._url(track)
                     self._mpv_command(["loadfile", url, "replace"])
                     self._wait_mpv_ready()
                     self._mpv_command(["set_property", "force-media-title", f"{meta['title']} — {meta['artist']}"])
                     if resume_position > 0: self._mpv_command(["seek", resume_position, "absolute"])
                     self._mpv_command(["set_property", "mute", self.muted])
-                    if start_paused: self._mpv_command(["set_property", "pause", True])
+                    self._mpv_command(["set_property", "pause", bool(start_paused)])
                     with self.lock:
                         if generation != self.play_generation: return
-                        self.state.update(meta); self.state.update(playing=not start_paused, loading=False,
+                        self.state.update(meta); self.state.update(playing=not start_paused,
+                            loading=False, loadingKind="",
                             position=resume_position, duration=int(getattr(track, "duration_ms", 0) or 0)//1000,
                             liked=self._track_id(track) in self.liked_ids, error="")
                         # The monitor marks the file active only after mpv has
                         # actually left its transient idle state. This avoids
                         # skipping a restored track while it is still opening.
                         self.had_file = False; self.active_ticks = 0; self.consecutive_failures = 0
-                    self._publish_mpris(); self._save_state(True); self._maybe_extend_wave(); return
+                    self._publish_mpris(); self._notify_track(meta)
+                    self._save_state(True); self._maybe_extend_wave(); return
                 except Exception as exc:
                     last_error = exc; time.sleep(1.5 * (attempt + 1))
             with self.lock: self.consecutive_failures += 1
             self._set_error(f"Не удалось воспроизвести трек после 3 попыток: {last_error}")
             if self.queue and self.consecutive_failures < min(3, len(self.queue)): self.next()
         threading.Thread(target=load, daemon=True).start()
+
+    def _notification_cover(self, url: str) -> str:
+        if not url: return "audio-x-generic"
+        try:
+            cover_dir = RUNTIME / "omarchy-yandex-music-covers"
+            cover_dir.mkdir(mode=0o700, exist_ok=True)
+            cover = cover_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:24]}.jpg"
+            if not cover.exists():
+                response = requests.get(url, timeout=10)
+                response.raise_for_status()
+                content_type = response.headers.get("content-type", "")
+                if not content_type.startswith("image/") or len(response.content) > 5_000_000:
+                    return "audio-x-generic"
+                cover.write_bytes(response.content)
+                cover.chmod(0o600)
+                cached = sorted(cover_dir.glob("*.jpg"), key=lambda item: item.stat().st_mtime, reverse=True)
+                for old_cover in cached[30:]: old_cover.unlink(missing_ok=True)
+            return str(cover)
+        except Exception:
+            return "audio-x-generic"
+
+    def _notify_track(self, metadata: dict[str, Any]) -> None:
+        if self.preferences.get("notifications") != "all": return
+        try:
+            icon = self._notification_cover(str(metadata.get("artUrl", "")))
+            subprocess.Popen(["/usr/bin/notify-send", "--app-name=Yandex Music",
+                f"--icon={icon}", str(metadata.get("title", "Яндекс Музыка")),
+                str(metadata.get("artist", ""))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        except Exception:
+            pass
+
+    def cycle_mode(self) -> None:
+        modes = ["order", "shuffle", "repeatQueue", "repeatTrack"]
+        current = str(self.preferences.get("playbackMode", "repeatQueue"))
+        self.set_preference("playbackMode", modes[(modes.index(current) + 1) % len(modes)])
 
     def pause(self) -> None:
         try:
@@ -692,14 +886,28 @@ class Player:
             self._save_state(True)
         except Exception as exc: self._set_error(exc)
 
-    def next(self) -> None:
+    def next(self, automatic: bool = False) -> None:
+        end_queue = False
         with self.lock:
             if not self.queue: return
-            if self.radio_station and self.index >= len(self.queue) - 1:
+            mode = str(self.preferences.get("playbackMode", "repeatQueue"))
+            if automatic and mode == "repeatTrack":
+                extend_wave = False
+            elif self.radio_station and self.index >= len(self.queue) - 1:
                 extend_wave = True
             else:
                 extend_wave = False
-                self.index = (self.index + 1) % len(self.queue)
+                if mode == "shuffle" and len(self.queue) > 1:
+                    choices = [i for i in range(len(self.queue)) if i != self.index]
+                    self.index = random.choice(choices)
+                elif self.index < len(self.queue) - 1:
+                    self.index += 1
+                elif mode == "repeatQueue":
+                    self.index = 0
+                else:
+                    end_queue = True
+        if end_queue:
+            self.stop(); return
         if extend_wave:
             self._extend_wave(advance=True); return
         self._save_state(True); self._play_current()
@@ -742,7 +950,7 @@ class Player:
                         self.had_file = False; self.active_ticks = 0
                     if was_active:
                         if duration > 0 and position >= duration - 5:
-                            self.next()
+                            self.next(automatic=True)
                         else:
                             # An unexpected idle state means the stream was
                             # interrupted, not that the track ended. Reopen a
@@ -770,6 +978,16 @@ class Player:
             data["searchResults"] = [{**self._metadata(t), "index": i} for i,t in enumerate(self.search_results)]
             data["queueIndex"] = self.index + 1 if self.index >= 0 else 0; data["queueCount"] = len(self.queue)
             if include_queue:
+                data["artistTracks"] = [
+                    {**self._metadata(track), "index": i,
+                     "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+                     "current": False}
+                    for i, track in enumerate(self.artist_results)]
+                data["libraryTracks"] = [
+                    {**self._metadata(track), "index": i,
+                     "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+                     "current": False}
+                    for i, track in enumerate(self.library_results)]
                 rows = []
                 for i, track in enumerate(self.queue):
                     meta = self._metadata(track)
@@ -792,13 +1010,19 @@ class Player:
         elif cmd == "search": self.search(str(req.get("query", "")))
         elif cmd == "play_search": self.play_search(int(req.get("index", -1)))
         elif cmd == "play_queue": self.play_queue(int(req.get("index", -1)))
+        elif cmd == "play_library_track": self.play_library_track(int(req.get("index", -1)))
+        elif cmd == "close_library": self.close_library()
         elif cmd == "artist": self.play_artist(str(req.get("artistId", "")))
+        elif cmd == "play_artist_track": self.play_artist_track(int(req.get("index", -1)))
+        elif cmd == "close_artist": self.close_artist()
         elif cmd == "pause": self.pause()
         elif cmd == "next": self.next()
         elif cmd == "previous": self.previous()
         elif cmd == "seek": self.seek(int(req.get("value", 0)))
         elif cmd == "volume": self.set_volume(int(req.get("value", self.volume)))
         elif cmd == "mute": self.toggle_mute()
+        elif cmd == "mode": self.cycle_mode()
+        elif cmd == "setting": self.set_preference(str(req.get("key", "")), req.get("value"))
         elif cmd == "stop": self.stop()
         else: return {"error": f"unknown command: {cmd}"}
         return {"ok": True}
