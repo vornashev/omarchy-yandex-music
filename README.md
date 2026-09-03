@@ -119,7 +119,7 @@ No manual `git clone`, `cd`, or `sudo` is required. On its first load, the plugi
 - `~/.local/bin/omarchy-yandex-music`
 - `~/.config/systemd/user/omarchy-yandex-music.service`
 
-After installation, click the player in the bar and complete Yandex Device OAuth in your browser. The browser can then be closed.
+After installation, click the player in the bar, start Yandex Device OAuth, and use the button beside the displayed code to copy it before opening the authorization page. The browser can be closed after sign-in.
 
 ## Keyboard shortcuts
 
@@ -128,6 +128,7 @@ Inside the popup:
 - `1`, `2`, `3` — Now Playing, Library, Search
 - `Space` — play/pause
 - `L` — like/unlike
+- `C` — copy the Device OAuth code while signing in
 - `Escape` — return from settings or close the popup
 
 Hardware media keys are handled through MPRIS.

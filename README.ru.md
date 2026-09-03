@@ -119,7 +119,7 @@ omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enabl
 - `~/.local/bin/omarchy-yandex-music`
 - `~/.config/systemd/user/omarchy-yandex-music.service`
 
-После установки нажмите на плеер в баре и подтвердите Device OAuth через Яндекс. После авторизации браузер можно закрыть.
+После установки нажмите на плеер в баре, запустите Device OAuth и скопируйте показанный код кнопкой рядом с ним перед переходом на страницу Яндекса. После авторизации браузер можно закрыть.
 
 ## Горячие клавиши
 
@@ -128,6 +128,7 @@ omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enabl
 - `1`, `2`, `3` — «Сейчас», «Медиатека», «Поиск»;
 - `Space` — Play/Pause;
 - `L` — поставить или убрать лайк;
+- `C` — скопировать код Device OAuth во время авторизации;
 - `Escape` — вернуться из настроек или закрыть попап.
 
 Аппаратные медиаклавиши работают через MPRIS.

@@ -4,6 +4,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.2] - 2026-09-03
+
+### Added
+
+- Copy button and `C` keyboard shortcut for the Yandex Device OAuth code
+- Short visual confirmation after the authorization code is copied to the clipboard
+
 ## [0.7.1] - 2026-09-03
 
 ### Added
@@ -85,6 +92,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.5.0...v0.6.0

@@ -4,6 +4,13 @@
 
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
 
+## [0.7.2] — 2026-09-03
+
+### Добавлено
+
+- Кнопка и горячая клавиша `C` для копирования кода Яндекс Device OAuth
+- Краткое визуальное подтверждение после копирования кода авторизации в буфер обмена
+
 ## [0.7.1] — 2026-09-03
 
 ### Добавлено
@@ -85,6 +92,7 @@
 - Первый публичный релиз
 - Device OAuth, фоновое воспроизведение через `mpv`, медиатека, поиск, очередь и сохранение состояния
 
+[0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.5.0...v0.6.0

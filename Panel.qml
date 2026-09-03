@@ -17,6 +17,7 @@ Panel {
   property bool settingsOpen: false
   property bool confirmLogout: false
   property bool waveOptionsOpen: false
+  property string copiedAuthCode: ""
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ authenticated: false, playlists: [], searchResults: [] })
   property string lastError: ""
@@ -85,6 +86,13 @@ Panel {
   function preference(key, fallback) {
     var preferences = data.preferences || {}
     return preferences[key] === undefined ? fallback : preferences[key]
+  }
+  function copyAuthCode() {
+    var code = String(data.authCode || "").trim()
+    if (code === "") return
+    Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(code) + " | wl-copy"])
+    copiedAuthCode = code
+    authCodeCopiedTimer.restart()
   }
   function setPreference(key, value) {
     if (settingsProcess.running) return
@@ -306,6 +314,12 @@ Panel {
   }
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
+  Timer {
+    id: authCodeCopiedTimer
+    interval: 1800
+    repeat: false
+    onTriggered: root.copiedAuthCode = ""
+  }
 
   component SkeletonList: Column {
     id: skeletonRoot
@@ -401,6 +415,8 @@ Panel {
         if (t === "1") root.selectPage(0)
         else if (t === "2") root.selectPage(1)
         else if (t === "3" || t === "/") root.selectPage(2)
+        else if ((t === "c" || t === "с") && !root.authenticated
+            && String(root.data.authCode || "") !== "") root.copyAuthCode()
         else if (t === " " && root.hasTrack) root.action("pause")
         else if ((t === "l" || t === "д") && root.hasTrack) root.action("like")
       }
@@ -555,11 +571,26 @@ Panel {
 
           Column {
             visible: !root.authenticated; width: parent.width; spacing: Style.space(10)
-            Text {
+            Row {
               visible: root.data.authPending === true && String(root.data.authCode || "") !== ""
-              width: parent.width; horizontalAlignment: Text.AlignHCenter
-              text: "Код: " + root.data.authCode; color: root.foreground
-              font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(8)
+
+              Text {
+                anchors.verticalCenter: parent.verticalCenter
+                text: "Код: " + root.data.authCode; color: root.foreground
+                font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true
+              }
+              Button {
+                width: Style.space(122); height: Style.space(32)
+                anchors.verticalCenter: parent.verticalCenter
+                text: root.copiedAuthCode === String(root.data.authCode || "") ? "Скопировано" : "Копировать"
+                iconText: root.copiedAuthCode === String(root.data.authCode || "") ? "󰄬" : "󰆏"
+                tooltipText: "Скопировать код авторизации"
+                foreground: root.copiedAuthCode === String(root.data.authCode || "") ? Color.accent : root.foreground
+                bordered: true
+                onClicked: root.copyAuthCode()
+              }
             }
             BorderSurface {
               width: parent.width; height: Style.space(44); radius: Style.cornerRadius
