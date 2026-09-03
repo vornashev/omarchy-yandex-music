@@ -41,7 +41,9 @@ Panel {
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
-  readonly property var queueDisplay: data.queueTracks || []
+  // Keep the queue model independent from frequently replaced status objects.
+  // Rebinding ListView to an equivalent JS array resets its internal viewport.
+  property var queueDisplay: []
   readonly property var artistDisplay: data.artistTracks || []
   readonly property var libraryDisplay: data.libraryTracks || []
   readonly property bool browsingArtist: artistDisplay.length > 0
@@ -72,6 +74,8 @@ Panel {
     if (refreshing && !hasLoadedStatus) return "Проверяем состояние сервиса…"
     if (data.connecting === true) return "Подключаемся к Яндекс Музыке…"
     if (data.restoring === true) return "Восстанавливаем очередь и позицию…"
+    if (String(data.loadingStage || "") === "rateLimit")
+      return "Яндекс ограничил запросы — повторяем с паузой…"
     if (data.libraryLoadingMore === true) return "Загружаем следующую страницу…"
     var kind = String(data.loadingKind || "")
     if (kind === "wave") return "Настраиваем «Мою волну»…"
@@ -189,6 +193,7 @@ Panel {
     var args = [cli, command]
     if (argument !== undefined && argument !== null) args.push(String(argument))
     actionProcess.command = args; actionProcess.running = true
+    if (command === "search") searchResultsList.positionViewAtBeginning()
   }
   function retryLastOperation() {
     dismissedError = ""
@@ -228,8 +233,11 @@ Panel {
       var libraryExpanded = (parsed.libraryTracks || []).length > (data.libraryTracks || []).length
       if (Number(parsed.libraryRevision || 0) === Number(data.libraryRevision || 0))
         parsed.libraryTracks = data.libraryTracks || []
-      if (!queueChanged && Number(parsed.queueRevision || 0) === Number(data.queueRevision || 0))
-        parsed.queueTracks = data.queueTracks || []
+      if (Number(parsed.queueRevision || 0) === Number(data.queueRevision || 0)) {
+        parsed.queueTracks = queueDisplay
+      } else {
+        queueDisplay = parsed.queueTracks || []
+      }
       if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
         parsed.muted = false
@@ -258,15 +266,31 @@ Panel {
   function scrollToCurrentTrack() {
     if (page !== 0 || browsingCollection || !queueList) return
     var index = Number(data.queueIndex || 0) - 1
-    if (index >= 0 && index < queueList.count)
-      queueList.positionViewAtIndex(index, ListView.Contain)
+    if (index < 0 || index >= queueList.count) return
+
+    var item = queueList.itemAtIndex(index)
+    var rowHeight = Style.space(50)
+    var itemTop = item ? item.y : queueList.originY + index * rowHeight
+    var itemBottom = itemTop + (item ? item.height : rowHeight)
+    var viewportTop = queueList.contentY
+    var viewportBottom = viewportTop + queueList.height
+    var tolerance = 1
+    if (itemTop >= viewportTop - tolerance && itemBottom <= viewportBottom + tolerance) return
+
+    var targetY = itemTop < viewportTop ? itemTop : itemBottom - queueList.height
+    var minimumY = queueList.originY
+    var maximumY = Math.max(minimumY, minimumY + queueList.contentHeight - queueList.height)
+    queueList.contentY = Math.max(minimumY, Math.min(targetY, maximumY))
   }
   function selectPage(index) {
     settingsOpen = false
     confirmLogout = false
     page = Math.max(0, Math.min(2, index))
     if (page === 0) queueScrollTimer.restart()
-    if (page === 2) Qt.callLater(function() { searchField.forceActiveFocus() })
+    if (page === 2) Qt.callLater(function() {
+      panelScroll.contentY = 0
+      searchField.forceActiveFocus()
+    })
   }
 
   onBusyChanged: if (busy) busySeconds = 0
@@ -509,16 +533,17 @@ Panel {
         contentHeight: content.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        interactive: contentHeight > height
+        interactive: contentHeight > height && (root.settingsOpen || root.page !== 2)
         ScrollBar.vertical: ScrollBar {
-          policy: ScrollBar.AsNeeded
+          policy: !root.settingsOpen && root.page === 2 ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
           topPadding: root.settingsOpen ? Style.space(34) : 0
           bottomPadding: Style.space(4)
         }
 
         Column {
           id: content
-          width: panelScroll.width - (panelScroll.contentHeight > panelScroll.height ? Style.space(14) : 0)
+          width: panelScroll.width - (panelScroll.contentHeight > panelScroll.height
+            && (root.settingsOpen || root.page !== 2) ? Style.space(14) : 0)
           spacing: Style.space(12)
 
           Row {
@@ -602,6 +627,7 @@ Panel {
           }
 
           BorderSurface {
+            id: errorCard
             visible: root.hasVisibleError
             width: parent.width
             height: visible ? errorContent.implicitHeight + Style.space(20) : 0
@@ -971,13 +997,15 @@ Panel {
                 delegate: BorderSurface {
                   id: queueRow
                   required property var modelData
+                  readonly property bool isCurrent: !root.browsingCollection
+                    && Number(root.data.queueIndex || 0) - 1 === Number(modelData.index)
                   width: queueList.width - (queueList.contentHeight > queueList.height ? Style.space(8) : 0)
                   height: Style.space(50)
                   radius: Style.cornerRadius
-                  color: modelData.current
+                  color: isCurrent
                     ? Style.selectedFillFor(root.foreground, Color.accent)
                     : (queueMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
-                  borderSpec: modelData.current
+                  borderSpec: isCurrent
                     ? Border.controlSpec("normal", root.foreground, Color.accent)
                     : Border.none()
 
@@ -990,8 +1018,8 @@ Panel {
                     Text {
                       width: Style.space(18); anchors.verticalCenter: parent.verticalCenter
                       horizontalAlignment: Text.AlignHCenter
-                      text: modelData.current ? (root.playing ? "󰏤" : "󰐊") : String(modelData.index + 1)
-                      color: modelData.current ? Color.accent : root.dim
+                      text: queueRow.isCurrent ? (root.playing ? "󰏤" : "󰐊") : String(modelData.index + 1)
+                      color: queueRow.isCurrent ? Color.accent : root.dim
                       font.family: root.fontFamily; font.pixelSize: Style.font.caption
                     }
                     Column {
@@ -999,7 +1027,7 @@ Panel {
                       Text {
                         width: parent.width; text: modelData.title; elide: Text.ElideRight
                         color: root.foreground; font.family: root.fontFamily
-                        font.pixelSize: Style.font.bodySmall; font.bold: modelData.current
+                        font.pixelSize: Style.font.bodySmall; font.bold: queueRow.isCurrent
                       }
                       Item {
                         width: parent.width
@@ -1040,7 +1068,7 @@ Panel {
                     onClicked: {
                       if (root.browsingArtist) root.action("play_artist_track", modelData.index)
                       else if (root.browsingLibrary) root.action("play_library_track", modelData.index)
-                      else if (!modelData.current) root.action("play_queue", modelData.index)
+                      else if (!queueRow.isCurrent) root.action("play_queue", modelData.index)
                     }
                   }
                 }
@@ -1181,27 +1209,49 @@ Panel {
                 }
                 Button { id: searchButton; iconText: "󰍉"; tooltipText: "Найти"; foreground: root.foreground; onClicked: root.action("search", searchField.text) }
               }
-              SkeletonList {
-                visible: root.searchListLoading
+              Item {
+                id: searchResultsViewport
                 width: parent.width
-                height: visible ? Style.space(450) : 0
-                rowCount: 9
-                foreground: root.foreground
-              }
-              Repeater {
-                visible: !root.searchListLoading
-                model: root.data.searchResults || []
-                BorderSurface {
-                  required property var modelData
-                  width: content.width; height: Style.space(48); radius: Style.cornerRadius
-                  color: resultMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"; borderSpec: Border.none()
-                  Column {
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter; spacing: 1
-                    Text { width: parent.width; text: modelData.title; elide: Text.ElideRight; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
-                    Text { width: parent.width; text: modelData.artist; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
-                  }
-                  MouseArea { id: resultMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.action("play_search", modelData.index); root.selectPage(0) } }
+                height: Math.max(Style.space(240), Style.space(424)
+                  - (root.hasVisibleError ? errorCard.height + Style.space(12) : 0))
+                clip: true
+
+                SkeletonList {
+                  visible: root.searchListLoading
+                  anchors.fill: parent
+                  rowCount: 9
+                  foreground: root.foreground
                 }
+
+                ListView {
+                  id: searchResultsList
+                  visible: !root.searchListLoading
+                  anchors.fill: parent
+                  clip: true
+                  boundsBehavior: Flickable.StopAtBounds
+                  interactive: contentHeight > height
+                  cacheBuffer: height
+                  model: root.data.searchResults || []
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                  delegate: BorderSurface {
+                    required property var modelData
+                    width: searchResultsList.width
+                      - (searchResultsList.contentHeight > searchResultsList.height ? Style.space(8) : 0)
+                    height: Style.space(48); radius: Style.cornerRadius
+                    color: resultMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"; borderSpec: Border.none()
+                    Column {
+                      anchors.left: parent.left; anchors.right: parent.right; anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                      Text { width: parent.width; text: modelData.title; elide: Text.ElideRight; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
+                      Text { width: parent.width; text: modelData.artist; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                    }
+                    MouseArea { id: resultMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.action("play_search", modelData.index); root.selectPage(0) } }
+                  }
+                }
+              }
+              Item {
+                width: 1
+                height: Style.space(8)
               }
             }
 
@@ -1210,10 +1260,23 @@ Panel {
               width: parent.width
               spacing: Style.space(10)
 
-              Text {
-                text: "НАСТРОЙКИ"
-                color: root.foreground; font.family: root.fontFamily
-                font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1
+              Item {
+                width: parent.width
+                height: Style.space(18)
+
+                Text {
+                  anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                  text: "НАСТРОЙКИ"
+                  color: root.foreground; font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1
+                }
+                Text {
+                  visible: String(root.data.version || "") !== ""
+                  anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                  text: "v" + String(root.data.version || "")
+                  color: root.dim; font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
               }
 
               Text {

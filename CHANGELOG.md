@@ -4,6 +4,26 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.4] - 2026-09-03
+
+### Added
+
+- Installed plugin version in the settings header
+- Automatic rate-limit retries with 2, 5, and 10 second backoff delays
+
+### Changed
+
+- Yandex Music API requests are serialized to avoid request bursts across library, search, radio, artist, and playback operations
+- The liked-track index loaded during startup is reused when opening “My Likes”
+- Search results scroll independently while the tabs and search field stay fixed
+
+### Fixed
+
+- The queue preserves its scroll position on manual selection and does not scroll again when the next or previous track is already fully visible
+- Unliking a track removes it immediately from the open “My Likes” list or its active queue and updates the cache without reloading the full collection
+- Raw Yandex Music HTTP 429 responses are replaced with a concise actionable message
+- Opening “My Likes” during startup no longer duplicates the liked-tracks request
+
 ## [0.7.3] - 2026-09-03
 
 ### Added
@@ -107,6 +127,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.7.4]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1

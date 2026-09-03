@@ -71,7 +71,7 @@ Opening an artist, “My Likes”, or a personal playlist does **not** interrupt
 
 ### Search
 
-Search for tracks and start playback from any result. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly. Hover the corner loader to see the current operation, elapsed wait time, Yandex Music API latency, and regional availability.
+Search for tracks and start playback from any result. Results scroll independently below the fixed tabs and search field. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly. Hover the corner loader to see the current operation, elapsed wait time, Yandex Music API latency, and regional availability.
 
 ### Settings
 

@@ -24,6 +24,7 @@ from dbus_next.service import ServiceInterface, dbus_property, method, signal as
 from yandex_music import Client
 from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET, _OAUTH_BASE_URL
 
+APP_VERSION = "0.7.4"
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"
@@ -56,6 +57,8 @@ NETWORK_PROBE_TTL = 30
 LIBRARY_PAGE_SIZE = 50
 COLLECTION_CACHE_TTL = 10 * 60
 COLLECTION_CACHE_MAX_ENTRIES = 8
+RATE_LIMIT_DELAYS = (2, 5, 10)
+RATE_LIMIT_MESSAGE = "Яндекс Музыка временно ограничила запросы. Подождите минуту и повторите."
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -276,6 +279,7 @@ class MprisBridge:
 class Player:
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self.api_lock = threading.Lock()
         self.client: Client | None = None
         self.queue: list[Any] = []
         self.queue_source: list[Any] = []
@@ -283,6 +287,8 @@ class Player:
         self.queue_advance_pending = False
         self.queue_generation = 0
         self.queue_revision = 0
+        self.queue_collection_key = ""
+        self.detached_track: Any | None = None
         self.library_revision = 0
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
@@ -295,6 +301,8 @@ class Player:
         self.active_library_cache_key = ""
         self.collection_cache: dict[str, dict[str, Any]] = {}
         self.liked_ids: set[str] = set()
+        self.liked_rows: list[Any] = []
+        self.liked_rows_at = 0.0
         self.radio_station = ""
         self.radio_batch_id = ""
         self.radio_extending = False
@@ -313,6 +321,7 @@ class Player:
             "serviceAvailable": None, "region": None, "checkedAt": 0, "error": "",
         }
         self.state: dict[str, Any] = {
+            "version": APP_VERSION,
             "authenticated": False, "connecting": False, "authPending": False,
             "authUrl": "", "authCode": "", "error": "", "playing": False,
             "loading": False, "loadingKind": "", "loadingStage": "",
@@ -331,13 +340,56 @@ class Player:
     def _publish_mpris(self, seeked: bool = False) -> None:
         self.mpris.publish(seeked)
 
+    @staticmethod
+    def _is_rate_limit_error(exc: Any) -> bool:
+        message = str(exc).lower()
+        return "429" in message or "too-many-requests" in message or "too many requests" in message
+
+    @classmethod
+    def _friendly_error(cls, exc: Any) -> str:
+        if cls._is_rate_limit_error(exc): return RATE_LIMIT_MESSAGE
+        return str(exc).replace("\n", " ")[:300]
+
     def _set_error(self, exc: Any) -> None:
         with self.lock:
-            self.state["error"] = str(exc).replace("\n", " ")[:300]
+            self.state["error"] = self._friendly_error(exc)
             self.state["loading"] = False
             self.state["loadingKind"] = ""
             self.state["loadingStage"] = ""
             self.state["connecting"] = False
+
+    def _api_call(self, function: Callable[[], Any]) -> Any:
+        """Serialize library calls and retry Yandex Music HTTP 429 responses."""
+        with self.api_lock:
+            for attempt in range(len(RATE_LIMIT_DELAYS) + 1):
+                try:
+                    result = function()
+                    with self.lock:
+                        if self.state.get("loadingStage") == "rateLimit":
+                            self.state["loadingStage"] = ""
+                    return result
+                except Exception as exc:
+                    if not self._is_rate_limit_error(exc) or attempt >= len(RATE_LIMIT_DELAYS):
+                        if self._is_rate_limit_error(exc): raise RuntimeError(RATE_LIMIT_MESSAGE) from exc
+                        raise
+                    with self.lock: self.state["loadingStage"] = "rateLimit"
+                    time.sleep(RATE_LIMIT_DELAYS[attempt])
+        raise RuntimeError(RATE_LIMIT_MESSAGE)
+
+    def _get_liked_rows(self) -> list[Any]:
+        def fetch() -> list[Any]:
+            with self.lock:
+                fresh = self.liked_rows_at and time.monotonic() - self.liked_rows_at < COLLECTION_CACHE_TTL
+                if fresh: return list(self.liked_rows)
+                client = self.client
+            if not client: return []
+            liked = client.users_likes_tracks()
+            rows = list(liked.tracks or []) if liked else []
+            with self.lock:
+                self.liked_rows = rows
+                self.liked_rows_at = time.monotonic()
+            return list(rows)
+        return self._api_call(fetch)
 
     def network_status(self, start: bool = False) -> dict[str, Any]:
         now = int(time.time())
@@ -507,9 +559,10 @@ class Player:
             self.library_source = []; self.library_offset = 0
             self.library_generation += 1; self.library_revision += 1
             self.active_library_cache_key = ""; self.collection_cache = {}
-            self.liked_ids = set()
+            self.liked_ids = set(); self.liked_rows = []; self.liked_rows_at = 0
             self.queue = []; self.queue_source = []; self.queue_extending = False
             self.queue_advance_pending = False; self.queue_generation += 1; self.queue_revision += 1; self.index = -1
+            self.queue_collection_key = ""; self.detached_track = None
             self.radio_station = ""; self.radio_batch_id = ""; self.radio_extending = False
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
@@ -522,7 +575,7 @@ class Player:
     def _load_playlists(self) -> None:
         try:
             assert self.client
-            rows = self.client.users_playlists_list() or []
+            rows = self._api_call(lambda: self.client.users_playlists_list()) or []
             with self.lock:
                 self.playlists = [{"kind": str(p.kind), "title": p.title,
                                    "count": int(p.track_count or 0)} for p in rows]
@@ -536,9 +589,8 @@ class Player:
         """Resolve one collection page in one API request while retaining source order."""
         assert self.client
         missing = [row for row in rows if not getattr(row, "track", None)]
-        fetched = self.client.tracks([
-            str(getattr(row, "track_id", getattr(row, "id", ""))) for row in missing
-        ]) if missing else []
+        track_ids = [str(getattr(row, "track_id", getattr(row, "id", ""))) for row in missing]
+        fetched = self._api_call(lambda: self.client.tracks(track_ids)) if missing else []
         by_id = {str(getattr(track, "id", "")): track for track in fetched}
         tracks = []
         for row in rows:
@@ -599,6 +651,59 @@ class Player:
     def _track_id(track: Any) -> str:
         return str(getattr(track, "id", ""))
 
+    def _update_likes_collection_locked(self, track: Any, liked: bool) -> None:
+        """Apply a confirmed like change to loaded lists and their in-memory cache."""
+        track_id = self._track_id(track)
+        if not track_id: return
+
+        def update(source: list[Any], results: list[Any], offset: int) -> tuple[list[Any], list[Any], int]:
+            source_ids = [self._track_id(row) for row in source]
+            if liked:
+                if track_id not in source_ids:
+                    source.insert(0, track)
+                    offset += 1
+                if all(self._track_id(item) != track_id for item in results):
+                    results.insert(0, track)
+            else:
+                removed_before_offset = sum(
+                    1 for index, item_id in enumerate(source_ids)
+                    if index < offset and item_id == track_id)
+                source[:] = [row for row in source if self._track_id(row) != track_id]
+                results[:] = [item for item in results if self._track_id(item) != track_id]
+                offset -= removed_before_offset
+            return source, results, max(0, min(offset, len(source)))
+
+        # Keep the complete liked-row snapshot usable, so reopening “My Likes”
+        # does not need to fetch and resolve the whole collection again.
+        if self.liked_rows_at:
+            if liked:
+                if all(self._track_id(row) != track_id for row in self.liked_rows):
+                    self.liked_rows.insert(0, track)
+            else:
+                self.liked_rows = [row for row in self.liked_rows if self._track_id(row) != track_id]
+
+        cached = self.collection_cache.get("likes")
+        if cached:
+            source, results, offset = update(
+                list(cached["source"]), list(cached["results"]), int(cached["offset"]))
+            if source and results:
+                cached.update(source=source, results=results, offset=offset,
+                              storedAt=time.monotonic(), accessedAt=time.monotonic())
+            else:
+                self.collection_cache.pop("likes", None)
+
+        if self.active_library_cache_key != "likes": return
+        self.library_source, self.library_results, self.library_offset = update(
+            self.library_source, self.library_results, self.library_offset)
+        self.library_revision += 1
+        self.state.update(libraryTotal=len(self.library_source),
+                          libraryHasMore=self.library_offset < len(self.library_source),
+                          libraryLoadingMore=False, libraryFromCache=False)
+        if self.library_source and self.library_results:
+            self._store_collection_cache_locked()
+        else:
+            self.collection_cache.pop("likes", None)
+
     def _save_state(self, force: bool = False) -> None:
         if not force and time.monotonic() - self.last_saved_at < 5: return
         with self.lock:
@@ -607,6 +712,7 @@ class Player:
                      "position": self.state["position"], "playing": self.state["playing"],
                      "volume": self.volume, "muted": self.muted,
                      "radioStation": self.radio_station, "radioBatchId": self.radio_batch_id}
+            value["queueCollectionKey"] = self.queue_collection_key
         atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
 
     def _restore_queue(self) -> None:
@@ -620,14 +726,31 @@ class Player:
             with self.lock: self.state.update(volume=self.volume, muted=self.muted)
             if not ids or not self.preferences["restoreQueue"]: return
             with self.lock: self.state["restoring"] = True
-            tracks = self.client.tracks(ids) or []
+            tracks = self._api_call(lambda: self.client.tracks(ids)) or []
             with self.lock:
+                queue_name = str(saved.get("queueName", ""))
+                saved_collection_key = str(saved.get("queueCollectionKey", ""))
+                collection_key = saved_collection_key or (
+                    "likes" if queue_name == "Мне нравится" else "")
+                saved_index = max(0, min(int(saved.get("index", 0)), len(tracks) - 1))
+                if collection_key == "likes" and self.liked_rows_at:
+                    current_id = self._track_id(tracks[saved_index]) if tracks else ""
+                    kept_before = sum(
+                        1 for track in tracks[:saved_index]
+                        if self._track_id(track) in self.liked_ids)
+                    tracks = [track for track in tracks if self._track_id(track) in self.liked_ids]
+                    if current_id in self.liked_ids:
+                        saved_index = kept_before
+                    else:
+                        saved_index = min(kept_before, max(0, len(tracks) - 1))
                 self.queue = tracks
                 self.queue_revision += 1
-                self.index = max(0, min(int(saved.get("index", 0)), len(tracks) - 1))
+                self.index = max(0, min(saved_index, len(tracks) - 1))
                 self.radio_station = str(saved.get("radioStation", ""))
                 self.radio_batch_id = str(saved.get("radioBatchId", ""))
-                self.state["queueName"] = str(saved.get("queueName", ""))
+                self.state["queueName"] = queue_name
+                self.queue_collection_key = collection_key
+                self.detached_track = None
             should_resume = bool(saved.get("playing", False)) and bool(self.preferences["autoResume"])
             resume_position = int(saved.get("position", 0)) if self.preferences["restorePosition"] else 0
             self._play_current(resume_position=resume_position, start_paused=not should_resume)
@@ -644,8 +767,7 @@ class Player:
     def _load_liked_ids(self) -> None:
         try:
             assert self.client
-            liked = self.client.users_likes_tracks()
-            rows = list(liked.tracks or []) if liked else []
+            rows = self._get_liked_rows()
             with self.lock:
                 self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
                 if 0 <= self.index < len(self.queue):
@@ -662,8 +784,7 @@ class Player:
         def load() -> None:
             try:
                 assert self.client
-                liked = self.client.users_likes_tracks()
-                rows = list(liked.tracks or []) if liked else []
+                rows = self._get_liked_rows()
                 tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE])
                 if not tracks: raise RuntimeError("В списке нет доступных треков")
                 with self.lock:
@@ -685,25 +806,57 @@ class Player:
                 self._set_error(f"Не удалось загрузить любимые треки: {exc}")
         self._loading(load, "likes")
 
+    def _update_likes_queue_locked(self, track: Any, liked: bool) -> None:
+        """Keep a queue started from “My Likes” in sync without stopping playback."""
+        if self.queue_collection_key != "likes": return
+        track_id = self._track_id(track)
+        if not track_id: return
+
+        self.queue_source = [row for row in self.queue_source if self._track_id(row) != track_id]
+        if liked:
+            if self.detached_track is not None and self._track_id(self.detached_track) == track_id:
+                insert_at = max(0, min(self.index + 1, len(self.queue)))
+                self.queue.insert(insert_at, track)
+                self.index = insert_at
+                self.detached_track = None
+                self.queue_revision += 1
+            return
+
+        current = self.detached_track or (
+            self.queue[self.index] if 0 <= self.index < len(self.queue) else None)
+        if current is None or self._track_id(current) != track_id: return
+        old_index = self.index
+        self.queue = [item for item in self.queue if self._track_id(item) != track_id]
+        self.index = sum(1 for item in self.queue[:old_index] if self._track_id(item) != track_id) - 1
+        # The audio keeps playing, but its row is no longer part of the liked queue.
+        # The virtual index remains immediately before the next queue item.
+        self.detached_track = track
+        self.queue_revision += 1
+
     def toggle_like(self) -> None:
         try:
             assert self.client
             with self.lock:
-                if not (0 <= self.index < len(self.queue)): return
-                track_id = self._track_id(self.queue[self.index])
+                track = self.detached_track or (
+                    self.queue[self.index] if 0 <= self.index < len(self.queue) else None)
+                if track is None: return
+                track_id = self._track_id(track)
                 was_liked = track_id in self.liked_ids
             if not track_id: return
-            changed = (self.client.users_likes_tracks_remove(track_id) if was_liked
-                       else self.client.users_likes_tracks_add(track_id))
+            changed = self._api_call(lambda: self.client.users_likes_tracks_remove(track_id)
+                                     if was_liked else self.client.users_likes_tracks_add(track_id))
             if not changed: raise RuntimeError("Яндекс не подтвердил изменение")
             with self.lock:
                 if was_liked: self.liked_ids.discard(track_id)
                 else: self.liked_ids.add(track_id)
-                self.collection_cache.pop("likes", None)
-                if self.active_library_cache_key == "likes": self.active_library_cache_key = ""
-                if 0 <= self.index < len(self.queue) and self._track_id(self.queue[self.index]) == track_id:
+                self._update_likes_collection_locked(track, not was_liked)
+                self._update_likes_queue_locked(track, not was_liked)
+                current = self.detached_track or (
+                    self.queue[self.index] if 0 <= self.index < len(self.queue) else None)
+                if current is not None and self._track_id(current) == track_id:
                     self.state["liked"] = not was_liked
                 self.state["error"] = ""
+            self._save_state(True)
         except Exception as exc:
             self._set_error(f"Не удалось изменить отметку «Мне нравится»: {exc}")
 
@@ -714,18 +867,21 @@ class Player:
                 station = "user:onyourwave"
                 # The current settings2 endpoint requires JSON, while the
                 # unofficial client's helper still submits form data.
-                settings_response = requests.post(
-                    f"{self.client.base_url}/rotor/station/{station}/settings2",
-                    headers=dict(self.client._request.headers),
-                    proxies=self.client._request.proxies,
-                    json={"moodEnergy": str(self.preferences["waveMood"]),
-                          "diversity": str(self.preferences["waveDiversity"]),
-                          "language": str(self.preferences["waveLanguage"]), "type": "rotor"},
-                    timeout=20)
-                settings_response.raise_for_status()
+                def update_settings() -> requests.Response:
+                    response = requests.post(
+                        f"{self.client.base_url}/rotor/station/{station}/settings2",
+                        headers=dict(self.client._request.headers),
+                        proxies=self.client._request.proxies,
+                        json={"moodEnergy": str(self.preferences["waveMood"]),
+                              "diversity": str(self.preferences["waveDiversity"]),
+                              "language": str(self.preferences["waveLanguage"]), "type": "rotor"},
+                        timeout=20)
+                    response.raise_for_status()
+                    return response
+                settings_response = self._api_call(update_settings)
                 if settings_response.json().get("result") != "ok":
                     raise RuntimeError("Яндекс не подтвердил настройки волны")
-                result = self.client.rotor_station_tracks(station)
+                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
                 tracks = [row.track for row in (result.sequence if result else [])
                           if getattr(row, "track", None)]
                 self._set_queue(tracks, "Моя волна", station, result.batch_id if result else "")
@@ -748,7 +904,8 @@ class Player:
             should_advance = False
             try:
                 assert self.client
-                result = self.client.rotor_station_tracks(station, queue=queue_id or None)
+                result = self._api_call(
+                    lambda: self.client.rotor_station_tracks(station, queue=queue_id or None))
                 incoming = [row.track for row in (result.sequence if result else [])
                             if getattr(row, "track", None)]
                 with self.lock:
@@ -829,8 +986,8 @@ class Player:
         def load() -> None:
             try:
                 assert self.client
-                playlist = self.client.users_playlists(kind)
-                rows = list(playlist.fetch_tracks())
+                playlist = self._api_call(lambda: self.client.users_playlists(kind))
+                rows = list(self._api_call(playlist.fetch_tracks))
                 tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE])
                 if not tracks: raise RuntimeError("В плейлисте нет доступных треков")
                 with self.lock:
@@ -885,7 +1042,7 @@ class Player:
         def load() -> None:
             try:
                 assert self.client
-                result = self.client.search(query, type_="track")
+                result = self._api_call(lambda: self.client.search(query, type_="track"))
                 with self.lock:
                     self.search_results = list(result.tracks.results or [])[:30] if result and result.tracks else []
                     self.state.update(loading=False, loadingKind="")
@@ -911,8 +1068,10 @@ class Player:
             tracks = list(self.library_results)
             remaining = list(self.library_source[self.library_offset:])
             name = str(self.state.get("libraryBrowseName", "Медиатека"))
+            collection_key = self.active_library_cache_key
         if 0 <= index < len(tracks):
-            self._set_queue(tracks, name, start_index=index, remaining_rows=remaining)
+            self._set_queue(tracks, name, start_index=index, remaining_rows=remaining,
+                            collection_key=collection_key)
 
     def close_library(self) -> None:
         with self.lock:
@@ -927,10 +1086,11 @@ class Player:
         def load() -> None:
             try:
                 assert self.client
-                result = self.client.artists_tracks(artist_id, page=0, page_size=100)
+                result = self._api_call(
+                    lambda: self.client.artists_tracks(artist_id, page=0, page_size=100))
                 tracks = list(result.tracks or []) if result else []
                 if not tracks: raise RuntimeError("У исполнителя нет доступных треков")
-                artists = self.client.artists(artist_id) or []
+                artists = self._api_call(lambda: self.client.artists(artist_id)) or []
                 name = artists[0].name if artists else "Треки исполнителя"
                 with self.lock:
                     self.artist_results = tracks
@@ -951,13 +1111,15 @@ class Player:
             self.state["artistBrowseName"] = ""
 
     def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "",
-                   start_index: int = 0, remaining_rows: list[Any] | None = None) -> None:
+                   start_index: int = 0, remaining_rows: list[Any] | None = None,
+                   collection_key: str = "") -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         with self.lock:
             self.queue = tracks; self.index = max(0, min(start_index, len(tracks) - 1))
             self.queue_source = list(remaining_rows or [])
             self.queue_extending = False; self.queue_advance_pending = False
             self.queue_generation += 1; self.queue_revision += 1
+            self.queue_collection_key = collection_key; self.detached_track = None
             self.artist_results = []
             self._reset_library_locked()
             self.state["artistBrowseName"] = ""
@@ -980,13 +1142,13 @@ class Player:
                 "artists": artist_rows, "album": album, "artUrl": cover}
 
     def _url(self, track: Any) -> str:
-        infos = track.get_download_info(get_direct_links=True) or []
+        infos = self._api_call(lambda: track.get_download_info(get_direct_links=True)) or []
         if not infos: raise RuntimeError("Яндекс не вернул ссылку на аудио")
         if self.preferences["audioQuality"] == "economy":
             infos.sort(key=lambda x: (x.bitrate_in_kbps or 10_000, x.codec not in ("aac", "mp3")))
         else:
             infos.sort(key=lambda x: (x.codec in ("mp3", "aac"), x.bitrate_in_kbps or 0), reverse=True)
-        return infos[0].direct_link or infos[0].get_direct_link()
+        return infos[0].direct_link or self._api_call(infos[0].get_direct_link)
 
     def _ensure_mpv(self) -> None:
         if self.mpv and self.mpv.poll() is None and MPV_SOCKET.exists(): return
@@ -1026,6 +1188,7 @@ class Player:
 
     def _play_current(self, resume_position: int = 0, start_paused: bool = False) -> None:
         with self.lock:
+            self.detached_track = None
             self.play_generation += 1; generation = self.play_generation
         def load() -> None:
             last_error: Exception | None = None
@@ -1138,9 +1301,10 @@ class Player:
         with self.lock:
             if not self.queue: return
             mode = str(self.preferences.get("playbackMode", "repeatQueue"))
+            detached = self.detached_track is not None
             extend_wave = False
             extend_collection = False
-            if automatic and mode == "repeatTrack":
+            if automatic and mode == "repeatTrack" and not detached:
                 pass
             elif self.radio_station and self.index >= len(self.queue) - 1:
                 extend_wave = True
@@ -1170,7 +1334,10 @@ class Player:
         except Exception: pass
         with self.lock:
             if not self.queue: return
-            self.index = (self.index - 1) % len(self.queue)
+            if self.detached_track is not None:
+                self.index %= len(self.queue)
+            else:
+                self.index = (self.index - 1) % len(self.queue)
         self._save_state(True); self._play_current()
 
     def stop(self) -> None:
@@ -1230,7 +1397,9 @@ class Player:
             data["queueRevision"] = self.queue_revision
             data["libraryRevision"] = self.library_revision
             data["searchResults"] = [{**self._metadata(t), "index": i} for i,t in enumerate(self.search_results)]
-            data["queueIndex"] = self.index + 1 if self.index >= 0 else 0; data["queueCount"] = len(self.queue)
+            data["queueIndex"] = (self.index + 1
+                                  if self.detached_track is None and self.index >= 0 else 0)
+            data["queueCount"] = len(self.queue)
             if include_queue:
                 data["artistTracks"] = [
                     {**self._metadata(track), "index": i,
@@ -1247,7 +1416,7 @@ class Player:
                     meta = self._metadata(track)
                     rows.append({**meta, "index": i,
                                  "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
-                                 "current": i == self.index})
+                                 "current": self.detached_track is None and i == self.index})
                 data["queueTracks"] = rows
             return data
 
