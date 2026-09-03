@@ -6,6 +6,28 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 
 > This project uses the unofficial [yandex-music-api](https://github.com/MarshalX/yandex-music-api) library and is not affiliated with Yandex. A Yandex Music subscription may be required for full-track playback.
 
+## Screenshots
+
+<p align="center">
+  <img src="preview.webp" alt="Yandex Music Now Playing popup in Omarchy" width="900">
+</p>
+
+<p align="center">
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="My Wave controls in the Yandex Music library" width="49%"></a>
+  <a href="docs/screenshots/search.webp"><img src="docs/screenshots/search.webp" alt="Yandex Music track search" width="49%"></a>
+</p>
+<p align="center"><em>Library and search</em></p>
+
+<p align="center">
+  <a href="docs/screenshots/settings.webp"><img src="docs/screenshots/settings.webp" alt="Yandex Music plugin settings" width="60%"></a>
+</p>
+<p align="center"><em>Built-in settings</em></p>
+
+<p align="center">
+  <a href="docs/screenshots/signed-out.webp"><img src="docs/screenshots/signed-out.webp" alt="Yandex Device OAuth sign-in screen" width="60%"></a>
+</p>
+<p align="center"><em>Sign in through Yandex Device OAuth</em></p>
+
 ## Highlights
 
 - Native mini-player in the Omarchy bar
@@ -84,13 +106,13 @@ The backend exposes a sanitized MPRIS player named **Yandex Music**. Omarchy and
 
 ## Installation
 
+Install and enable the plugin with the standard Omarchy command:
+
 ```bash
-git clone https://github.com/vornashev/omarchy-yandex-music.git
-cd omarchy-yandex-music
-./install.sh
+omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enable
 ```
 
-The installer does not require `sudo`. It creates:
+No manual `git clone`, `cd`, or `sudo` is required. On its first load, the plugin automatically installs its Python environment, CLI, and systemd user service. This initial setup may take a moment. It creates:
 
 - `~/.config/omarchy/plugins/vornashev.yandex-music/`
 - `~/.local/share/omarchy-yandex-music/`
@@ -113,23 +135,25 @@ Hardware media keys are handled through MPRIS.
 ## Updating
 
 ```bash
-cd omarchy-yandex-music
-git pull --ff-only
-./install.sh
+omarchy plugin update vornashev.yandex-music
 ```
 
+The backend is updated automatically when the refreshed plugin loads.
+
 ## Uninstalling
+
+Use the plugin's uninstaller so its background service and CLI are removed too.
 
 Keep the OAuth token, preferences, and playback state:
 
 ```bash
-./uninstall.sh
+~/.config/omarchy/plugins/vornashev.yandex-music/uninstall.sh
 ```
 
 Remove all local data as well:
 
 ```bash
-./uninstall.sh --purge
+~/.config/omarchy/plugins/vornashev.yandex-music/uninstall.sh --purge
 ```
 
 ## Troubleshooting

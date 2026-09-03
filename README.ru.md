@@ -6,6 +6,28 @@
 
 > Проект использует неофициальную библиотеку [yandex-music-api](https://github.com/MarshalX/yandex-music-api) и не связан с компанией Яндекс. Для воспроизведения полных треков может потребоваться подписка Яндекс Музыки.
 
+## Скриншоты
+
+<p align="center">
+  <img src="preview.webp" alt="Экран «Сейчас играет» Яндекс Музыки в Omarchy" width="900">
+</p>
+
+<p align="center">
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Настройки «Моей волны» в медиатеке Яндекс Музыки" width="49%"></a>
+  <a href="docs/screenshots/search.webp"><img src="docs/screenshots/search.webp" alt="Поиск треков в Яндекс Музыке" width="49%"></a>
+</p>
+<p align="center"><em>Медиатека и поиск</em></p>
+
+<p align="center">
+  <a href="docs/screenshots/settings.webp"><img src="docs/screenshots/settings.webp" alt="Настройки плагина Яндекс Музыки" width="60%"></a>
+</p>
+<p align="center"><em>Встроенные настройки</em></p>
+
+<p align="center">
+  <a href="docs/screenshots/signed-out.webp"><img src="docs/screenshots/signed-out.webp" alt="Экран авторизации через Яндекс Device OAuth" width="60%"></a>
+</p>
+<p align="center"><em>Авторизация через Яндекс Device OAuth</em></p>
+
 ## Возможности
 
 - Нативный мини-плеер в верхнем баре Omarchy
@@ -84,13 +106,13 @@ Backend регистрирует безопасный MPRIS-плеер с наз
 
 ## Установка
 
+Установите и включите плагин стандартной командой Omarchy:
+
 ```bash
-git clone https://github.com/vornashev/omarchy-yandex-music.git
-cd omarchy-yandex-music
-./install.sh
+omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enable
 ```
 
-Установщик не требует `sudo` и создаёт:
+Вручную выполнять `git clone`, `cd` или использовать `sudo` не нужно. При первой загрузке плагин автоматически установит Python-окружение, CLI и пользовательский systemd-сервис. Первичная настройка может занять некоторое время. Будут созданы:
 
 - `~/.config/omarchy/plugins/vornashev.yandex-music/`
 - `~/.local/share/omarchy-yandex-music/`
@@ -113,23 +135,25 @@ cd omarchy-yandex-music
 ## Обновление
 
 ```bash
-cd omarchy-yandex-music
-git pull --ff-only
-./install.sh
+omarchy plugin update vornashev.yandex-music
 ```
 
+Backend обновится автоматически при загрузке обновлённого плагина.
+
 ## Удаление
+
+Используйте скрипт плагина, чтобы вместе с ним удалить фоновый сервис и CLI.
 
 Сохранить OAuth-токен, настройки и состояние воспроизведения:
 
 ```bash
-./uninstall.sh
+~/.config/omarchy/plugins/vornashev.yandex-music/uninstall.sh
 ```
 
 Удалить также все локальные данные:
 
 ```bash
-./uninstall.sh --purge
+~/.config/omarchy/plugins/vornashev.yandex-music/uninstall.sh --purge
 ```
 
 ## Диагностика

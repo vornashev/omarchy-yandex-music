@@ -4,6 +4,19 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.1] - 2026-09-03
+
+### Added
+
+- One-command installation through `omarchy plugin add <url> --enable`
+- Automatic backend, Python environment, CLI, and systemd user-service bootstrap on first load
+- Automatic backend synchronization after `omarchy plugin update`
+- Marketplace-ready preview and documentation screenshot gallery
+
+### Changed
+
+- Installation, updating, and removal documentation now follows the standard Omarchy plugin workflow
+
 ## [0.7.0] - 2026-09-03
 
 ### Added
@@ -72,6 +85,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.4.1...v0.5.0

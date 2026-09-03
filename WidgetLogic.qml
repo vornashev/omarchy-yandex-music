@@ -9,11 +9,13 @@ Item {
   property var anchorItem: null
   property var hostWidget: null
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
+  readonly property string pluginDir: Quickshell.env("HOME") + "/.config/omarchy/plugins/vornashev.yandex-music"
   property var data: ({ title: "", artist: "", playing: false })
   property string statusError: ""
+  property string bootstrapError: ""
   readonly property bool hasTrack: String(data.title || "") !== ""
-  readonly property bool loading: data.loading === true || data.connecting === true || data.restoring === true
-  readonly property string error: statusError || String(data.error || "")
+  readonly property bool loading: bootstrapProcess.running || data.loading === true || data.connecting === true || data.restoring === true
+  readonly property string error: bootstrapError || statusError || String(data.error || "")
   readonly property bool playing: data.playing === true
   readonly property string shortTitle: {
     var title = String(data.title || "")
@@ -60,6 +62,25 @@ Item {
   onSettingsChanged: injectPanel()
   onAnchorItemChanged: injectPanel()
 
+  Component.onCompleted: {
+    bootstrapProcess.command = [pluginDir + "/bootstrap.sh"]
+    bootstrapProcess.running = true
+  }
+
+  Process {
+    id: bootstrapProcess
+    command: []
+    stderr: StdioCollector { id: bootstrapErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode !== 0) {
+        var message = String(bootstrapErr.text || "").trim()
+        root.bootstrapError = message || "Не удалось установить фоновый музыкальный сервис"
+        return
+      }
+      root.bootstrapError = ""
+      settle.restart()
+    }
+  }
   Process {
     id: statusProcess
     command: []

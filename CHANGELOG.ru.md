@@ -4,6 +4,19 @@
 
 Формат основан на [Keep a Changelog](https://keepachangelog.com/ru/1.1.0/).
 
+## [0.7.1] — 2026-09-03
+
+### Добавлено
+
+- Установка одной командой `omarchy plugin add <url> --enable`
+- Автоматическая установка backend, Python-окружения, CLI и пользовательского systemd-сервиса при первом запуске
+- Автоматическая синхронизация backend после `omarchy plugin update`
+- Превью для Marketplace и галерея скриншотов в документации
+
+### Изменено
+
+- Документация по установке, обновлению и удалению теперь соответствует стандартному процессу Omarchy-плагинов
+
 ## [0.7.0] — 2026-09-03
 
 ### Добавлено
@@ -72,6 +85,7 @@
 - Первый публичный релиз
 - Device OAuth, фоновое воспроизведение через `mpv`, медиатека, поиск, очередь и сохранение состояния
 
+[0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.4.1...v0.5.0
