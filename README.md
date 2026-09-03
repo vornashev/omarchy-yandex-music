@@ -58,7 +58,7 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Select any queue item directly
 - Click an individual artist to browse their tracks
 
-Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track.
+Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache.
 
 ### Library
 
@@ -71,7 +71,7 @@ Opening an artist, “My Likes”, or a personal playlist does **not** interrupt
 
 ### Search
 
-Search for tracks and start playback from any result. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly.
+Search for tracks and start playback from any result. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly. Hover the corner loader to see the current operation, elapsed wait time, Yandex Music API latency, and regional availability.
 
 ### Settings
 

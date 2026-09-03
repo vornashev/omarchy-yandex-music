@@ -32,6 +32,7 @@ Panel {
   property int pendingSeek: -1
   property int sentSeek: -1
   property bool seeking: false
+  property int busySeconds: 0
   readonly property real displayPosition: (seeking || seekProcess.running) && pendingSeek >= 0
     ? pendingSeek : Number(data.position || 0)
   readonly property bool authenticated: data.authenticated === true
@@ -55,8 +56,10 @@ Panel {
     : (playbackMode === "repeatTrack" ? "Повтор трека"
     : (playbackMode === "repeatQueue" ? "Повтор очереди" : "По порядку"))
   readonly property bool busy: data.connecting === true || data.restoring === true
-    || data.loading === true || actionProcess.running || settingsProcess.running
+    || data.loading === true || data.libraryLoadingMore === true
+    || actionProcess.running || settingsProcess.running
     || (refreshing && !hasLoadedStatus)
+  readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
   readonly property bool queueListLoading: data.loading === true
     && ["artist", "likes", "playlist", "wave"].indexOf(String(data.loadingKind || "")) >= 0
@@ -69,17 +72,42 @@ Panel {
     if (refreshing && !hasLoadedStatus) return "Проверяем состояние сервиса…"
     if (data.connecting === true) return "Подключаемся к Яндекс Музыке…"
     if (data.restoring === true) return "Восстанавливаем очередь и позицию…"
+    if (data.libraryLoadingMore === true) return "Загружаем следующую страницу…"
     var kind = String(data.loadingKind || "")
     if (kind === "wave") return "Настраиваем «Мою волну»…"
     if (kind === "likes") return "Загружаем любимые треки…"
     if (kind === "playlist") return "Загружаем плейлист…"
     if (kind === "search") return "Ищем треки…"
     if (kind === "artist") return "Загружаем треки исполнителя…"
+    if (kind === "track" && String(data.loadingStage || "") === "downloadInfo")
+      return "Получаем временную ссылку на трек…"
+    if (kind === "track" && String(data.loadingStage || "") === "audioStream")
+      return "Подключаем аудиопоток к mpv…"
     if (kind === "track") return "Подготавливаем трек…"
     if (settingsProcess.running) return "Сохраняем настройки…"
     if (actionProcess.running && lastActionCommand === "like") return "Обновляем отметку «Мне нравится»…"
     if (actionProcess.running) return "Выполняем действие…"
     return "Загрузка…"
+  }
+  readonly property string loaderTooltip: {
+    var lines = ["Сейчас: " + loadingMessage]
+    if (busySeconds > 0) lines.push("Ожидание: " + busySeconds + " с")
+    if (networkInfo.checking === true) {
+      lines.push("API Яндекс Музыки: проверяем…")
+    } else if (networkInfo.available === true) {
+      var latency = Number(networkInfo.latencyMs || 0)
+      lines.push("API Яндекс Музыки: доступно" + (latency > 0 ? " · " + latency + " мс" : ""))
+      if (networkInfo.serviceAvailable === false)
+        lines.push("Музыка недоступна для текущего региона")
+      else if (networkInfo.serviceAvailable === true)
+        lines.push("Музыка доступна для текущего региона")
+    } else if (networkInfo.available === false) {
+      lines.push("API Яндекс Музыки: недоступно"
+        + (networkInfo.error ? " · " + networkInfo.error : ""))
+    } else {
+      lines.push("API Яндекс Музыки: ещё не проверено")
+    }
+    return lines.join("\n")
   }
   property int previousQueueIndex: 0
 
@@ -93,6 +121,11 @@ Panel {
     Quickshell.execDetached(["bash", "-c", "printf %s " + Util.shellQuote(code) + " | wl-copy"])
     copiedAuthCode = code
     authCodeCopiedTimer.restart()
+  }
+  function checkNetwork() {
+    if (networkProcess.running) return
+    networkProcess.command = [cli, "network"]
+    networkProcess.running = true
   }
   function setPreference(key, value) {
     if (settingsProcess.running) return
@@ -127,6 +160,12 @@ Panel {
     if (statusProcess.running) return
     refreshing = true; statusProcess.command = [cli, "details"]; statusProcess.running = true
   }
+  function maybeLoadMoreLibrary() {
+    if (!root.browsingLibrary || root.data.libraryHasMore !== true
+        || root.data.libraryLoadingMore === true || actionProcess.running) return
+    if (queueList.contentY + queueList.height >= queueList.contentHeight - Style.space(50))
+      root.action("load_more_library")
+  }
   function action(command, argument) {
     if (actionProcess.running) return
     lastActionCommand = command
@@ -135,11 +174,15 @@ Panel {
     errorSource = ""
     var loadingKinds = { "artist": "artist", "likes": "likes", "playlist": "playlist",
       "wave": "wave", "search": "search" }
-    if (loadingKinds[command] !== undefined) {
+    if (loadingKinds[command] !== undefined || command === "load_more_library") {
       var optimistic = {}
       for (var key in data) optimistic[key] = data[key]
-      optimistic.loading = true
-      optimistic.loadingKind = loadingKinds[command]
+      if (loadingKinds[command] !== undefined) {
+        optimistic.loading = true
+        optimistic.loadingKind = loadingKinds[command]
+      } else {
+        optimistic.libraryLoadingMore = true
+      }
       optimistic.error = ""
       data = optimistic
     }
@@ -181,6 +224,12 @@ Panel {
       var queueChanged = Number(parsed.queueIndex || 0) !== previousQueueIndex
       var browseChanged = String(parsed.artistBrowseName || "") !== String(data.artistBrowseName || "")
         || String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
+      var previousContentY = queueList.contentY
+      var libraryExpanded = (parsed.libraryTracks || []).length > (data.libraryTracks || []).length
+      if (Number(parsed.libraryRevision || 0) === Number(data.libraryRevision || 0))
+        parsed.libraryTracks = data.libraryTracks || []
+      if (!queueChanged && Number(parsed.queueRevision || 0) === Number(data.queueRevision || 0))
+        parsed.queueTracks = data.queueTracks || []
       if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
         parsed.muted = false
@@ -196,19 +245,21 @@ Panel {
       if (browseChanged && (String(parsed.artistBrowseName || "") !== ""
           || String(parsed.libraryBrowseName || "") !== ""))
         Qt.callLater(function() { queueList.contentY = 0 })
+      else if (libraryExpanded)
+        Qt.callLater(function() {
+          queueList.contentY = Math.min(previousContentY,
+            Math.max(0, queueList.contentHeight - queueList.height))
+        })
     } catch (e) {
       errorSource = "status"
       lastError = "Музыкальный сервис вернул некорректный ответ"
     }
   }
   function scrollToCurrentTrack() {
-    if (page !== 0 || browsingCollection || !queueRepeater || !queueList) return
+    if (page !== 0 || browsingCollection || !queueList) return
     var index = Number(data.queueIndex || 0) - 1
-    var item = queueRepeater.itemAt(index)
-    if (!item) return
-    var point = item.mapToItem(queueList.contentItem, 0, 0)
-    var maximum = Math.max(0, queueList.contentHeight - queueList.height)
-    queueList.contentY = Math.min(maximum, Math.max(0, point.y))
+    if (index >= 0 && index < queueList.count)
+      queueList.positionViewAtIndex(index, ListView.Contain)
   }
   function selectPage(index) {
     settingsOpen = false
@@ -217,6 +268,8 @@ Panel {
     if (page === 0) queueScrollTimer.restart()
     if (page === 2) Qt.callLater(function() { searchField.forceActiveFocus() })
   }
+
+  onBusyChanged: if (busy) busySeconds = 0
 
   onOpenedChanged: {
     if (opened) {
@@ -239,6 +292,20 @@ Panel {
       else {
         root.errorSource = "status"
         root.lastError = String(statusErr.text || "Фоновый музыкальный сервис недоступен")
+      }
+    }
+  }
+  Process {
+    id: networkProcess; command: []
+    stdout: StdioCollector { id: networkOut; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0) {
+        try {
+          var copy = {}
+          for (var key in root.data) copy[key] = root.data[key]
+          copy.network = JSON.parse(networkOut.text || "{}")
+          root.data = copy
+        } catch (e) {}
       }
     }
   }
@@ -314,6 +381,20 @@ Panel {
   }
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
+  Timer {
+    id: busyDurationTimer
+    interval: 1000
+    repeat: true
+    running: root.busy
+    onTriggered: root.busySeconds += 1
+  }
+  Timer {
+    id: apiProbeDelay
+    interval: 1800
+    repeat: false
+    running: root.busy
+    onTriggered: root.checkNetwork()
+  }
   Timer {
     id: authCodeCopiedTimer
     interval: 1800
@@ -829,8 +910,10 @@ Panel {
                   visible: !root.queueListLoading
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.browsingCollection ? String(root.trackListDisplay.length)
-                    : (root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : "")
+                  text: root.browsingLibrary && Number(root.data.libraryTotal || 0) > root.trackListDisplay.length
+                    ? root.trackListDisplay.length + "/" + Number(root.data.libraryTotal || 0)
+                    : (root.browsingCollection ? String(root.trackListDisplay.length)
+                    : (root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : ""))
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption
                 }
@@ -871,103 +954,105 @@ Panel {
                 foreground: root.foreground
               }
 
-              Flickable {
+              ListView {
                 id: queueList
                 visible: !root.queueListLoading && root.trackListDisplay.length > 0
                 width: parent.width
                 height: visible ? Style.space(260) : 0
-                contentWidth: width
-                contentHeight: queueColumn.implicitHeight
                 clip: true
+                model: root.trackListDisplay
                 boundsBehavior: Flickable.StopAtBounds
-                flickableDirection: Flickable.VerticalFlick
                 interactive: contentHeight > height
+                cacheBuffer: height
                 ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                onContentYChanged: root.maybeLoadMoreLibrary()
+                onMovementEnded: root.maybeLoadMoreLibrary()
 
-                Column {
-                  id: queueColumn
+                delegate: BorderSurface {
+                  id: queueRow
+                  required property var modelData
                   width: queueList.width - (queueList.contentHeight > queueList.height ? Style.space(8) : 0)
-                  spacing: 0
+                  height: Style.space(50)
+                  radius: Style.cornerRadius
+                  color: modelData.current
+                    ? Style.selectedFillFor(root.foreground, Color.accent)
+                    : (queueMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
+                  borderSpec: modelData.current
+                    ? Border.controlSpec("normal", root.foreground, Color.accent)
+                    : Border.none()
 
-                  Repeater {
-                    id: queueRepeater
-                    model: root.trackListDisplay
-                    BorderSurface {
-                      id: queueRow
-                      required property var modelData
-                      width: queueColumn.width
-                      height: Style.space(50)
-                      radius: Style.cornerRadius
-                      color: modelData.current
-                        ? Style.selectedFillFor(root.foreground, Color.accent)
-                        : (queueMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
-                      borderSpec: modelData.current
-                        ? Border.controlSpec("normal", root.foreground, Color.accent)
-                        : Border.none()
+                  Row {
+                    z: 1
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter; spacing: Style.space(9)
 
-                      Row {
-                        z: 1
-                        anchors.left: parent.left; anchors.right: parent.right
-                        anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
-                        anchors.verticalCenter: parent.verticalCenter; spacing: Style.space(9)
-
-                        Text {
-                          width: Style.space(18); anchors.verticalCenter: parent.verticalCenter
-                          horizontalAlignment: Text.AlignHCenter
-                          text: modelData.current ? (root.playing ? "󰏤" : "󰐊") : String(modelData.index + 1)
-                          color: modelData.current ? Color.accent : root.dim
-                          font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                        }
-                        Column {
-                          width: parent.width - Style.space(76); anchors.verticalCenter: parent.verticalCenter; spacing: 1
-                          Text {
-                            width: parent.width; text: modelData.title; elide: Text.ElideRight
-                            color: root.foreground; font.family: root.fontFamily
-                            font.pixelSize: Style.font.bodySmall; font.bold: modelData.current
-                          }
-                          Item {
-                            width: parent.width
-                            height: Style.space(14)
-                            clip: true
-                            Row {
-                              anchors.left: parent.left
-                              anchors.verticalCenter: parent.verticalCenter
-                              spacing: 0
-                              Repeater {
-                                model: queueRow.modelData.artists || []
-                                Text {
-                                  id: queueArtistLink
-                                  required property var modelData
-                                  required property int index
-                                  text: modelData.name + (index < (queueRow.modelData.artists || []).length - 1 ? ", " : "")
-                                  color: queueArtistMouse.containsMouse ? Color.accent : root.dim
-                                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                                  MouseArea {
-                                    id: queueArtistMouse; anchors.fill: parent
-                                    hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                    onClicked: root.action("artist", queueArtistLink.modelData.id)
-                                  }
-                                }
+                    Text {
+                      width: Style.space(18); anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignHCenter
+                      text: modelData.current ? (root.playing ? "󰏤" : "󰐊") : String(modelData.index + 1)
+                      color: modelData.current ? Color.accent : root.dim
+                      font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    }
+                    Column {
+                      width: parent.width - Style.space(76); anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                      Text {
+                        width: parent.width; text: modelData.title; elide: Text.ElideRight
+                        color: root.foreground; font.family: root.fontFamily
+                        font.pixelSize: Style.font.bodySmall; font.bold: modelData.current
+                      }
+                      Item {
+                        width: parent.width
+                        height: Style.space(14)
+                        clip: true
+                        Row {
+                          anchors.left: parent.left
+                          anchors.verticalCenter: parent.verticalCenter
+                          spacing: 0
+                          Repeater {
+                            model: queueRow.modelData.artists || []
+                            Text {
+                              id: queueArtistLink
+                              required property var modelData
+                              required property int index
+                              text: modelData.name + (index < (queueRow.modelData.artists || []).length - 1 ? ", " : "")
+                              color: queueArtistMouse.containsMouse ? Color.accent : root.dim
+                              font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                              MouseArea {
+                                id: queueArtistMouse; anchors.fill: parent
+                                hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                                onClicked: root.action("artist", queueArtistLink.modelData.id)
                               }
                             }
                           }
                         }
-                        Text {
-                          width: Style.space(40); anchors.verticalCenter: parent.verticalCenter
-                          horizontalAlignment: Text.AlignRight; text: root.formatTime(modelData.duration)
-                          color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                        }
-                      }
-                      MouseArea {
-                        id: queueMouse; anchors.fill: parent; hoverEnabled: true
-                        cursorShape: Qt.PointingHandCursor
-                        onClicked: {
-                          if (root.browsingArtist) root.action("play_artist_track", modelData.index)
-                          else if (root.browsingLibrary) root.action("play_library_track", modelData.index)
-                          else if (!modelData.current) root.action("play_queue", modelData.index)
-                        }
                       }
                     }
+                    Text {
+                      width: Style.space(40); anchors.verticalCenter: parent.verticalCenter
+                      horizontalAlignment: Text.AlignRight; text: root.formatTime(modelData.duration)
+                      color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    }
+                  }
+                  MouseArea {
+                    id: queueMouse; anchors.fill: parent; hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: {
+                      if (root.browsingArtist) root.action("play_artist_track", modelData.index)
+                      else if (root.browsingLibrary) root.action("play_library_track", modelData.index)
+                      else if (!modelData.current) root.action("play_queue", modelData.index)
+                    }
+                  }
+                }
+
+                footer: Item {
+                  width: queueList.width
+                  height: root.data.libraryLoadingMore === true ? Style.space(36) : 0
+                  Text {
+                    visible: root.data.libraryLoadingMore === true
+                    anchors.centerIn: parent
+                    text: "󰔟  Загружаем ещё 50…"
+                    color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
                   }
                 }
               }
@@ -1408,8 +1493,13 @@ Panel {
         anchors.fill: parent
         hoverEnabled: true
         cursorShape: Qt.ArrowCursor
-        onEntered: if (root.bar) root.bar.showTooltip(cornerLoader, root.loadingMessage)
-        onExited: if (root.bar) root.bar.hideTooltip(cornerLoader)
+        onEntered: root.checkNetwork()
+      }
+
+      PanelToolTip {
+        visible: cornerLoaderMouse.containsMouse
+        text: root.loaderTooltip
+        fontFamily: root.fontFamily
       }
     }
   }

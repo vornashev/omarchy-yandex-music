@@ -4,6 +4,21 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.7.3] - 2026-09-03
+
+### Added
+
+- Lazy loading for “My Likes” and personal playlists in pages of 50 tracks
+- In-memory collection cache that instantly restores previously loaded playlist pages
+- Loader tooltip with the current operation, elapsed wait time, API latency, and regional availability
+
+### Changed
+
+- Collection metadata is fetched in batches instead of one API request per track
+- The queue/list renderer is virtualized, avoiding hundreds of simultaneous QML delegates
+- Playback started from a partially loaded collection extends its queue in the background while preserving source order
+- Collection cache entries expire after 10 minutes and use an eight-entry LRU limit
+
 ## [0.7.2] - 2026-09-03
 
 ### Added
@@ -92,6 +107,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.7.3]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2
 [0.7.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.0...v0.7.1
 [0.7.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.6.0...v0.7.0
