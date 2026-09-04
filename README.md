@@ -34,7 +34,7 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 - Background playback without an open browser
 - Now Playing, Library, and a unified Search catalog for tracks, artists, albums, and playlists
 - “My Wave” with mood, discovery, language controls, and recommendation feedback
-- Likes, “Do not recommend”, personal playlists, and individual clickable artists
+- Likes, “Do not recommend”, user and generated playlists, listening history, favorite entities, and radio stations
 - Synced lyrics with active-line highlighting, auto-scroll, and click-to-seek
 - Track radio with a sequence of similar recommendations and radio feedback
 - On-demand release details and recording credits
@@ -71,8 +71,12 @@ Opening “My Likes” or a personal library playlist does **not** interrupt the
 
 ### Library
 
-- Browse “My Likes” without autoplay
-- Browse personal playlists without autoplay
+- Browse “My Likes” and owned playlists without autoplay
+- Lazily loaded generated mixes: Playlist of the Day, Missed Likes, Premiere, and Deja Vu
+- A Recently Played section whose tracks and listening contexts load in pages of 50 items
+- Favorite albums, artists, and saved third-party playlists linked to the existing catalog pages
+- A catalog of available genre, activity, mood, and other stations; a queue starts only after an explicit station selection
+- Sections and fetched data use bounded memory-only caches cleared on sign-out or backend restart
 - Expand “My Wave” and configure:
   - mood: any, fun, active, calm, or sad
   - selection: balanced, favorites, popular, or discovery

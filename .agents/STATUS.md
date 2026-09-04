@@ -30,13 +30,16 @@
 - Тексты загружаются по требованию отдельным IPC snapshot, не входят в `status`/`details`, не меняют общую ошибку плеера и кэшируются только в памяти максимум для восьми треков.
 - Добавлена кнопка `radio_tower` для «Радио по треку»: backend запрашивает `track:<currentTrackId>`, запускает очередь ответа и продолжает её через общий feedback/batch protocol.
 - Завершён этап 2 roadmap: иконка информации открывает on-demand карточку альбома, релиза, жанра, лейблов, позиции трека, версии, описания и credits; данные имеют отдельный in-memory LRU-кэш на восемь треков и локальные partial-error/retry состояния.
-- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск track station, track info/credits/cache и Stage 3 Catalog; всего 35 backend-тестов проходят.
+- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск radio stations, track info/credits/cache, Stage 3 Catalog и Stage 4 Library; всего 43 backend-теста проходят.
 - Реализован Stage 3 Catalog: типизированный и секционный поиск `all`, подсказки через 300 ms, append+dedupe pagination, страницы альбома/исполнителя/плейлиста без автозапуска, независимые Albums/Singles и возврат к сохранённой выдаче.
 - Все artist/album links панели и `WidgetLogic.showArtist()` переведены на вкладку «Поиск» (page 2); legacy artist list удалён из области очереди «Сейчас».
 - Catalog API использует только синхронный pinned SDK через общий `_api_call()`/`api_lock`; responses защищены generation/client guards, entity cache хранится только в памяти и очищается при logout.
 - Очередь популярных треков исполнителя хранит artist/page/hasMore, заранее догружает следующие страницы по 20 элементов и после 20-го трека переходит к 21-му вместо повтора первой страницы.
 - Artist page показывает секции в порядке popular → albums → singles → similar, ограничивает similar десятью строками, не предлагает лишнюю страницу при известном total и сохраняет прокрутку при догрузке.
-- Добавлены `CatalogController.qml`, `CatalogImage.qml` и 14 проходящих QML checks для debounce/loading, stale suggestions, клавиатурной навигации, секций, append/load more, back-state, explicit playback и image retry.
+- Добавлены `CatalogController.qml`, `CatalogImage.qml`, `LibraryController.qml` и 23 проходящих QML checks для debounce/loading, stale suggestions, клавиатурной навигации, catalog/library sections, append/load more, back-state, explicit playback и image retry.
+- Реализован Stage 4 Library: ленивые разделы Плейлиста дня/Тайника/Премьеры/Дежавю, истории, любимых альбомов/исполнителей, сохранённых плейлистов и доступных радиостанций.
+- Stage 4 API проходит через `_api_call()`/`api_lock`, защищён от stale client/generation, хранит section snapshots только в ограниченном десятиминутном in-memory cache и не добавляет тяжёлые rows в частый `status`.
+- История запрашивает лёгкий индекс без full models и дополняет модели `music_history_items()` страницами `50 + 50 + остаток`; entity navigation не запускает звук, а history tracks/generated playlists/stations требуют явного выбора. Back из любимой сущности возвращает в медиатеку.
 - Безопасный реальный smoke test `track_info` подтвердил полный ответ без ошибки: присутствуют album/release/genre, два label и пять credit rows; значения полей в диагностический вывод не печатались. UI карточки ожидает ручной визуальной проверки.
 - Владелец подтвердил отображение текста на реальном LRC-треке и заметил запаздывание подсветки. Причина устранена: backend публикует дробную позицию mpv с `positionObservedAt`, Panel интерполирует её каждые 100 ms между секундными обновлениями. Повторная визуальная проверка синхронности ожидается.
 - Новые backend/QML установлены локально; service active, shell ping проходит, QML runtime-ошибок после рестарта нет.
@@ -76,6 +79,7 @@
 - Вручную запустить «Радио по треку» обычным прослушиванием и проверить старт очереди, её название, переходы Next и ленивое продолжение; не создавать искусственную нагрузку и не дизлайкать треки без необходимости.
 - Открыть карточку «О ТРЕКЕ» и визуально проверить строки, прокрутку, credits, переключение между очередью/текстом/info и обновление при смене трека.
 - Вручную проверить Stage 3 Catalog на реальном аккаунте: suggestions, все пять фильтров, load more, album/artist/playlist pages, Back-state и отсутствие autoplay при открытии сущностей; не печатать пользовательские результаты в логи.
+- Вручную проверить Stage 4 Library на реальном аккаунте: шесть ленивых разделов, generated playlists, history batch, возврат из любимых сущностей, запуск станции и отсутствие autoplay до явного выбора; не выводить историю или коллекции в логи.
 - После v0.7.4 отслеживать реальные ответы API при 429 и корректность синхронизации больших очередей «Мне нравится».
 - Для проблемного пользователя сначала подтвердить, что и manifest, и marker имеют актуальную версию, затем повторить после истечения старого rate limit.
 - Marketplace submission остаётся отдельной задачей и заблокирован до подтверждения checklist.
@@ -92,4 +96,4 @@
 - v0.7.2: копирование OAuth-кода.
 - v0.7.3: пагинация 50, batch metadata, виртуализация, lazy queue extension, in-memory cache и network diagnostics.
 - v0.7.4: версия в настройках, 429 backoff/serialization/friendly error, coalesced likes, live likes list/queue/cache update, стабильная прокрутка очереди и отдельная прокрутка поиска.
-- v0.8.0 (локально, не опубликовано): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync, этап 2 (LRC/TEXT, «Радио по треку», сведения/credits) и Stage 3 Catalog.
+- v0.8.0 (локально, не опубликовано): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync, этап 2 (LRC/TEXT, «Радио по треку», сведения/credits), Stage 3 Catalog и Stage 4 Library/Personalization.

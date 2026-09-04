@@ -498,6 +498,10 @@ class CatalogTests(unittest.TestCase):
         player.track_info_cache = OrderedDict(); player.track_info_loading = set(); player.track_info_generation = 0
         player.library_source = []; player.library_offset = 0; player.library_generation = 0; player.library_revision = 0
         player.active_library_cache_key = ""; player.collection_cache = {}
+        player.library_hub_generation = 0; player.library_hub_revision = 0
+        player.library_hub = player._empty_library_hub(); player.library_hub_tracks = []
+        player.library_hub_source = []; player.library_hub_offset = 0
+        player.library_hub_cache = OrderedDict(); player.personal_playlist_models = {}
         player.liked_ids = set(); player.liked_rows = []; player.liked_rows_at = 0; player.disliked_ids = set()
         player.queue_source = []; player.queue_extending = False; player.queue_advance_pending = False
         player.queue_generation = 0; player.queue_revision = 0; player.queue_collection_key = ""
@@ -517,6 +521,10 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(player.catalog_cache, OrderedDict())
         self.assertEqual(player.catalog_search_models["tracks"], [])
         self.assertEqual(player.catalog["suggestions"]["items"], [])
+        self.assertEqual(player.library_hub_cache, OrderedDict())
+        self.assertEqual(player.library_hub_tracks, [])
+        self.assertEqual(player.library_hub["view"], "home")
+        self.assertEqual(player.personal_playlist_models, {})
 
 
 if __name__ == "__main__":

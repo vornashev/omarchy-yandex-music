@@ -74,6 +74,15 @@ CATALOG_TRACK_PAGE_SIZE = 50
 CATALOG_CACHE_MAX_ENTRIES = 12
 CATALOG_TYPES = ("all", "track", "artist", "album", "playlist")
 CATALOG_SECTIONS = ("tracks", "artists", "albums", "playlists")
+LIBRARY_HUB_SECTIONS = ("personal", "history", "albums", "artists", "playlists", "stations")
+PERSONAL_PLAYLISTS = (
+    ("daily", "Плейлист дня"),
+    ("missedLikes", "Тайник"),
+    ("recentTracks", "Премьера"),
+    ("neverHeard", "Дежавю"),
+)
+LIBRARY_HUB_CACHE_TTL = 10 * 60
+LIBRARY_HUB_CACHE_MAX_ENTRIES = len(LIBRARY_HUB_SECTIONS)
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -126,6 +135,16 @@ class MprisPlayer(ServiceInterface):
         with self.player.lock:
             return dict(self.player.state)
 
+    @staticmethod
+    def _int(value: Any, fallback: int = 0) -> int:
+        try: return int(value)
+        except (TypeError, ValueError): return fallback
+
+    @staticmethod
+    def _float(value: Any, fallback: float = 0.0) -> float:
+        try: return float(value)
+        except (TypeError, ValueError): return fallback
+
     @method()
     def Next(self): self.player.next()
 
@@ -149,11 +168,11 @@ class MprisPlayer(ServiceInterface):
     @method()
     def Seek(self, offset: "x"):
         state = self._state()
-        self.player.seek(int(state.get("position", 0)) + int(offset) // 1_000_000)
+        self.player.seek(self._int(state.get("position", 0)) + self._int(offset) // 1_000_000)
 
     @method()
     def SetPosition(self, track_id: "o", position: "x"):
-        if track_id == self._track_path(): self.player.seek(int(position) // 1_000_000)
+        if track_id == self._track_path(): self.player.seek(self._int(position) // 1_000_000)
 
     @method()
     def OpenUri(self, uri: "s"): pass
@@ -205,20 +224,20 @@ class MprisPlayer(ServiceInterface):
             "xesam:title": Variant("s", str(state.get("title", ""))),
             "xesam:artist": Variant("as", [str(a.get("name", "")) for a in state.get("artists", [])]),
             "xesam:album": Variant("s", str(state.get("album", ""))),
-            "mpris:length": Variant("x", int(state.get("duration", 0)) * 1_000_000),
+            "mpris:length": Variant("x", self._int(state.get("duration", 0)) * 1_000_000),
         }
         art_url = str(state.get("artUrl", ""))
         if art_url: metadata["mpris:artUrl"] = Variant("s", art_url)
         return metadata
 
     @dbus_property(access=PropertyAccess.READWRITE)
-    def Volume(self) -> "d": return float(self.player.volume) / 100
+    def Volume(self) -> "d": return self._float(self.player.volume) / 100
 
     @Volume.setter
     def Volume(self, value: "d") -> None: self.player.set_volume(round(value * 100))
 
     @dbus_property(access=PropertyAccess.READ)
-    def Position(self) -> "x": return int(self._state().get("position", 0)) * 1_000_000
+    def Position(self) -> "x": return self._int(self._state().get("position", 0)) * 1_000_000
 
     @dbus_property(access=PropertyAccess.READ)
     def MinimumRate(self) -> "d": return 1.0
@@ -309,6 +328,14 @@ class Player:
         self.queue_advance_automatic = False
         self.detached_track: Any | None = None
         self.library_revision = 0
+        self.library_hub_generation = 0
+        self.library_hub_revision = 0
+        self.library_hub = self._empty_library_hub()
+        self.library_hub_tracks: list[Any] = []
+        self.library_hub_source: list[tuple[Any, str]] = []
+        self.library_hub_offset = 0
+        self.library_hub_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.personal_playlist_models: dict[str, Any] = {}
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
@@ -730,6 +757,10 @@ class Player:
             self.library_source = []; self.library_offset = 0
             self.library_generation += 1; self.library_revision += 1
             self.active_library_cache_key = ""; self.collection_cache = {}
+            self.library_hub_generation += 1; self.library_hub_revision += 1
+            self.library_hub = self._empty_library_hub(); self.library_hub["revision"] = self.library_hub_revision
+            self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
+            self.library_hub_cache.clear(); self.personal_playlist_models.clear()
             self.liked_ids = set(); self.liked_rows = []; self.liked_rows_at = 0
             self.disliked_ids = set()
             self.queue = []; self.queue_source = []; self.queue_extending = False
@@ -1415,6 +1446,418 @@ class Player:
                     self.state["libraryLoadingMore"] = False
                 self._set_error(f"Не удалось загрузить следующую страницу: {exc}")
         threading.Thread(target=load, daemon=True).start()
+
+    @staticmethod
+    def _empty_library_hub() -> dict[str, Any]:
+        return {"view": "home", "section": "", "loading": False,
+                "loadingMore": False, "hasMore": False, "total": 0,
+                "error": "", "warning": "", "items": [], "revision": 0}
+
+    def _library_hub_touch_locked(self) -> None:
+        self.library_hub_revision += 1
+        self.library_hub["revision"] = self.library_hub_revision
+
+    def _library_hub_current(self, client: Any, generation: int) -> bool:
+        return self.client is client and generation == self.library_hub_generation
+
+    @classmethod
+    def _station_metadata(cls, result: Any) -> dict[str, Any]:
+        station = getattr(result, "station", None) or result
+        station_id = getattr(station, "id", None)
+        type_ = cls._text(getattr(station_id, "type", ""))
+        tag = cls._text(getattr(station_id, "tag", ""))
+        identifier = type_ + ":" + tag if type_ and tag else cls._text(
+            getattr(station, "id_for_from", ""))
+        icon = getattr(station, "icon", None)
+        art_url = cls._text(getattr(station, "full_image_url", "")
+                            or getattr(icon, "image_url", ""))
+        if art_url:
+            art_url = art_url.replace("%%", "400x400")
+            if art_url.startswith("//"): art_url = "https:" + art_url
+            elif not art_url.startswith(("http://", "https://")):
+                art_url = "https://" + art_url.lstrip("/")
+        return {"entityType": "station", "stationId": identifier,
+                "title": cls._text(getattr(station, "name", "")
+                                   or getattr(result, "rup_title", "")
+                                   or getattr(result, "custom_name", "") or "Радиостанция"),
+                "subtitle": cls._text(getattr(result, "explanation", "")
+                                      or getattr(result, "rup_description", "")),
+                "artUrl": art_url}
+
+    @classmethod
+    def _history_item_key(cls, item: Any) -> str:
+        type_ = cls._text(getattr(item, "type", ""))
+        data = getattr(item, "data", None)
+        item_id = getattr(data, "item_id", None)
+        if type_ == "track":
+            return f"track:{cls._text(getattr(item_id, 'track_id', ''))}:{cls._text(getattr(item_id, 'album_id', ''))}"
+        if type_ == "playlist":
+            return f"playlist:{cls._text(getattr(item_id, 'uid', ''))}:{cls._text(getattr(item_id, 'kind', ''))}"
+        if type_ == "wave":
+            return "wave:" + ":".join(cls._text(value) for value in cls._safe_rows(
+                getattr(item_id, "seeds", None)))
+        return type_ + ":" + cls._text(getattr(item_id, "id", ""))
+
+    def _history_source(self, client: Any) -> list[tuple[Any, str]]:
+        history = self._api_call(lambda: client.music_history(full_models_count=0),
+                                 update_loading=False)
+        raw: list[tuple[Any, str]] = []
+        seen: set[str] = set()
+        for tab in self._safe_rows(getattr(history, "history_tabs", None)):
+            date = self._text(getattr(tab, "date", ""))
+            for group in self._safe_rows(getattr(tab, "items", None)):
+                values = []
+                context = getattr(group, "context", None)
+                if context is not None: values.append(context)
+                values.extend(self._safe_rows(getattr(group, "tracks", None)))
+                for item in values:
+                    key = self._history_item_key(item)
+                    if key and key not in seen:
+                        seen.add(key); raw.append((item, date))
+        return raw
+
+    def _history_items(self, client: Any, raw: list[tuple[Any, str]],
+                       track_index_offset: int = 0) -> tuple[list[dict[str, Any]], list[Any], str]:
+        missing = [(item, date) for item, date in raw
+                   if getattr(getattr(item, "data", None), "full_model", None) is None]
+        warning = ""
+        if missing:
+            track_ids: list[tuple[str, str]] = []
+            album_ids: list[str] = []
+            artist_ids: list[str] = []
+            playlist_ids: list[tuple[str, str]] = []
+            wave_seeds: list[list[str]] = []
+            for item, _date in missing:
+                type_ = self._text(getattr(item, "type", ""))
+                item_id = getattr(getattr(item, "data", None), "item_id", None)
+                if type_ == "track":
+                    track_id = self._text(getattr(item_id, "track_id", ""))
+                    album_id = self._text(getattr(item_id, "album_id", ""))
+                    if track_id: track_ids.append((track_id, album_id))
+                elif type_ == "album":
+                    value = self._text(getattr(item_id, "id", ""))
+                    if value: album_ids.append(value)
+                elif type_ == "artist":
+                    value = self._text(getattr(item_id, "id", ""))
+                    if value: artist_ids.append(value)
+                elif type_ == "playlist":
+                    owner = self._text(getattr(item_id, "uid", ""))
+                    kind = self._text(getattr(item_id, "kind", ""))
+                    if owner and kind: playlist_ids.append((owner, kind))
+                elif type_ == "wave":
+                    seeds = [self._text(value) for value in self._safe_rows(
+                        getattr(item_id, "seeds", None)) if self._text(value)]
+                    if seeds: wave_seeds.append(seeds)
+            try:
+                resolved = self._api_call(lambda: client.music_history_items(
+                    track_ids=track_ids or None, album_ids=album_ids or None,
+                    artist_ids=artist_ids or None, playlist_ids=playlist_ids or None,
+                    wave_seeds=wave_seeds or None), update_loading=False)
+                by_key = {self._history_item_key(item): item for item in self._safe_rows(
+                    getattr(resolved, "items", None))}
+                raw = [(by_key.get(self._history_item_key(item), item), date)
+                       if getattr(getattr(item, "data", None), "full_model", None) is None
+                       else (item, date) for item, date in raw]
+            except Exception:
+                warning = "Некоторые элементы истории пока недоступны."
+
+        rows: list[dict[str, Any]] = []
+        tracks: list[Any] = []
+        seen: set[str] = set()
+        for item, date in raw:
+            key = self._history_item_key(item)
+            if not key or key in seen: continue
+            seen.add(key)
+            type_ = self._text(getattr(item, "type", ""))
+            data = getattr(item, "data", None)
+            item_id = getattr(data, "item_id", None)
+            full_model = getattr(data, "full_model", None)
+            if type_ == "track":
+                track = full_model
+                if track is None or not getattr(track, "id", None): continue
+                index = track_index_offset + len(tracks); tracks.append(track)
+                rows.append({**self._metadata(track), "entityType": "track",
+                             "trackIndex": index, "historyDate": date})
+                continue
+            container = full_model
+            if type_ == "album":
+                model = getattr(container, "album", None)
+                if model is None and getattr(container, "id", None): model = container
+                row = self._album_metadata(model) if model is not None else {
+                    "entityType": "album", "id": self._text(getattr(item_id, "id", "")),
+                    "title": "Альбом", "artUrl": ""}
+            elif type_ == "artist":
+                model = getattr(container, "artist", None)
+                if model is None and getattr(container, "id", None): model = container
+                row = self._artist_metadata(model) if model is not None else {
+                    "entityType": "artist", "id": self._text(getattr(item_id, "id", "")),
+                    "name": "Исполнитель", "artUrl": ""}
+            elif type_ == "playlist":
+                model = getattr(container, "playlist", None)
+                row = self._playlist_metadata(model) if model is not None else {
+                    "entityType": "playlist", "uuid": "",
+                    "owner": self._text(getattr(item_id, "uid", "")),
+                    "kind": self._text(getattr(item_id, "kind", "")),
+                    "title": "Плейлист", "artUrl": "", "trackCount": 0}
+            elif type_ == "wave":
+                seeds = [self._text(value) for value in self._safe_rows(
+                    getattr(item_id, "seeds", None)) if self._text(value)]
+                station_id = seeds[0] if seeds else ""
+                wave = getattr(container, "wave", None)
+                row = {"entityType": "station", "stationId": station_id,
+                       "title": self._text(getattr(wave, "title", "") or "Радио из истории"),
+                       "subtitle": "", "artUrl": self._text(
+                           getattr(container, "simple_wave_foreground_image_url", ""))}
+            else:
+                continue
+            row["historyDate"] = date
+            rows.append(row)
+        return rows, tracks, warning
+
+    def library_section(self, section: str, *, force: bool = False) -> None:
+        section = self._text(section)
+        if section not in LIBRARY_HUB_SECTIONS: return
+        with self.lock:
+            client = self.client
+            if not client: return
+            self.library_hub_generation += 1
+            generation = self.library_hub_generation
+            cached = None if force else self.library_hub_cache.get(section)
+            if cached and time.monotonic() - self._float(cached.get("storedAt", 0)) <= LIBRARY_HUB_CACHE_TTL:
+                cached["accessedAt"] = time.monotonic()
+                self.library_hub_tracks = list(cached.get("tracks", []))
+                self.library_hub_source = list(cached.get("source", []))
+                self.library_hub_offset = min(self._int(cached.get("offset", 0)),
+                                              len(self.library_hub_source))
+                self.library_hub = {"view": "section", "section": section, "loading": False,
+                    "loadingMore": False,
+                    "hasMore": self.library_hub_offset < len(self.library_hub_source),
+                    "total": len(self.library_hub_source) if self.library_hub_source
+                    else len(cached.get("items", [])),
+                    "error": "", "warning": str(cached.get("warning", "")),
+                    "items": copy.deepcopy(cached.get("items", [])), "revision": 0}
+                self._library_hub_touch_locked()
+                return
+            self.library_hub = {"view": "section", "section": section, "loading": True,
+                "loadingMore": False, "hasMore": False, "total": 0,
+                "error": "", "warning": "", "items": [], "revision": 0}
+            self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
+            self._library_hub_touch_locked()
+
+        def load() -> None:
+            items: list[dict[str, Any]] = []
+            tracks: list[Any] = []
+            warning = ""
+            source: list[tuple[Any, str]] = []
+            offset = 0
+            personal_models: dict[str, Any] = {}
+            try:
+                if section == "personal":
+                    failures = 0
+                    for playlist_id, fallback_title in PERSONAL_PLAYLISTS:
+                        try:
+                            generated = self._api_call(
+                                lambda value=playlist_id: client.playlists_personal(value),
+                                update_loading=False)
+                            playlist = getattr(generated, "data", None)
+                            if playlist is None:
+                                failures += 1
+                                continue
+                            personal_models[playlist_id] = playlist
+                            items.append({**self._playlist_metadata(playlist),
+                                "personalId": playlist_id,
+                                "title": self._text(getattr(playlist, "title", "")) or fallback_title,
+                                "available": bool(getattr(generated, "ready", True))})
+                        except Exception:
+                            failures += 1
+                    if failures: warning = "Некоторые персональные подборки пока недоступны."
+                    if not items and failures: raise RuntimeError("personal playlists unavailable")
+                elif section == "history":
+                    source = self._history_source(client)
+                    offset = min(LIBRARY_PAGE_SIZE, len(source))
+                    items, tracks, warning = self._history_items(client, source[:offset])
+                elif section == "albums":
+                    likes = self._api_call(lambda: client.users_likes_albums(), update_loading=False) or []
+                    items = [self._album_metadata(getattr(like, "album", None)) for like in likes
+                             if getattr(like, "album", None) is not None]
+                elif section == "artists":
+                    likes = self._api_call(lambda: client.users_likes_artists(), update_loading=False) or []
+                    items = [self._artist_metadata(getattr(like, "artist", None)) for like in likes
+                             if getattr(like, "artist", None) is not None]
+                elif section == "playlists":
+                    likes = self._api_call(lambda: client.users_likes_playlists(), update_loading=False) or []
+                    items = [self._playlist_metadata(getattr(like, "playlist", None)) for like in likes
+                             if getattr(like, "playlist", None) is not None]
+                else:
+                    values = self._api_call(lambda: client.rotor_stations_list(), update_loading=False) or []
+                    items = [self._station_metadata(value) for value in values]
+                    items = [row for row in items if row["stationId"]]
+                unique: list[dict[str, Any]] = []
+                seen: set[str] = set()
+                for row in items:
+                    key = self._catalog_key(
+                        "playlists" if row.get("entityType") == "playlist"
+                        else str(row.get("entityType", "")) + "s", row)
+                    if row.get("entityType") == "station": key = str(row.get("stationId", ""))
+                    if key and key not in seen: seen.add(key); unique.append(row)
+                items = unique
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                    if personal_models: self.personal_playlist_models.update(personal_models)
+                    self.library_hub_tracks = tracks
+                    self.library_hub_source = source
+                    self.library_hub_offset = offset
+                    now = time.monotonic()
+                    self.library_hub_cache[section] = {"items": copy.deepcopy(items),
+                        "tracks": list(tracks), "source": list(source), "offset": offset,
+                        "warning": warning, "storedAt": now, "accessedAt": now}
+                    self.library_hub_cache.move_to_end(section)
+                    while len(self.library_hub_cache) > LIBRARY_HUB_CACHE_MAX_ENTRIES:
+                        self.library_hub_cache.popitem(last=False)
+                    self.library_hub.update(loading=False, loadingMore=False,
+                        items=items, total=len(source) if source else len(items),
+                        hasMore=offset < len(source), warning=warning, error="")
+                    self._library_hub_touch_locked()
+            except Exception as exc:
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                    self.library_hub.update(loading=False, loadingMore=False,
+                        hasMore=False, items=[], warning="",
+                        error=self._catalog_error(exc, "Раздел медиатеки"))
+                    self._library_hub_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def library_section_more(self) -> None:
+        with self.lock:
+            if (self.library_hub.get("section") != "history"
+                    or self.library_hub.get("loadingMore")
+                    or self.library_hub_offset >= len(self.library_hub_source)
+                    or not self.client):
+                return
+            client = self.client; generation = self.library_hub_generation
+            start = self.library_hub_offset
+            page = list(self.library_hub_source[start:start + LIBRARY_PAGE_SIZE])
+            track_offset = len(self.library_hub_tracks)
+            self.library_hub["loadingMore"] = True
+            self._library_hub_touch_locked()
+
+        def load() -> None:
+            try:
+                items, tracks, warning = self._history_items(
+                    client, page, track_index_offset=track_offset)
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                    self.library_hub["items"].extend(items)
+                    self.library_hub_tracks.extend(tracks)
+                    self.library_hub_offset = start + len(page)
+                    if warning: self.library_hub["warning"] = warning
+                    self.library_hub.update(loadingMore=False,
+                        hasMore=self.library_hub_offset < len(self.library_hub_source), error="")
+                    now = time.monotonic()
+                    self.library_hub_cache["history"] = {
+                        "items": copy.deepcopy(self.library_hub["items"]),
+                        "tracks": list(self.library_hub_tracks),
+                        "source": list(self.library_hub_source), "offset": self.library_hub_offset,
+                        "warning": str(self.library_hub.get("warning", "")),
+                        "storedAt": now, "accessedAt": now}
+                    self._library_hub_touch_locked()
+            except Exception as exc:
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                    self.library_hub.update(loadingMore=False,
+                        error=self._catalog_error(exc, "Следующая страница истории"))
+                    self._library_hub_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def library_back(self) -> None:
+        with self.lock:
+            self.library_hub_generation += 1
+            self.library_hub = self._empty_library_hub()
+            self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
+            self._library_hub_touch_locked()
+
+    def browse_personal_playlist(self, playlist_id: str) -> None:
+        playlist_id = self._text(playlist_id)
+        if playlist_id not in {value for value, _title in PERSONAL_PLAYLISTS}: return
+        cache_key = f"personal:{playlist_id}"
+        with self.lock:
+            client = self.client
+            if not client: return
+            self.artist_results = []
+            generation = self._reset_library_locked()
+            self.state["artistBrowseName"] = ""
+            if self._activate_collection_cache_locked(cache_key): return
+            playlist = self.personal_playlist_models.get(playlist_id)
+
+        def load() -> None:
+            try:
+                nonlocal playlist
+                if playlist is None:
+                    generated = self._api_call(lambda: client.playlists_personal(playlist_id))
+                    playlist = getattr(generated, "data", None)
+                if playlist is None: raise RuntimeError("404")
+                rows = self._safe_rows(getattr(playlist, "tracks", None))
+                if not rows and callable(getattr(playlist, "fetch_tracks", None)):
+                    rows = self._safe_rows(self._api_call(playlist.fetch_tracks))
+                tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE], client)
+                if not tracks: raise RuntimeError("В подборке нет доступных треков")
+                with self.lock:
+                    if self.client is not client or generation != self.library_generation: return
+                    self.personal_playlist_models[playlist_id] = playlist
+                    self.library_source = rows; self.library_results = tracks
+                    self.library_offset = min(LIBRARY_PAGE_SIZE, len(rows))
+                    self.active_library_cache_key = cache_key
+                    self.library_revision += 1
+                    self.state.update(libraryBrowseName=self._text(getattr(playlist, "title", ""))
+                                      or dict(PERSONAL_PLAYLISTS)[playlist_id],
+                                      libraryTotal=len(rows), libraryHasMore=self.library_offset < len(rows),
+                                      libraryLoadingMore=False, libraryFromCache=False,
+                                      loading=False, loadingKind="", error="")
+                    self._store_collection_cache_locked()
+            except Exception as exc:
+                with self.lock:
+                    if self.client is not client: return
+                    if generation != self.library_generation: return
+                self._set_error(self._catalog_error(exc, "Персональная подборка"))
+        self._loading(load, "personal")
+
+    def play_library_hub_track(self, index: int) -> None:
+        with self.lock:
+            tracks = list(self.library_hub_tracks)
+            client = self.client; generation = self.library_hub_generation
+            title = "Недавно слушали"
+        if not client or not (0 <= index < len(tracks)): return
+        track = tracks[index]
+
+        def prepare() -> None:
+            try:
+                url = self._url(track, update_loading=False)
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                self._set_queue(tracks, title, start_index=index, prepared_url=url)
+            except Exception as exc:
+                with self.lock:
+                    if not self._library_hub_current(client, generation): return
+                    self.library_hub["error"] = self._catalog_error(exc, "Трек")
+                    self._library_hub_touch_locked()
+        threading.Thread(target=prepare, daemon=True).start()
+
+    def play_station(self, station: str, title: str = "") -> None:
+        station = self._text(station); title = self._text(title) or "Радиостанция"
+        if not station: return
+
+        def load() -> None:
+            try:
+                assert self.client
+                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
+                tracks = [row.track for row in self._safe_rows(getattr(result, "sequence", None))
+                          if getattr(row, "track", None) is not None]
+                if not tracks: raise RuntimeError("Яндекс не вернул треки радиостанции")
+                batch_id = self._text(getattr(result, "batch_id", ""))
+                self._set_queue(tracks, title, station, batch_id)
+            except Exception as exc:
+                self._set_error(self._catalog_error(exc, "Радиостанция"))
+        self._loading(load, "station")
 
     @staticmethod
     def _empty_catalog() -> dict[str, Any]:
@@ -2734,6 +3177,7 @@ class Player:
             data["network"] = dict(self.network)
             data["queueRevision"] = self.queue_revision
             data["libraryRevision"] = self.library_revision
+            data["libraryHubRevision"] = self.library_hub_revision
             data["catalogRevision"] = self.catalog_revision
             data["searchResults"] = [{**self._metadata(t), "index": i} for i,t in enumerate(self.search_results)]
             data["queueIndex"] = (self.index + 1
@@ -2741,6 +3185,7 @@ class Player:
             data["queueCount"] = len(self.queue)
             if include_queue:
                 data["catalog"] = copy.deepcopy(self.catalog)
+                data["libraryHub"] = copy.deepcopy(self.library_hub)
                 data["libraryTracks"] = [
                     {**self._metadata(track), "index": i,
                      "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
@@ -2773,6 +3218,17 @@ class Player:
         elif cmd == "dislike": self.toggle_dislike()
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
         elif cmd == "load_more_library": self.load_more_library()
+        elif cmd == "library_section": self.library_section(str(req.get("section", "")))
+        elif cmd == "library_retry": self.library_section(
+            str(req.get("section", "")), force=True)
+        elif cmd == "library_back": self.library_back()
+        elif cmd == "library_section_more": self.library_section_more()
+        elif cmd == "browse_personal": self.browse_personal_playlist(
+            str(req.get("playlistId", "")))
+        elif cmd == "play_library_hub_track": self.play_library_hub_track(
+            self._int(req.get("index", -1), -1))
+        elif cmd == "play_station": self.play_station(
+            str(req.get("station", "")), str(req.get("title", "")))
         elif cmd == "search": self.search(str(req.get("query", "")))
         elif cmd == "catalog_search": self.catalog_search(
             str(req.get("query", "")), str(req.get("type", "all")))

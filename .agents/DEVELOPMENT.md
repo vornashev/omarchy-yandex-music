@@ -48,7 +48,7 @@ omarchy-restart-shell
 ```bash
 install -m 755 backend/backend.py ~/.local/share/omarchy-yandex-music/backend.py
 install -m 755 backend/backend.py ~/.config/omarchy/plugins/vornashev.yandex-music/backend/backend.py
-install -m 644 Panel.qml CatalogController.qml CatalogImage.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
+install -m 644 Panel.qml CatalogController.qml CatalogImage.qml LibraryController.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
 systemctl --user restart omarchy-yandex-music.service
 omarchy-restart-shell
 ```
@@ -107,3 +107,4 @@ omarchy-yandex-music status | jq
 12. QML interaction-тестами проверять 300 ms debounce/минимум 2 символа, stale suggestions, четыре секции, load more, back-state и explicit-playback-only.
 13. Проверять, что service active и QuickShell отвечает после installer/shell restart.
 14. Любой тест `logout()` обязан подменять `TOKEN_FILE` и `STATE_FILE` путями из `TemporaryDirectory`; полный test suite не должен читать, изменять или удалять реальную OAuth-сессию разработчика.
+15. Для Stage 4 проверять отдельную ленивую загрузку каждого library section, batch-resolve истории страницами `50 + 50 + остаток`, локальные partial/error states, stale generation, bounded cache, сохранение viewport и отсутствие `_set_queue()` до явного выбора трека или станции.

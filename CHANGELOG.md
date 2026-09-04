@@ -24,7 +24,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - An in-field spinner covering both the suggestion debounce and API loading interval
 - Non-autoplay album, artist, and playlist pages with explicit track playback, linked metadata, and preserved search back-navigation
 - Artist biography, popular tracks, similar artists, and independently paginated Albums and Singles sections
-- Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, and explicit playback
+- Stage 4 Library sections for Playlist of the Day, Missed Likes, Premiere, Deja Vu, listening history, favorite albums and artists, saved playlists, and available radio stations
+- Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, personalization, and explicit playback
 
 ### Changed
 
@@ -40,6 +41,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Artist popular-track queues prefetch subsequent 20-track pages and preserve their continuation context across backend restarts
 - Artist pages now order Popular Tracks, Albums, Singles, and up to ten Similar Artists
 - The legacy artist list no longer replaces the Now Playing queue
+- Expanded Library sections load only when opened, use generation/client guards, and retain data in a bounded ten-minute memory-only cache; Recently Played resolves metadata in 50-item pages instead of eagerly loading the full history
+- History tracks, generated playlists, and stations replace the queue only after an explicit selection; favorite entity pages return to the Library
 
 ### Fixed
 

@@ -43,7 +43,7 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd"
   install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
     "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
-    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" \
+    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/LibraryController.qml" \
     "$ROOT/requirements.txt" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/install.sh" "$ROOT/bootstrap.sh" "$ROOT/uninstall.sh" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/backend/backend.py" "$PLUGIN_DIR/backend/backend.py"

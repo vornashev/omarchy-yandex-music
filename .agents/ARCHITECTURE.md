@@ -40,6 +40,8 @@
 - `catalog_search <type> <query>`, `catalog_suggest <generation> <query>`, `catalog_load_more`;
 - `catalog_album <id>`, `catalog_artist <id>`, `catalog_playlist <uuid> <owner> <kind>`, `catalog_back`;
 - `catalog_artist_more <albums|singles>`, `catalog_entity_more`, `play_catalog_track <source> <index>`;
+- `library_section <personal|history|albums|artists|playlists|stations>`, `library_section_more`, `library_retry`, `library_back`;
+- `browse_personal <daily|missedLikes|recentTracks|neverHeard>`, `play_library_hub_track <index>`, `play_station <id> <title>`;
 - `play_queue <index>`, `play_library_track <index>`;
 - `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `mode`, `like`, `dislike`, `stop`;
 - `setting <key> <value>`.
@@ -57,6 +59,16 @@
 - Entity/search models и bounded entity cache хранятся только в памяти и очищаются при logout/restart.
 - `CatalogController.qml` содержит testable debounce/navigation state без зависимостей Quickshell; production rendering остаётся в `Panel.qml` и использует один виртуализированный внутренний `ListView`.
 - `CatalogImage.qml` повторяет временные ошибки CDN/HTTP2 с ограниченным backoff и cache-busting nonce; после трёх неудач остаётся локальная fallback-иконка.
+
+## 4.2. Персонализация медиатеки
+
+- `LibraryController.qml` строит виртуализированные home/section rows и отделяет навигацию по сущностям от явных playback actions.
+- Плейлист дня, Тайник, Премьера, Дежавю, история, любимые альбомы/исполнители/плейлисты и станции загружаются отдельными ленивыми командами; открытие вкладки не вызывает все endpoint одновременно.
+- Все новые SDK-запросы проходят через `_api_call()`/`api_lock`, используют client/generation guards и сохраняют ошибки внутри `libraryHub`, не меняя глобальную ошибку работающего плеера.
+- История сначала получает только лёгкие ссылки через `music_history(full_models_count=0)`, затем дополняет метаданные batch-вызовами `music_history_items()` страницами по 50 элементов; треки истории хранятся отдельно от JSON snapshot и запускаются только явным выбором.
+- Личный персональный плейлист открывается как track collection без автозапуска и переиспользует постраничную библиотечную очередь. Любимые album/artist/playlist открывают существующие catalog entity pages и Back возвращает во вкладку «Медиатека».
+- Станция получает очередь только через явный `play_station`; дальнейшее продолжение и feedback используют общий radio-chain protocol.
+- Section snapshots, track models и generated playlist models имеют ограниченный десятиминутный in-memory cache и полностью очищаются при logout/restart. В `status` попадает только revision, а сами rows — только в `details`.
 
 ## 8. OAuth, файлы и безопасность
 

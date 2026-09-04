@@ -41,7 +41,10 @@ Panel {
     suggestions: { query: "", generation: 0, loading: false, items: [], error: "" },
     entity: {} })
   property bool catalogInitialized: false
+  property int catalogReturnPage: 2
   property real catalogSearchContentY: 0
+  property var libraryHubDisplay: ({ view: "home", section: "", loading: false,
+    error: "", warning: "", items: [], revision: 0 })
   property var pendingSuggestionCommand: []
   property string lastError: ""
   property string dismissedError: ""
@@ -86,10 +89,11 @@ Panel {
   // Rebinding ListView to an equivalent JS array resets its internal viewport.
   property var queueDisplay: []
   readonly property var libraryDisplay: data.libraryTracks || []
-  readonly property bool browsingLibrary: libraryDisplay.length > 0
+  readonly property bool browsingLibrary: String(data.libraryBrowseName || "") !== ""
   readonly property bool browsingCollection: browsingLibrary
   readonly property var trackListDisplay: browsingLibrary ? libraryDisplay : queueDisplay
   readonly property var catalogRows: buildCatalogRows()
+  readonly property var libraryRows: libraryController.rows
   readonly property string playbackMode: String(preference("playbackMode", "repeatQueue"))
   readonly property string playbackModeIcon: playbackMode === "shuffle" ? "󰒟"
     : (playbackMode === "repeatTrack" ? "󰑘" : (playbackMode === "repeatQueue" ? "󰑖" : "󰐕"))
@@ -98,12 +102,13 @@ Panel {
     : (playbackMode === "repeatQueue" ? "Повтор очереди" : "По порядку"))
   readonly property bool busy: data.connecting === true || data.restoring === true
     || data.loading === true || data.libraryLoadingMore === true
+    || libraryController.loading || libraryController.loadingMore
     || actionProcess.running || settingsProcess.running
     || (refreshing && !hasLoadedStatus)
   readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
   readonly property bool queueListLoading: data.loading === true
-    && ["likes", "playlist", "wave", "radio"].indexOf(String(data.loadingKind || "")) >= 0
+    && ["likes", "playlist", "personal", "wave", "radio", "station"].indexOf(String(data.loadingKind || "")) >= 0
   readonly property bool searchListLoading: catalogDisplay.search.loading === true
     || catalogDisplay.entity.loading === true
   readonly property string errorTitle: errorSource === "status"
@@ -119,8 +124,10 @@ Panel {
     var kind = String(data.loadingKind || "")
     if (kind === "wave") return "Настраиваем «Мою волну»…"
     if (kind === "radio") return "Запускаем радио по треку…"
+    if (kind === "station") return "Запускаем радиостанцию…"
     if (kind === "likes") return "Загружаем любимые треки…"
     if (kind === "playlist") return "Загружаем плейлист…"
+    if (kind === "personal") return "Загружаем персональную подборку…"
     if (kind === "search") return "Ищем треки…"
     if (kind === "artist") return "Загружаем треки исполнителя…"
     if (kind === "track" && String(data.loadingStage || "") === "downloadInfo")
@@ -377,23 +384,28 @@ Panel {
     else return false
     return true
   }
-  function openCatalogArtist(artistId) {
-    if (!artistId) return
+  function prepareCatalogNavigation(returnPage) {
+    if (Number(returnPage) === 1) catalogReturnPage = 1
+    else if (String(catalogDisplay.view || "search") === "search") catalogReturnPage = 2
     selectPage(2)
+  }
+  function openCatalogArtist(artistId, returnPage) {
+    if (!artistId) return
+    prepareCatalogNavigation(returnPage)
     searchField.focus = false
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("artist", artistId, "", "", "")
   }
-  function openCatalogAlbum(albumId) {
+  function openCatalogAlbum(albumId, returnPage) {
     if (!albumId) return
-    selectPage(2)
+    prepareCatalogNavigation(returnPage)
     searchField.focus = false
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("album", albumId, "", "", "")
   }
-  function openCatalogPlaylist(row) {
+  function openCatalogPlaylist(row, returnPage) {
     var value = row || {}
-    selectPage(2)
+    prepareCatalogNavigation(returnPage)
     searchField.focus = false
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("playlist", "", value.uuid, value.owner, value.kind)
@@ -489,7 +501,15 @@ Panel {
     dismissedError = ""
     errorSource = ""
     var loadingKinds = { "artist": "artist", "likes": "likes", "playlist": "playlist",
-      "wave": "wave", "track_radio": "radio", "search": "search" }
+      "browse_personal": "personal", "wave": "wave", "track_radio": "radio",
+      "play_station": "station", "search": "search" }
+    if (command === "library_section" || command === "library_retry") {
+      libraryController.applySnapshot({ view: "section", section: String(argument || ""),
+        loading: true, error: "", warning: "", items: [], revision: libraryHubDisplay.revision || 0 })
+    } else if (command === "library_back") {
+      libraryController.applySnapshot({ view: "home", section: "", loading: false,
+        error: "", warning: "", items: [], revision: libraryHubDisplay.revision || 0 })
+    }
     if (loadingKinds[command] !== undefined || command === "load_more_library") {
       var optimistic = {}
       for (var key in data) optimistic[key] = data[key]
@@ -550,6 +570,26 @@ Panel {
         parsed.queueTracks = queueDisplay
       } else {
         queueDisplay = parsed.queueTracks || []
+      }
+      if (parsed.libraryHub
+          && Number(parsed.libraryHubRevision || 0) !== Number(data.libraryHubRevision || 0)) {
+        var oldLibraryView = String(libraryHubDisplay.view || "home")
+        var oldLibrarySection = String(libraryHubDisplay.section || "")
+        var newLibraryView = String(parsed.libraryHub.view || "home")
+        var newLibrarySection = String(parsed.libraryHub.section || "")
+        var previousLibraryContentY = libraryList ? libraryList.contentY : 0
+        var libraryHubExpanded = (parsed.libraryHub.items || []).length
+          > (libraryHubDisplay.items || []).length
+        libraryHubDisplay = parsed.libraryHub
+        libraryController.applySnapshot(parsed.libraryHub)
+        if (oldLibraryView !== newLibraryView || oldLibrarySection !== newLibrarySection) {
+          Qt.callLater(function() { if (libraryList) libraryList.contentY = 0 })
+        } else if (libraryHubExpanded) {
+          Qt.callLater(function() {
+            if (libraryList) libraryList.contentY = Math.min(previousLibraryContentY,
+              Math.max(0, libraryList.contentHeight - libraryList.height))
+          })
+        }
       }
       if (parsed.catalog && Number(parsed.catalogRevision || 0) !== Number(data.catalogRevision || 0)) {
         var oldView = String(catalogDisplay.view || "search")
@@ -651,6 +691,33 @@ Panel {
     }
   }
 
+  LibraryController {
+    id: libraryController
+    ownPlaylists: root.data.playlists || []
+    onSectionRequested: function(section) { root.action("library_section", section) }
+    onBackRequested: root.action("library_back")
+    onRetryRequested: function(section) { root.action("library_retry", section) }
+    onLoadMoreRequested: root.action("library_section_more")
+    onCollectionRequested: function(command, argument) {
+      root.action(command, argument === "" ? undefined : argument)
+      root.selectPage(0)
+    }
+    onEntityRequested: function(type, id, uuid, owner, kind) {
+      if (type === "artist") root.openCatalogArtist(id, 1)
+      else if (type === "album") root.openCatalogAlbum(id, 1)
+      else if (type === "playlist") root.openCatalogPlaylist(
+        { uuid: uuid, owner: owner, kind: kind }, 1)
+    }
+    onTrackPlaybackRequested: function(index) {
+      root.action("play_library_hub_track", index)
+      root.selectPage(0)
+    }
+    onStationPlaybackRequested: function(station, title) {
+      root.action("play_station", [station, title])
+      root.selectPage(0)
+    }
+  }
+
   CatalogController {
     id: catalogController
     onSuggestRequested: function(query, generation) { root.requestSuggestions(query, generation) }
@@ -666,7 +733,13 @@ Panel {
       else if (type === "album") root.action("catalog_album", id)
       else if (type === "playlist") root.action("catalog_playlist", [uuid, owner, kind])
     }
-    onBackRequested: root.action("catalog_back")
+    onBackRequested: {
+      root.action("catalog_back")
+      if (root.catalogReturnPage === 1) {
+        root.catalogReturnPage = 2
+        root.selectPage(1)
+      }
+    }
     onLoadMoreRequested: root.action("catalog_load_more")
     onReleaseMoreRequested: function(section) { root.action("catalog_artist_more", section) }
     onTrackPlaybackRequested: function(source, index) {
@@ -2255,34 +2328,130 @@ Panel {
                 }
               }
 
-              BorderSurface {
-                width: parent.width; height: Style.space(44); radius: Style.cornerRadius
-                color: likesMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-                borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-                Text {
-                  anchors.left: parent.left; anchors.leftMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
-                  text: "󰋑   Мне нравится"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body
+              Item {
+                id: libraryViewport
+                width: parent.width
+                height: Style.space(360)
+                clip: true
+
+                SkeletonList {
+                  visible: libraryController.loading
+                  anchors.fill: parent
+                  rowCount: 7
+                  foreground: root.foreground
                 }
-                MouseArea { id: likesMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.action("likes"); root.selectPage(0) } }
-              }
-              Repeater {
-                model: root.data.playlists || []
-                BorderSurface {
-                  required property var modelData
-                  width: content.width; height: Style.space(42); radius: Style.cornerRadius
-                  color: playlistMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-                  borderSpec: Border.none()
-                  Text {
-                    anchors.left: parent.left; anchors.right: parent.right; anchors.margins: Style.space(12); anchors.verticalCenter: parent.verticalCenter
-                    text: "󰲸   " + modelData.title + "  ·  " + modelData.count; elide: Text.ElideRight
-                    color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+
+                ListView {
+                  id: libraryList
+                  visible: !libraryController.loading
+                  anchors.fill: parent
+                  clip: true
+                  boundsBehavior: Flickable.StopAtBounds
+                  interactive: contentHeight > height
+                  cacheBuffer: height * 2
+                  model: root.libraryRows
+                  spacing: Style.space(2)
+                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                  delegate: BorderSurface {
+                    id: libraryRow
+                    required property var modelData
+                    readonly property string rowKind: String(modelData.kind || "")
+                    readonly property var value: modelData.value || ({})
+                    readonly property bool entityRow: ["track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
+                    readonly property bool actionable: ["collection", "navigation", "back", "retry", "loadMore",
+                      "track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
+                    width: libraryList.width
+                      - (libraryList.contentHeight > libraryList.height ? Style.space(8) : 0)
+                    height: rowKind === "section" ? Style.space(30)
+                      : (entityRow || rowKind === "collection" || rowKind === "navigation"
+                        ? Style.space(58) : Style.space(42))
+                    radius: Style.cornerRadius
+                    color: actionable && libraryMouse.containsMouse
+                      ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+                    borderSpec: Border.none()
+
+                    Text {
+                      visible: ["section", "error", "warning", "empty", "back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
+                      anchors.left: parent.left; anchors.right: parent.right
+                      anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+                      text: String(libraryRow.modelData.title || "")
+                      color: libraryRow.rowKind === "error" ? Color.urgent
+                        : (["back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0 ? Color.accent : root.dim)
+                      horizontalAlignment: ["back", "retry", "loadMore", "empty"].indexOf(libraryRow.rowKind) >= 0
+                        ? Text.AlignHCenter : Text.AlignLeft
+                      elide: Text.ElideRight
+                      font.family: root.fontFamily
+                      font.pixelSize: libraryRow.rowKind === "section" ? Style.font.caption : Style.font.bodySmall
+                      font.bold: libraryRow.rowKind === "section"
+                        || ["back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
+                      font.letterSpacing: libraryRow.rowKind === "section" ? .8 : 0
+                    }
+
+                    Row {
+                      visible: libraryRow.rowKind === "collection" || libraryRow.rowKind === "navigation"
+                        || libraryRow.entityRow
+                      anchors.left: parent.left; anchors.right: parent.right
+                      anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(9)
+
+                      CatalogImage {
+                        visible: libraryRow.entityRow
+                        width: visible ? Style.space(40) : 0; height: width
+                        requestedSource: String(libraryRow.value.artUrl || "")
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fillMode: Image.PreserveAspectCrop
+                      }
+                      Text {
+                        visible: !libraryRow.entityRow
+                        width: visible ? Style.space(40) : 0
+                        anchors.verticalCenter: parent.verticalCenter
+                        text: String(libraryRow.modelData.icon || "󰁔")
+                        horizontalAlignment: Text.AlignHCenter
+                        color: Color.accent; font.family: root.fontFamily
+                        font.pixelSize: Style.font.subtitle
+                      }
+                      Column {
+                        width: parent.width - Style.space(49)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 1
+                        Text {
+                          width: parent.width
+                          text: String(libraryRow.entityRow
+                            ? (libraryRow.value.title || libraryRow.value.name || "Без названия")
+                            : libraryRow.modelData.title || "")
+                          color: root.foreground; font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+                        }
+                        Text {
+                          width: parent.width
+                          text: {
+                            if (!libraryRow.entityRow) return String(libraryRow.modelData.subtitle || "")
+                            var details = String(libraryRow.value.artist || libraryRow.value.ownerName
+                              || libraryRow.value.subtitle || (libraryRow.value.genres || []).join(", ") || "")
+                            if (details === "" && Number(libraryRow.value.trackCount || 0) > 0)
+                              details = Number(libraryRow.value.trackCount) + " треков"
+                            var date = String(libraryRow.value.historyDate || "")
+                            return details + (date !== "" ? (details !== "" ? " · " : "") + date : "")
+                          }
+                          color: root.dim; font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption; elide: Text.ElideRight
+                        }
+                      }
+                    }
+
+                    MouseArea {
+                      id: libraryMouse
+                      anchors.fill: parent
+                      enabled: libraryRow.actionable
+                        && libraryRow.value.available !== false
+                      hoverEnabled: enabled
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: libraryController.activate(libraryRow.modelData)
+                    }
                   }
-                  MouseArea { id: playlistMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.action("playlist", modelData.kind); root.selectPage(0) } }
                 }
-              }
-              Text {
-                visible: (root.data.playlists || []).length === 0; width: parent.width; horizontalAlignment: Text.AlignHCenter
-                text: "Пользовательских плейлистов пока нет"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
               }
             }
 
@@ -2386,7 +2555,7 @@ Panel {
                 Button {
                   anchors.left: parent.left
                   height: parent.height
-                  text: "Назад к поиску"
+                  text: root.catalogReturnPage === 1 ? "Назад в медиатеку" : "Назад к поиску"
                   iconText: "󰁍"
                   foreground: root.foreground
                   bordered: true

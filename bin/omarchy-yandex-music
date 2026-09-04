@@ -23,7 +23,8 @@ elif request["command"] == "catalog_suggest" and len(args) > 2:
     request["query"] = " ".join(args[2:])
 elif request["command"] == "catalog_clear_suggestions":
     request["fieldText"] = " ".join(args[1:])
-elif request["command"] in ("play_search", "play_queue", "play_artist_track", "play_library_track") and len(args) > 1:
+elif request["command"] in ("play_search", "play_queue", "play_artist_track", "play_library_track",
+                           "play_library_hub_track") and len(args) > 1:
     request["index"] = int(args[1])
 elif request["command"] == "play_catalog_track" and len(args) > 2:
     request["source"] = args[1]
@@ -38,8 +39,13 @@ elif request["command"] == "catalog_playlist" and len(args) > 3:
     request["uuid"] = args[1]
     request["owner"] = args[2]
     request["kind"] = args[3]
-elif request["command"] == "catalog_artist_more" and len(args) > 1:
+elif request["command"] in ("catalog_artist_more", "library_section", "library_retry") and len(args) > 1:
     request["section"] = args[1]
+elif request["command"] == "browse_personal" and len(args) > 1:
+    request["playlistId"] = args[1]
+elif request["command"] == "play_station" and len(args) > 1:
+    request["station"] = args[1]
+    request["title"] = " ".join(args[2:])
 elif request["command"] == "setting" and len(args) > 2:
     request["key"] = args[1]
     request["value"] = args[2]
