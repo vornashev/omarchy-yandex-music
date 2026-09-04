@@ -48,7 +48,7 @@ omarchy-restart-shell
 ```bash
 install -m 755 backend/backend.py ~/.local/share/omarchy-yandex-music/backend.py
 install -m 755 backend/backend.py ~/.config/omarchy/plugins/vornashev.yandex-music/backend/backend.py
-install -m 644 Panel.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
+install -m 644 Panel.qml CatalogController.qml CatalogImage.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
 systemctl --user restart omarchy-yandex-music.service
 omarchy-restart-shell
 ```
@@ -70,7 +70,11 @@ omarchy-yandex-music status | jq -r .version
 ```bash
 cd ~/Projects/omarchy-yandex-music
 python -m compileall -q backend tests
-~/.local/share/omarchy-yandex-music/venv/bin/python -m unittest discover -s tests -v
+TEST_HOME="$(mktemp -d)"
+trap 'rm -rf "$TEST_HOME"' EXIT
+HOME="$TEST_HOME" ~/.local/share/omarchy-yandex-music/venv/bin/python -m unittest discover -s tests -v
+rm -rf "$TEST_HOME"
+trap - EXIT
 bash -n bootstrap.sh install.sh uninstall.sh bin/omarchy-yandex-music
 omarchy plugin validate .
 QMLTESTRUNNER="$(command -v qmltestrunner || command -v qmltestrunner6 || { test -x /usr/lib/qt6/bin/qmltestrunner && printf '%s\n' /usr/lib/qt6/bin/qmltestrunner; })"
@@ -102,3 +106,4 @@ omarchy-yandex-music status | jq
 11. Для Stage 3 Catalog fake-тестами проверять typed/all search, stale suggestions/client generation, append+dedupe pagination, batch metadata, entity cache/logout, partial models, playlist UUID/owner+kind и non-autoplay navigation.
 12. QML interaction-тестами проверять 300 ms debounce/минимум 2 символа, stale suggestions, четыре секции, load more, back-state и explicit-playback-only.
 13. Проверять, что service active и QuickShell отвечает после installer/shell restart.
+14. Любой тест `logout()` обязан подменять `TOKEN_FILE` и `STATE_FILE` путями из `TemporaryDirectory`; полный test suite не должен читать, изменять или удалять реальную OAuth-сессию разработчика.

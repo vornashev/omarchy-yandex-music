@@ -10,6 +10,8 @@ Item {
   property string submittedQuery: ""
   property string view: "search"
   property int suggestionGeneration: 0
+  property int highlightedSuggestionIndex: -1
+  property bool suggestionLoading: false
   property var suggestions: []
   property var results: ({ tracks: [], artists: [], albums: [], playlists: [] })
   readonly property var sectionNames: ["tracks", "artists", "albums", "playlists"]
@@ -29,8 +31,10 @@ Item {
   function updateInput(value) {
     fieldText = String(value || "")
     suggestionGeneration += 1
+    highlightedSuggestionIndex = -1
     suggestions = []
     var query = trimmedText()
+    suggestionLoading = query.length >= 2
     if (query.length < 2) {
       suggestionTimer.stop()
       suggestionsClearRequested(fieldText)
@@ -44,6 +48,8 @@ Item {
     if (Number(value.generation || 0) !== suggestionGeneration) return false
     if (String(value.query || "").trim() !== trimmedText()) return false
     suggestions = value.items || []
+    suggestionLoading = value.loading === true
+    highlightedSuggestionIndex = -1
     return true
   }
 
@@ -52,6 +58,8 @@ Item {
     if (query === "") return
     suggestionTimer.stop()
     suggestionGeneration += 1
+    highlightedSuggestionIndex = -1
+    suggestionLoading = false
     suggestions = []
     submittedQuery = query
     view = "search"
@@ -63,8 +71,44 @@ Item {
     submit()
   }
 
+  function moveSuggestion(step) {
+    var count = suggestions.length
+    if (count === 0) return false
+    var direction = Number(step || 0)
+    if (direction === 0) return false
+    if (highlightedSuggestionIndex < 0)
+      highlightedSuggestionIndex = direction > 0 ? 0 : count - 1
+    else
+      highlightedSuggestionIndex = (highlightedSuggestionIndex + direction + count) % count
+    return true
+  }
+
+  function highlightedSuggestionText() {
+    if (highlightedSuggestionIndex < 0 || highlightedSuggestionIndex >= suggestions.length)
+      return ""
+    return String(suggestions[highlightedSuggestionIndex] || "")
+  }
+
+  function acceptHighlightedSuggestion() {
+    var value = highlightedSuggestionText()
+    if (value === "") return false
+    selectSuggestion(value)
+    return true
+  }
+
+  function dismissSuggestions() {
+    suggestionTimer.stop()
+    suggestionGeneration += 1
+    highlightedSuggestionIndex = -1
+    suggestionLoading = false
+    suggestions = []
+    suggestionsClearRequested(fieldText)
+  }
+
   function openEntity(type, id, uuid, owner, kind) {
     view = String(type || "")
+    highlightedSuggestionIndex = -1
+    suggestionLoading = false
     suggestions = []
     entityRequested(view, String(id || ""), String(uuid || ""),
                     String(owner || ""), String(kind || ""))

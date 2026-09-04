@@ -20,6 +20,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - On-demand current-track view for release details and recording credits
 - A separate in-memory LRU detailed-information cache for the eight most recent tracks
 - Unified Search catalog with `All`, Tracks, Artists, Albums, and Playlists filters, 300 ms suggestions, and paginated results
+- Keyboard navigation through search suggestions with ↑/↓, highlighted selection, and Enter confirmation
+- An in-field spinner covering both the suggestion debounce and API loading interval
 - Non-autoplay album, artist, and playlist pages with explicit track playback, linked metadata, and preserved search back-navigation
 - Artist biography, popular tracks, similar artists, and independently paginated Albums and Singles sections
 - Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, and explicit playback
@@ -35,10 +37,18 @@ All notable changes to this project are documented here. The format follows [Kee
 - The lyrics toggle uses a dedicated synced-lines icon and changes to a return-to-queue action while lyrics are open
 - Artist and album links from Now Playing, queue rows, and track information now open the unified Search catalog
 - Catalog SDK requests share the serialized API wrapper and 2/5/10-second rate-limit retries; stale session and suggestion responses are discarded
+- Artist popular-track queues prefetch subsequent 20-track pages and preserve their continuation context across backend restarts
+- Artist pages now order Popular Tracks, Albums, Singles, and up to ten Similar Artists
 - The legacy artist list no longer replaces the Now Playing queue
 
 ### Fixed
 
+- Catalog artwork retries transient CDN/HTTP2 failures up to three times and falls back to an unavailable-image glyph
+- Album and single rows no longer render the same artist twice through both linked and fallback metadata
+- The logout unit test now uses temporary token/state paths and can no longer delete the developer’s real OAuth session during verification
+- Artist release pagination respects a known exact total, and loading more preserves the current viewport
+- Search results no longer show through and overlap the open suggestions popup
+- “My Likes” resolves compound `track:album` identifiers correctly instead of showing an empty unavailable-tracks error
 - Liking removes an existing dislike, while disliking removes a like and consistently updates the open “My Likes” list, queue, and cache
 - Extending the “My Wave” sequence waits until finished/skip feedback for the previous track has been sent
 - The `L` shortcut is intercepted before built-in `h/j/k/l` navigation and no longer switches player tabs

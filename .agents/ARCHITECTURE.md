@@ -53,8 +53,10 @@
 - Suggestions и catalog workers проходят через общий `_api_call()`/`api_lock`, используют generation/client guards и не записывают ошибки в глобальный `state.error`.
 - Поиск поддерживает SDK-типы `all`, `track`, `artist`, `album`, `playlist`; `all` всегда сериализуется четырьмя секциями.
 - Album, artist и playlist loaders не вызывают `_set_queue()`. Только `play_catalog_track` является явной границей запуска воспроизведения.
+- Очередь, явно запущенная из популярных треков исполнителя, хранит `queueArtistId`/page/hasMore, заранее запрашивает следующие страницы `artists_tracks` через `_api_call()` и дедуплицирует их перед append.
 - Entity/search models и bounded entity cache хранятся только в памяти и очищаются при logout/restart.
 - `CatalogController.qml` содержит testable debounce/navigation state без зависимостей Quickshell; production rendering остаётся в `Panel.qml` и использует один виртуализированный внутренний `ListView`.
+- `CatalogImage.qml` повторяет временные ошибки CDN/HTTP2 с ограниченным backoff и cache-busting nonce; после трёх неудач остаётся локальная fallback-иконка.
 
 ## 8. OAuth, файлы и безопасность
 
@@ -71,7 +73,7 @@
 ## 9. Воспроизведение
 
 - Используется отдельный headless `mpv`; браузер после OAuth не нужен.
-- Сохраняются очередь, индекс, источник коллекции (`queueCollectionKey`), позиция, пауза, громкость и preferences.
+- Сохраняются очередь, индекс, источник коллекции (`queueCollectionKey`), контекст продолжения популярных треков исполнителя, позиция, пауза, громкость и preferences.
 - Восстановление регулируется `autoResume`, `restoreQueue`, `restorePosition`, `restoreVolume`.
 - Режимы: порядок, shuffle, repeat queue, repeat track; синхронизированы с MPRIS.
 - Play/Pause проверяет `idle-active`: после Stop текущий трек загружается заново с начала, а для активного файла переключается pause.

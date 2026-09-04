@@ -80,9 +80,9 @@ Opening “My Likes” or a personal library playlist does **not** interrupt the
 
 ### Search
 
-Search across tracks, artists, albums, and playlists, or use the sectioned **All** view. Suggestions appear after 300 ms once at least two characters are entered. Results load page by page with an explicit load-more action.
+Search across tracks, artists, albums, and playlists, or use the sectioned **All** view. Suggestions appear after 300 ms once at least two characters are entered; a spinner inside the field remains visible while they are loading. Use ↑/↓ to highlight one and Enter or a mouse click to search for it. Results load page by page with an explicit load-more action.
 
-Artist, album, and playlist pages open inside the same Search tab without changing playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages show biography, popular tracks, similar artists, and independently paginated Albums and Singles; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. Catalog lists use their own virtualized scrolling below the fixed tabs and controls.
+Artist, album, and playlist pages open inside the same Search tab without changing playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages place popular tracks first, followed by independently paginated Albums and Singles, then up to ten similar artists; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. When playback starts from an artist’s popular tracks, the queue fetches subsequent 20-track pages in the background and continues past the initially visible list. Catalog lists use their own virtualized scrolling below the fixed tabs and controls. Artwork automatically retries transient CDN failures and shows a fallback glyph if the image remains unavailable.
 
 ### Settings
 
@@ -156,7 +156,7 @@ Hardware media keys are handled through MPRIS.
 omarchy plugin update vornashev.yandex-music
 ```
 
-The backend is updated automatically when the refreshed plugin loads.
+The backend is updated automatically when the refreshed plugin loads. Regular updates and service restarts preserve the OAuth token; only explicit sign-out or uninstalling with `--purge` removes it.
 
 ## Uninstalling
 

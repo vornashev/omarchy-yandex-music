@@ -303,6 +303,10 @@ class Player:
         self.queue_generation = 0
         self.queue_revision = 0
         self.queue_collection_key = ""
+        self.queue_artist_id = ""
+        self.queue_artist_page = 0
+        self.queue_artist_has_more = False
+        self.queue_advance_automatic = False
         self.detached_track: Any | None = None
         self.library_revision = 0
         self.index = -1
@@ -410,12 +414,14 @@ class Player:
                                 self.state["loadingStage"] = ""
                     return result
                 except Exception as exc:
-                    if not self._is_rate_limit_error(exc) or attempt >= len(delays):
-                        if self._is_rate_limit_error(exc): raise RuntimeError(RATE_LIMIT_MESSAGE) from exc
+                    rate_limited = self._is_rate_limit_error(exc)
+                    if not rate_limited:
                         raise
+                    if attempt >= len(delays):
+                        raise RuntimeError(RATE_LIMIT_MESSAGE) from exc
                     if update_loading:
                         with self.lock: self.state["loadingStage"] = "rateLimit"
-                    time.sleep(delays[attempt])
+                    threading.Event().wait(delays[attempt])
         raise RuntimeError(RATE_LIMIT_MESSAGE)
 
     def _enqueue_telemetry(self, *operations: Callable[[], Any]) -> None:
@@ -450,7 +456,7 @@ class Player:
         report = self.playback_report
         if not report: return
         current = time.monotonic() if now is None else now
-        elapsed = max(0.0, min(5.0, current - float(report["lastTick"])))
+        elapsed = max(0.0, min(5.0, current - self._float(report["lastTick"])))
         if report["playing"]: report["playedSeconds"] += elapsed
         report["lastTick"] = current
         report["playing"] = playing
@@ -467,7 +473,7 @@ class Player:
             if not client: return
             albums = list(getattr(track, "albums", None) or [])
             album_id = str(getattr(albums[0], "id", "")) if albums else ""
-            duration = max(0, int(getattr(track, "duration_ms", 0) or 0) // 1000)
+            duration = max(0, self._int(getattr(track, "duration_ms", 0)) // 1000)
             station = self.radio_station
             batch_id = self.radio_track_batches.get(track_id, self.radio_batch_id)
             play_id = uuid.uuid4().hex
@@ -497,9 +503,9 @@ class Player:
             if not report: return
             self._update_playback_clock_locked(False)
             self.playback_report = None
-            position = int(self.state.get("position", 0) or 0)
-            duration = int(report["duration"] or self.state.get("duration", 0) or 0)
-            played = max(0, int(round(float(report["playedSeconds"]))))
+            position = self._int(self.state.get("position", 0))
+            duration = self._int(report["duration"] or self.state.get("duration", 0))
+            played = max(0, self._int(round(self._float(report["playedSeconds"]))))
             end_position = duration if finished and duration else max(0, position)
             client = report["client"]
             track_id = str(report["trackId"])
@@ -520,12 +526,12 @@ class Player:
                 operations.append(lambda client=client, station=station, track_id=track_id,
                                   played=played, batch_id=batch_id:
                     client.rotor_station_feedback_track_finished(
-                        station, track_id, float(played), batch_id=batch_id or None))
+                        station, track_id, self._float(played), batch_id=batch_id or None))
             else:
                 operations.append(lambda client=client, station=station, track_id=track_id,
                                   played=played, batch_id=batch_id:
                     client.rotor_station_feedback_skip(
-                        station, track_id, float(played), batch_id=batch_id or None))
+                        station, track_id, self._float(played), batch_id=batch_id or None))
         self._enqueue_telemetry(*operations)
 
     def _get_liked_rows(self) -> list[Any]:
@@ -544,9 +550,9 @@ class Player:
         return self._api_call(fetch)
 
     def network_status(self, start: bool = False) -> dict[str, Any]:
-        now = int(time.time())
+        now = self._int(time.time())
         with self.lock:
-            fresh = self.network["checkedAt"] and now - int(self.network["checkedAt"]) < NETWORK_PROBE_TTL
+            fresh = self.network["checkedAt"] and now - self._int(self.network["checkedAt"]) < NETWORK_PROBE_TTL
             should_start = start and not self.network["checking"] and not fresh
             if should_start:
                 self.network.update(checking=True, error="")
@@ -560,7 +566,7 @@ class Player:
         result: dict[str, Any] = {
             "checking": False, "available": False, "latencyMs": None,
             "serviceAvailable": None, "region": None,
-            "checkedAt": int(time.time()), "error": "",
+            "checkedAt": self._int(time.time()), "error": "",
         }
         try:
             response = requests.get(API_STATUS_URL, timeout=(3, 5))
@@ -728,7 +734,9 @@ class Player:
             self.disliked_ids = set()
             self.queue = []; self.queue_source = []; self.queue_extending = False
             self.queue_advance_pending = False; self.queue_generation += 1; self.queue_revision += 1; self.index = -1
-            self.queue_collection_key = ""; self.detached_track = None
+            self.queue_collection_key = ""; self.queue_artist_id = ""
+            self.queue_artist_page = 0; self.queue_artist_has_more = False
+            self.queue_advance_automatic = False; self.detached_track = None
             self.radio_station = ""; self.radio_batch_id = ""; self.radio_track_batches = {}
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
@@ -759,7 +767,8 @@ class Player:
         value = getattr(row, "track_id", None)
         if value is not None and not isinstance(value, (str, int)):
             value = getattr(value, "track_id", None) or getattr(value, "id", None)
-        return str(value if value is not None else getattr(row, "id", "") or "")
+        text = str(value if value is not None else getattr(row, "id", "") or "")
+        return text.split(":", 1)[0]
 
     def _tracks_from_short_page(self, rows: list[Any], client: Client | None = None,
                                 *, update_loading: bool = True) -> list[Any]:
@@ -906,6 +915,9 @@ class Player:
                      "volume": self.volume, "muted": self.muted,
                      "radioStation": self.radio_station, "radioBatchId": current_batch}
             value["queueCollectionKey"] = self.queue_collection_key
+            value["queueArtistId"] = self.queue_artist_id
+            value["queueArtistPage"] = self.queue_artist_page
+            value["queueArtistHasMore"] = self.queue_artist_has_more
         atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
 
     def _restore_queue(self) -> None:
@@ -945,6 +957,10 @@ class Player:
                                             if self.radio_station and self.radio_batch_id else {})
                 self.state["queueName"] = queue_name
                 self.queue_collection_key = collection_key
+                self.queue_artist_id = str(saved.get("queueArtistId", ""))
+                self.queue_artist_page = self._int(saved.get("queueArtistPage", 0))
+                self.queue_artist_has_more = bool(saved.get("queueArtistHasMore", False))
+                self.queue_advance_automatic = False
                 self.detached_track = None
             should_resume = bool(saved.get("playing", False)) and bool(self.preferences["autoResume"])
             resume_position = int(saved.get("position", 0)) if self.preferences["restorePosition"] else 0
@@ -1255,10 +1271,90 @@ class Player:
                 self._set_error(f"Не удалось продолжить плейлист: {exc}")
         threading.Thread(target=load, daemon=True).start()
 
+    def _extend_artist_queue(self, advance: bool = False,
+                             automatic: bool = False) -> None:
+        with self.lock:
+            if not self.queue_artist_id or not self.queue_artist_has_more or not self.client:
+                return
+            if self.queue_extending:
+                self.queue_advance_pending = self.queue_advance_pending or advance
+                self.queue_advance_automatic = self.queue_advance_automatic or automatic
+                return
+            self.queue_extending = True
+            self.queue_advance_pending = advance
+            self.queue_advance_automatic = automatic
+            artist_id = self.queue_artist_id
+            page = self.queue_artist_page + 1
+            client = self.client
+            generation = self.queue_generation
+
+        def load() -> None:
+            try:
+                result = self._api_call(
+                    lambda: client.artists_tracks(
+                        artist_id, page=page, page_size=CATALOG_PAGE_SIZE),
+                    update_loading=False)
+                rows = self._safe_rows(getattr(result, "tracks", None))
+                tracks = self._tracks_from_short_page(
+                    rows, client, update_loading=False)
+                has_more = bool(rows) and self._page_has_more(
+                    result, rows, page, CATALOG_PAGE_SIZE)
+                should_advance = False
+                retry_advance = False
+                finish_advance = False
+                advance_automatic = False
+                with self.lock:
+                    if generation != self.queue_generation: return
+                    if self.client is not client: return
+                    old_length = len(self.queue)
+                    known = {self._track_id(track) for track in self.queue}
+                    appended = []
+                    for track in tracks:
+                        track_id = self._track_id(track)
+                        if track_id and track_id in known: continue
+                        if track_id: known.add(track_id)
+                        appended.append(track)
+                    self.queue.extend(appended)
+                    if appended: self.queue_revision += 1
+                    self.queue_artist_page = page
+                    self.queue_artist_has_more = has_more
+                    requested_advance = self.queue_advance_pending
+                    advance_automatic = self.queue_advance_automatic
+                    should_advance = (requested_advance and bool(appended)
+                                      and self.index >= old_length - 1)
+                    if should_advance: self.index = old_length
+                    retry_advance = requested_advance and not appended and has_more
+                    finish_advance = requested_advance and not appended and not has_more
+                    self.queue_advance_pending = False
+                    self.queue_advance_automatic = False
+                    self.queue_extending = False
+                self._save_state(True)
+                if should_advance:
+                    self._play_current()
+                elif retry_advance:
+                    self._extend_artist_queue(True, advance_automatic)
+                elif finish_advance:
+                    self.next(automatic=advance_automatic)
+            except Exception as exc:
+                with self.lock:
+                    if generation != self.queue_generation: return
+                    if self.client is not client: return
+                    self.queue_extending = False
+                    self.queue_advance_pending = False
+                    self.queue_advance_automatic = False
+                self._set_error(f"Не удалось продолжить треки исполнителя: {exc}")
+        threading.Thread(target=load, daemon=True).start()
+
     def _maybe_extend_collection(self) -> None:
         with self.lock:
             should_extend = bool(self.queue_source) and len(self.queue) - self.index <= 5
-        if should_extend: self._extend_collection()
+            should_extend_artist = (not should_extend and bool(self.queue_artist_id)
+                                    and self.queue_artist_has_more
+                                    and len(self.queue) - self.index <= 5)
+        if should_extend:
+            self._extend_collection()
+        elif should_extend_artist:
+            self._extend_artist_queue()
 
     def play_playlist(self, kind: str) -> None:
         cache_key = f"playlist:{kind}"
@@ -1715,6 +1811,17 @@ class Player:
                                         source, min(len(source), CATALOG_TRACK_PAGE_SIZE))
         threading.Thread(target=load, daemon=True).start()
 
+    def _page_has_more(self, result: Any, rows: list[Any], page: int,
+                       fallback_page_size: int) -> bool:
+        pager = getattr(result, "pager", None)
+        total = self._int(getattr(pager, "total", 0))
+        per_page = self._int(
+            getattr(pager, "per_page", fallback_page_size), fallback_page_size)
+        per_page = max(1, per_page)
+        if total > 0:
+            return (page + 1) * per_page < total
+        return len(rows) >= per_page
+
     def _artist_release_page(self, client: Any, artist_id: str, page: int) -> tuple[list[Any], bool, list[Any]]:
         releases = []; errors = []; has_more = False
         for method_name in ("artists_direct_albums", "artists_discography_albums"):
@@ -1726,10 +1833,8 @@ class Player:
                     update_loading=False)
                 rows = self._safe_rows(getattr(result, "albums", None))
                 releases.extend(rows)
-                pager = getattr(result, "pager", None)
-                total = self._int(getattr(pager, "total", 0))
-                per_page = self._int(getattr(pager, "per_page", CATALOG_PAGE_SIZE), CATALOG_PAGE_SIZE)
-                has_more = has_more or total > (page + 1) * per_page or len(rows) >= per_page
+                has_more = has_more or self._page_has_more(
+                    result, rows, page, CATALOG_PAGE_SIZE)
             except Exception as exc: errors.append(exc)
         unique = []
         seen = set()
@@ -1777,14 +1882,16 @@ class Player:
                 self._fail_catalog_entity(client, generation, "artist", artist_id,
                                           errors[0] if errors else RuntimeError("empty"), "Исполнитель")
                 return
-            popular_source = (self._safe_rows(getattr(track_page, "tracks", None))
-                              or self._safe_rows(getattr(brief, "popular_tracks", None)))
+            page_tracks = self._safe_rows(getattr(track_page, "tracks", None))
+            popular_source = page_tracks or self._safe_rows(getattr(brief, "popular_tracks", None))
+            popular_has_more = bool(page_tracks) and self._page_has_more(
+                track_page, page_tracks, 0, CATALOG_PAGE_SIZE)
             try:
                 tracks = self._tracks_from_short_page(
                     popular_source, client, update_loading=False)
             except Exception as exc: errors.append(exc); tracks = []
             similar = (self._safe_rows(getattr(similar_result, "similar_artists", None))
-                       or self._safe_rows(getattr(brief, "similar_artists", None)))
+                       or self._safe_rows(getattr(brief, "similar_artists", None)))[:10]
             albums = []; singles = []
             for release in releases:
                 try:
@@ -1810,6 +1917,7 @@ class Player:
                       "releaseHasMore": {"albums": releases_more, "singles": releases_more},
                       "releaseLoading": {"albums": False, "singles": False},
                       "releaseErrors": {"albums": "", "singles": ""},
+                      "popularPage": 0, "popularHasMore": popular_has_more,
                       "hasMore": False, "error": "",
                       "warning": "Часть сведений об исполнителе недоступна." if errors else ""}
             self._finish_catalog_entity(client, generation, cache_key, entity, tracks)
@@ -1942,11 +2050,15 @@ class Player:
 
     def play_catalog_track(self, source: str, index: int) -> None:
         with self.lock:
+            entity = self.catalog.get("entity", {})
             tracks = list(self.catalog_search_models.get("tracks", [])) if source == "search" \
                 else list(self.catalog_entity_tracks)
             name = ("Результаты поиска" if source == "search"
-                    else str(self.catalog.get("entity", {}).get("title")
-                             or self.catalog.get("entity", {}).get("name") or "Каталог"))
+                    else str(entity.get("title") or entity.get("name") or "Каталог"))
+            is_artist = source == "entity" and entity.get("type") == "artist"
+            artist_id = str(entity.get("id", "")) if is_artist else ""
+            artist_page = self._int(entity.get("popularPage", 0)) if is_artist else 0
+            artist_has_more = bool(entity.get("popularHasMore", False)) if is_artist else False
             client = self.client; generation = self.catalog_generation
         if not client or not (0 <= index < len(tracks)): return
         track = tracks[index]
@@ -1956,7 +2068,10 @@ class Player:
                 url = self._url(track, update_loading=False)
                 with self.lock:
                     if not self._catalog_current(client, generation): return
-                self._set_queue(tracks, name, start_index=index, prepared_url=url)
+                self._set_queue(
+                    tracks, name, start_index=index, prepared_url=url,
+                    artist_id=artist_id, artist_page=artist_page,
+                    artist_has_more=artist_has_more)
             except Exception as exc:
                 with self.lock:
                     if not self._catalog_current(client, generation): return
@@ -2267,7 +2382,9 @@ class Player:
 
     def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "",
                    start_index: int = 0, remaining_rows: list[Any] | None = None,
-                   collection_key: str = "", prepared_url: str = "") -> None:
+                   collection_key: str = "", prepared_url: str = "",
+                   artist_id: str = "", artist_page: int = 0,
+                   artist_has_more: bool = False) -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         self._finish_playback_reporting(finished=False)
         with self.lock:
@@ -2275,7 +2392,12 @@ class Player:
             self.queue_source = list(remaining_rows or [])
             self.queue_extending = False; self.queue_advance_pending = False
             self.queue_generation += 1; self.queue_revision += 1
-            self.queue_collection_key = collection_key; self.detached_track = None
+            self.queue_collection_key = collection_key
+            self.queue_artist_id = artist_id
+            self.queue_artist_page = artist_page
+            self.queue_artist_has_more = artist_has_more
+            self.queue_advance_automatic = False
+            self.detached_track = None
             self.artist_results = []
             self._reset_library_locked()
             self.state["artistBrowseName"] = ""
@@ -2497,12 +2619,16 @@ class Player:
             detached = self.detached_track is not None
             extend_radio = False
             extend_collection = False
+            extend_artist = False
             if automatic and mode == "repeatTrack" and not detached:
                 pass
             elif self.radio_station and self.index >= len(self.queue) - 1:
                 extend_radio = True
             elif self.queue_source and self.index >= len(self.queue) - 1:
                 extend_collection = True
+            elif (self.queue_artist_id and self.queue_artist_has_more
+                  and self.index >= len(self.queue) - 1):
+                extend_artist = True
             elif mode == "shuffle" and len(self.queue) > 1:
                 choices = [i for i in range(len(self.queue)) if i != self.index]
                 self.index = random.choice(choices)
@@ -2518,6 +2644,8 @@ class Player:
             self._extend_radio(advance=True); return
         if extend_collection:
             self._extend_collection(advance=True); return
+        if extend_artist:
+            self._extend_artist_queue(advance=True, automatic=automatic); return
         self._save_state(True); self._play_current()
 
     def previous(self) -> None:

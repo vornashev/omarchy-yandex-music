@@ -2,9 +2,11 @@ import threading
 import time
 import unittest
 from collections import OrderedDict
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 from types import SimpleNamespace
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from backend import backend
 
@@ -39,6 +41,7 @@ class FakeCatalogClient:
         self.artist_info: Any = None
         self.artist_about: Any = None
         self.artist_tracks_result: Any = None
+        self.artist_track_pages = {}
         self.direct_pages = {}
         self.discography_pages = {}
         self.similar_result: Any = None
@@ -89,7 +92,7 @@ class FakeCatalogClient:
 
     def artists_tracks(self, artist_id, page=0, page_size=20):
         self.calls.append(("artist_tracks", str(artist_id), page, page_size))
-        return self.artist_tracks_result
+        return self.artist_track_pages.get(page, self.artist_tracks_result)
 
     def artists_direct_albums(self, artist_id, page=0, page_size=20):
         self.calls.append(("direct", str(artist_id), page, page_size))
@@ -130,6 +133,20 @@ class CatalogTests(unittest.TestCase):
         player.search_results = []
         player.state = {"loadingStage": "", "error": "player error stays"}
         player.queue = [track("old")]
+        player.queue_source = []
+        player.queue_extending = False
+        player.queue_advance_pending = False
+        player.queue_advance_automatic = False
+        player.queue_generation = 0
+        player.queue_revision = 0
+        player.queue_collection_key = ""
+        player.queue_artist_id = ""
+        player.queue_artist_page = 0
+        player.queue_artist_has_more = False
+        player.detached_track = None
+        player.radio_station = ""
+        player.preferences = {"playbackMode": "repeatQueue"}
+        player.playback_report = None
         player.index = 0
         return player
 
@@ -210,9 +227,9 @@ class CatalogTests(unittest.TestCase):
         client = FakeCatalogClient()
         client.track_models = {"1": track(1), "2": track(2)}
         player = self.make_player(client)
-        rows = [SimpleNamespace(track=None, track_id="2"),
-                SimpleNamespace(track=track("embedded"), track_id="embedded"),
-                SimpleNamespace(track=None, track_id="1")]
+        rows = [SimpleNamespace(track=None, track_id="2:22"),
+                SimpleNamespace(track=track("embedded"), track_id="embedded:33"),
+                SimpleNamespace(track=None, track_id="1:11")]
         resolved = player._tracks_from_short_page(rows, client, update_loading=False)
         self.assertEqual([value.id for value in resolved], ["2", "embedded", "1"])
         self.assertEqual([call for call in client.calls if call[0] == "tracks"],
@@ -248,7 +265,9 @@ class CatalogTests(unittest.TestCase):
         page = SimpleNamespace(albums=releases, pager=SimpleNamespace(total=2, per_page=20))
         client.direct_pages[0] = page
         client.discography_pages[0] = page
-        client.similar_result = SimpleNamespace(artist=identity, similar_artists=[artist(9, "Similar")])
+        client.similar_result = SimpleNamespace(
+            artist=identity,
+            similar_artists=[artist(index, f"Similar {index}") for index in range(9, 24)])
         player = self.make_player(client)
         player._set_queue = Mock()
         player.catalog_artist("8")
@@ -258,11 +277,97 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual([row["title"] for row in entity["albums"]], ["LP"])
         self.assertEqual([row["title"] for row in entity["singles"]], ["Single"])
         self.assertEqual(entity["similar"][0]["id"], "9")
+        self.assertEqual(len(entity["similar"]), 10)
+        self.assertEqual(entity["releaseHasMore"], {"albums": False, "singles": False})
         self.assertEqual([call[0] for call in client.calls], [
             "artist_brief", "artist_info", "artist_about", "artist_tracks",
             "direct", "discography", "similar",
         ])
         player._set_queue.assert_not_called()
+
+    def test_artist_popular_playback_keeps_pagination_context(self):
+        client = FakeCatalogClient()
+        identity = artist(8, "Artist Eight")
+        first_tracks = [track(index) for index in range(1, 21)]
+        client.artist_brief = SimpleNamespace(
+            artist=identity, popular_tracks=[], similar_artists=[], all_covers=[])
+        client.artist_info = SimpleNamespace(artist=identity, covers=[], description="")
+        client.artist_about = SimpleNamespace(artist=identity, covers=[], description="")
+        client.artist_track_pages[0] = SimpleNamespace(
+            tracks=first_tracks, pager=SimpleNamespace(total=22, per_page=20))
+        empty_releases = SimpleNamespace(
+            albums=[], pager=SimpleNamespace(total=0, per_page=20))
+        client.direct_pages[0] = empty_releases
+        client.discography_pages[0] = empty_releases
+        client.similar_result = SimpleNamespace(artist=identity, similar_artists=[])
+        player = self.make_player(client)
+        set_queue = Mock()
+        player._set_queue = set_queue
+        player._url = Mock(return_value="https://audio.invalid/temporary")
+
+        player.catalog_artist("8")
+        self.wait_until(lambda: not player.catalog["entity"].get("loading"))
+        self.assertEqual(len(player.catalog["entity"]["tracks"]), 20)
+        self.assertTrue(player.catalog["entity"]["popularHasMore"])
+        player.play_catalog_track("entity", 19)
+        self.wait_until(lambda: set_queue.call_count == 1)
+
+        kwargs = set_queue.call_args.kwargs
+        self.assertEqual(kwargs["artist_id"], "8")
+        self.assertEqual(kwargs["artist_page"], 0)
+        self.assertTrue(kwargs["artist_has_more"])
+
+    def test_artist_queue_loads_track_21_instead_of_repeating_first_page(self):
+        client = FakeCatalogClient()
+        client.artist_track_pages[1] = SimpleNamespace(
+            tracks=[track(20), track(21), track(22)],
+            pager=SimpleNamespace(total=22, per_page=20))
+        player = self.make_player(client)
+        player.queue = [track(index) for index in range(1, 21)]
+        player.index = 19
+        player.queue_artist_id = "8"
+        player.queue_artist_page = 0
+        player.queue_artist_has_more = True
+        player._finish_playback_reporting = Mock()
+        player._save_state = Mock()
+        player._play_current = Mock()
+
+        player.next(automatic=True)
+        self.wait_until(lambda: not player.queue_extending and len(player.queue) == 22)
+
+        self.assertEqual([row.id for row in player.queue],
+                         [str(index) for index in range(1, 23)])
+        self.assertEqual(player.index, 20)
+        self.assertEqual(player.queue_artist_page, 1)
+        self.assertFalse(player.queue_artist_has_more)
+        self.assertIn(("artist_tracks", "8", 1, 20), client.calls)
+        player._play_current.assert_called_once()
+
+    def test_single_known_album_does_not_offer_an_extra_page(self):
+        client = FakeCatalogClient()
+        identity = artist(8, "Artist Eight")
+        client.artist_brief = SimpleNamespace(
+            artist=identity, popular_tracks=[], similar_artists=[], all_covers=[])
+        client.artist_info = SimpleNamespace(artist=identity, covers=[], description="")
+        client.artist_about = SimpleNamespace(artist=identity, covers=[], description="")
+        client.artist_tracks_result = SimpleNamespace(tracks=[])
+        one_album = SimpleNamespace(
+            albums=[album(10, "Only Album")],
+            pager=SimpleNamespace(total=1, per_page=1))
+        client.direct_pages[0] = one_album
+        client.discography_pages[0] = one_album
+        client.similar_result = SimpleNamespace(artist=identity, similar_artists=[])
+        player = self.make_player(client)
+
+        player.catalog_artist("8")
+        self.wait_until(lambda: not player.catalog["entity"].get("loading"))
+        self.assertEqual([row["title"] for row in player.catalog["entity"]["albums"]],
+                         ["Only Album"])
+        self.assertEqual(player.catalog["entity"]["releaseHasMore"],
+                         {"albums": False, "singles": False})
+        calls_before = list(client.calls)
+        player.catalog_artist_more("albums")
+        self.assertEqual(client.calls, calls_before)
 
     def test_artist_album_and_single_pages_load_independently(self):
         client = FakeCatalogClient()
@@ -399,7 +504,16 @@ class CatalogTests(unittest.TestCase):
         player.detached_track = None; player.radio_station = ""; player.radio_batch_id = ""
         player.radio_track_batches = {}; player.radio_extending = False; player.playback_report = None
         player.state.update(authenticated=True, authPending=False, loading=False)
-        player.logout()
+        with TemporaryDirectory() as directory:
+            token_file = Path(directory) / "token.json"
+            state_file = Path(directory) / "state.json"
+            token_file.write_text("test token")
+            state_file.write_text("test state")
+            with (patch.object(backend, "TOKEN_FILE", token_file),
+                  patch.object(backend, "STATE_FILE", state_file)):
+                player.logout()
+            self.assertFalse(token_file.exists())
+            self.assertFalse(state_file.exists())
         self.assertEqual(player.catalog_cache, OrderedDict())
         self.assertEqual(player.catalog_search_models["tracks"], [])
         self.assertEqual(player.catalog["suggestions"]["items"], [])

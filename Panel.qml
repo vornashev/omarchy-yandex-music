@@ -461,9 +461,6 @@ Panel {
     if ((view === "album" || view === "playlist") && (entity.hasMore === true || entity.loadingMore === true))
       rows.push({ kind: "loadEntity", title: entity.loadingMore ? "Загружаем…" : "Загрузить ещё треки" })
     if (view === "artist") {
-      var similar = entity.similar || []
-      if (similar.length > 0) rows.push({ kind: "section", title: "ПОХОЖИЕ ИСПОЛНИТЕЛИ", count: similar.length })
-      for (var s = 0; s < similar.length; s++) rows.push({ kind: "artist", value: similar[s] })
       var releaseSections = [{ key: "albums", title: "АЛЬБОМЫ" }, { key: "singles", title: "СИНГЛЫ" }]
       for (var r = 0; r < releaseSections.length; r++) {
         var releaseSection = releaseSections[r]
@@ -477,6 +474,11 @@ Panel {
           rows.push({ kind: "loadRelease", section: releaseSection.key,
             title: (entity.releaseLoading || {})[releaseSection.key] ? "Загружаем…" : "Загрузить ещё" })
       }
+      var similar = entity.similar || []
+      if (similar.length > 0)
+        rows.push({ kind: "section", title: "ПОХОЖИЕ ИСПОЛНИТЕЛИ", count: similar.length })
+      for (var s = 0; s < similar.length; s++)
+        rows.push({ kind: "artist", value: similar[s] })
     }
     return rows
   }
@@ -551,7 +553,17 @@ Panel {
       }
       if (parsed.catalog && Number(parsed.catalogRevision || 0) !== Number(data.catalogRevision || 0)) {
         var oldView = String(catalogDisplay.view || "search")
-        if (oldView === "search" && catalogResultsList) catalogSearchContentY = catalogResultsList.contentY
+        var newView = String(parsed.catalog.view || "search")
+        var previousCatalogContentY = catalogResultsList ? catalogResultsList.contentY : 0
+        var oldSearch = catalogDisplay.search || {}
+        var newSearch = parsed.catalog.search || {}
+        var searchChanged = String(oldSearch.query || "") !== String(newSearch.query || "")
+          || String(oldSearch.filter || "all") !== String(newSearch.filter || "all")
+        var oldEntity = catalogDisplay.entity || {}
+        var newEntity = parsed.catalog.entity || {}
+        var entityChanged = String(oldEntity.type || "") !== String(newEntity.type || "")
+          || String(oldEntity.id || "") !== String(newEntity.id || "")
+        if (oldView === "search") catalogSearchContentY = previousCatalogContentY
         catalogDisplay = parsed.catalog
         if (!catalogInitialized) {
           catalogInitialized = true
@@ -560,8 +572,16 @@ Panel {
           searchField.text = catalogController.fieldText
         }
         catalogController.applySuggestions(parsed.catalog.suggestions || {})
-        if (oldView !== "search" && String(parsed.catalog.view || "search") === "search")
+        if (oldView !== newView && newView === "search") {
           Qt.callLater(function() { catalogResultsList.contentY = root.catalogSearchContentY })
+        } else if (oldView !== newView || searchChanged || entityChanged) {
+          Qt.callLater(function() { catalogResultsList.contentY = 0 })
+        } else {
+          Qt.callLater(function() {
+            catalogResultsList.contentY = Math.min(previousCatalogContentY,
+              Math.max(0, catalogResultsList.contentHeight - catalogResultsList.height))
+          })
+        }
       }
       if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
@@ -2282,9 +2302,49 @@ Panel {
                   placeholderText: "Трек, исполнитель, альбом или плейлист"
                   foreground: root.foreground
                   font.family: root.fontFamily
+                  rightPadding: Style.space(34)
                   onTextEdited: catalogController.updateInput(text)
-                  Keys.onReturnPressed: catalogController.submit()
-                  Keys.onEscapePressed: { focus = false; keyCatcher.forceActiveFocus() }
+                  Keys.onDownPressed: function(event) {
+                    if (!catalogController.moveSuggestion(1)) return
+                    suggestionList.positionViewAtIndex(
+                      catalogController.highlightedSuggestionIndex, ListView.Contain)
+                    event.accepted = true
+                  }
+                  Keys.onUpPressed: function(event) {
+                    if (!catalogController.moveSuggestion(-1)) return
+                    suggestionList.positionViewAtIndex(
+                      catalogController.highlightedSuggestionIndex, ListView.Contain)
+                    event.accepted = true
+                  }
+                  Keys.onReturnPressed: {
+                    if (catalogController.acceptHighlightedSuggestion())
+                      text = catalogController.fieldText
+                    else
+                      catalogController.submit()
+                  }
+                  Keys.onEscapePressed: {
+                    catalogController.dismissSuggestions()
+                    focus = false
+                    keyCatcher.forceActiveFocus()
+                  }
+                  Text {
+                    z: 2
+                    visible: catalogController.suggestionLoading
+                    anchors.right: parent.right
+                    anchors.rightMargin: Style.space(9)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: "󰦖"
+                    textFormat: Text.PlainText
+                    color: root.dim
+                    font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall
+                    RotationAnimator on rotation {
+                      running: catalogController.suggestionLoading
+                      from: 0; to: 360
+                      duration: 800
+                      loops: Animation.Infinite
+                    }
+                  }
                 }
                 Button {
                   id: searchButton
@@ -2350,7 +2410,7 @@ Panel {
 
                 ListView {
                   id: catalogResultsList
-                  visible: !root.searchListLoading
+                  visible: !root.searchListLoading && !catalogController.suggestionsVisible
                   anchors.fill: parent
                   clip: true
                   boundsBehavior: Flickable.StopAtBounds
@@ -2386,11 +2446,12 @@ Panel {
                       anchors.fill: parent
                       anchors.margins: Style.space(10)
                       spacing: Style.space(10)
-                      Image {
+                      CatalogImage {
                         width: Style.space(88); height: width
-                        source: String(catalogRow.value.artUrl || "")
+                        requestedSource: String(catalogRow.value.artUrl || "")
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
                         fillMode: Image.PreserveAspectCrop
-                        asynchronous: true
                       }
                       Column {
                         width: parent.width - Style.space(98)
@@ -2463,10 +2524,12 @@ Panel {
                       anchors.left: parent.left; anchors.right: parent.right
                       anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
                       spacing: Style.space(9)
-                      Image {
+                      CatalogImage {
                         width: Style.space(40); height: width
-                        source: String(catalogRow.value.artUrl || "")
-                        fillMode: Image.PreserveAspectCrop; asynchronous: true
+                        requestedSource: String(catalogRow.value.artUrl || "")
+                        foreground: root.foreground
+                        fontFamily: root.fontFamily
+                        fillMode: Image.PreserveAspectCrop
                       }
                       Column {
                         width: parent.width - Style.space(49)
@@ -2514,6 +2577,7 @@ Panel {
                           }
                           Text {
                             visible: catalogRow.rowKind !== "track"
+                              && (catalogRow.value.artists || []).length === 0
                             text: String(catalogRow.value.artist || catalogRow.value.ownerName
                               || (catalogRow.value.genres || []).join(", ") || "")
                             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -2566,7 +2630,13 @@ Panel {
                     clip: true; model: catalogController.suggestions
                     delegate: Item {
                       required property var modelData
+                      required property int index
                       width: suggestionList.width; height: Style.space(36)
+                      Rectangle {
+                        anchors.fill: parent
+                        color: index === catalogController.highlightedSuggestionIndex
+                          ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
+                      }
                       Text {
                         anchors.left: parent.left; anchors.right: parent.right
                         anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
@@ -2575,6 +2645,7 @@ Panel {
                       }
                       MouseArea {
                         anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onEntered: catalogController.highlightedSuggestionIndex = index
                         onClicked: {
                           searchField.text = String(modelData)
                           catalogController.selectSuggestion(modelData)

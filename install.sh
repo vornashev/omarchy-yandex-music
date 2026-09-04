@@ -10,9 +10,12 @@ MARKER="$APP_DIR/.installed-version"
 BACKEND_ONLY=0
 
 case "${1:-}" in
-  "") ;;
-  --backend-only) BACKEND_ONLY=1 ;;
-  *) echo "Usage: $0 [--backend-only]" >&2; exit 2 ;;
+"") ;;
+--backend-only) BACKEND_ONLY=1 ;;
+*)
+  echo "Usage: $0 [--backend-only]" >&2
+  exit 2
+  ;;
 esac
 
 for command in python git mpv systemctl jq flock; do
@@ -40,6 +43,7 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd"
   install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
     "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
+    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" \
     "$ROOT/requirements.txt" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/install.sh" "$ROOT/bootstrap.sh" "$ROOT/uninstall.sh" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/backend/backend.py" "$PLUGIN_DIR/backend/backend.py"
@@ -50,10 +54,10 @@ fi
 
 # Fast path used whenever the plugin is loaded. It also starts a previously
 # installed but inactive service without reinstalling Python dependencies.
-if (( BACKEND_ONLY )) \
-  && [[ -r "$MARKER" && "$(<"$MARKER")" == "$VERSION" ]] \
-  && [[ -x "$APP_DIR/venv/bin/python" && -f "$APP_DIR/backend.py" ]] \
-  && [[ -x "$HOME/.local/bin/omarchy-yandex-music" && -f "$UNIT_DIR/omarchy-yandex-music.service" ]]; then
+if ((BACKEND_ONLY)) &&
+  [[ -r "$MARKER" && "$(<"$MARKER")" == "$VERSION" ]] &&
+  [[ -x "$APP_DIR/venv/bin/python" && -f "$APP_DIR/backend.py" ]] &&
+  [[ -x "$HOME/.local/bin/omarchy-yandex-music" && -f "$UNIT_DIR/omarchy-yandex-music.service" ]]; then
   systemctl --user daemon-reload
   systemctl --user enable --now omarchy-yandex-music.service >/dev/null
   echo "Yandex Music backend $VERSION is ready."
@@ -74,10 +78,10 @@ fi
 systemctl --user daemon-reload
 systemctl --user enable omarchy-yandex-music.service >/dev/null
 systemctl --user restart omarchy-yandex-music.service
-printf '%s\n' "$VERSION" > "$MARKER"
+printf '%s\n' "$VERSION" >"$MARKER"
 chmod 644 "$MARKER"
 
-if (( BACKEND_ONLY )); then
+if ((BACKEND_ONLY)); then
   echo "Yandex Music backend $VERSION installed."
   exit 0
 fi
