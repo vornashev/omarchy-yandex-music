@@ -9,6 +9,7 @@ from backend import backend
 class FakeClient:
     def __init__(self):
         self.calls = []
+        self.radio_result = None
 
     def play_audio(self, *args, **kwargs):
         self.calls.append(("play_audio", args, kwargs))
@@ -45,6 +46,10 @@ class FakeClient:
     def users_likes_tracks_remove(self, track_id):
         self.calls.append(("like_remove", track_id))
         return True
+
+    def rotor_station_tracks(self, station, **kwargs):
+        self.calls.append(("radio_tracks", station, kwargs))
+        return self.radio_result
 
 
 class PriorityOneTests(unittest.TestCase):
@@ -207,6 +212,36 @@ class PriorityOneTests(unittest.TestCase):
 
         self.assertEqual(player.client.calls[-1][0], "finished")
         self.assertEqual(player.client.calls[-2][2]["end_position_seconds"], 180)
+
+    def test_track_radio_uses_current_track_as_station_seed(self):
+        player = self.make_player(radio=False)
+        recommended = [SimpleNamespace(id="100"), SimpleNamespace(id="101")]
+        player.client.radio_result = SimpleNamespace(
+            sequence=[SimpleNamespace(track=track) for track in recommended],
+            batch_id="radio-batch",
+        )
+        captured = {}
+
+        def run_loading(operation, kind):
+            captured["loadingKind"] = kind
+            operation()
+
+        def set_queue(tracks, name, station, batch_id):
+            captured.update(
+                tracks=tracks, name=name, station=station, batchId=batch_id
+            )
+
+        player._loading = run_loading
+        player._set_queue = set_queue
+
+        player.play_track_radio()
+
+        self.assertEqual(captured["loadingKind"], "radio")
+        self.assertEqual(captured["tracks"], recommended)
+        self.assertEqual(captured["name"], "Радио по треку")
+        self.assertEqual(captured["station"], "track:42")
+        self.assertEqual(captured["batchId"], "radio-batch")
+        self.assertEqual(player.client.calls, [("radio_tracks", "track:42", {})])
 
     def test_dislike_removes_like_and_advances_wave(self):
         player = self.make_player()

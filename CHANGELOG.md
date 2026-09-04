@@ -13,7 +13,13 @@ All notable changes to this project are documented here. The format follows [Kee
 - Animated full-width cover mode with track details, a seekable progress bar, and primary playback actions
 - Standard listening start and finish reports through `play_audio`
 - “My Wave” feedback for radio start, track start, natural completion, and manual skips
-- Fake tests for playback reporting and mutually exclusive like/dislike state
+- Synced LRC lyrics with active-line highlighting, auto-scroll, and click-to-seek
+- Plain-text fallback, a local unavailable state, and manual retry after loading errors
+- In-memory LRU lyrics cache for the current and seven recently opened tracks
+- Track Radio with a dedicated action, recommendation queue, and continued radio chain
+- On-demand current-track view for release details and recording credits
+- A separate in-memory LRU detailed-information cache for the eight most recent tracks
+- Fake tests for playback reporting, like/dislike, LRC, track-station startup, credit normalization, and both on-demand caches
 
 ### Changed
 
@@ -22,6 +28,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
 - Full-width cover mode remains active when the popup is closed and reopened
 - Letter commands follow physical QWERTY key positions and work with English and Russian layouts
+- Lyrics load on demand through a separate background operation, do not inflate regular status/details polling, and never turn failures into global player errors
+- The lyrics toggle uses a dedicated synced-lines icon and changes to a return-to-queue action while lyrics are open
 
 ### Fixed
 
@@ -31,6 +39,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - After an external Stop command, playback is marked as stopped, position resets, and Play starts the current track from the beginning
 - Leaving Search now releases the hidden field focus, restoring tab/player shortcuts and preventing hidden query edits
 - Cover mode vertical animations are synchronized, the gutter remains constant, panel height is held through transitions, and the temporary second inter-block gap is compensated without a final tab-row snap
+- LRC highlighting no longer trails the one-second monitor/status cycles: the backend records fractional mpv position and its observation time, while the panel smoothly interpolates between updates
 
 ## [0.7.4] - 2026-09-03
 

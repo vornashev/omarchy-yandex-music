@@ -17,6 +17,13 @@ Panel {
   property bool settingsOpen: false
   property bool confirmLogout: false
   property bool waveOptionsOpen: false
+  property bool lyricsOpen: false
+  property bool lyricsAutoScroll: true
+  property var lyricsData: ({ trackId: "", loading: false, available: false,
+    synced: false, format: "", writers: [], lines: [], error: "" })
+  property bool trackInfoOpen: false
+  property var trackInfoData: ({ trackId: "", loading: false, available: false,
+    credits: [], error: "" })
   property bool coverExpanded: false
   property bool coverTransitioning: false
   property int coverStablePanelHeight: 0
@@ -37,11 +44,29 @@ Panel {
   property int sentSeek: -1
   property bool seeking: false
   property int busySeconds: 0
+  property double positionClockMs: Date.now()
+  readonly property real playbackPosition: {
+    var position = Number(data.position || 0)
+    var observedAt = Number(data.positionObservedAt || 0)
+    if (playing && data.stopped !== true && observedAt > 0) {
+      var elapsed = Math.max(0, positionClockMs / 1000 - observedAt)
+      position += Math.min(3, elapsed)
+    }
+    var duration = Number(data.duration || 0)
+    return Math.max(0, duration > 0 ? Math.min(duration, position) : position)
+  }
   readonly property real displayPosition: (seeking || seekProcess.running) && pendingSeek >= 0
-    ? pendingSeek : Number(data.position || 0)
+    ? pendingSeek : playbackPosition
   readonly property bool authenticated: data.authenticated === true
   readonly property bool playing: data.playing === true
   readonly property bool hasTrack: String(data.title || "") !== ""
+  readonly property string currentTrackId: String(data.trackId || "")
+  readonly property var lyricsLines: lyricsData.lines || []
+  readonly property bool lyricsLoading: lyricsData.loading === true
+  readonly property int lyricsCurrentIndex: currentLyricsLineIndex()
+  readonly property bool trackInfoLoading: trackInfoData.loading === true
+  readonly property var trackInfoRows: buildTrackInfoRows()
+  readonly property bool currentTrackPaneOpen: lyricsOpen || trackInfoOpen
   readonly property color foreground: bar ? bar.foreground : Color.foreground
   readonly property color dim: Qt.darker(foreground, 1.5)
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -68,7 +93,7 @@ Panel {
   readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
   readonly property bool queueListLoading: data.loading === true
-    && ["artist", "likes", "playlist", "wave"].indexOf(String(data.loadingKind || "")) >= 0
+    && ["artist", "likes", "playlist", "wave", "radio"].indexOf(String(data.loadingKind || "")) >= 0
   readonly property bool searchListLoading: data.loading === true
     && String(data.loadingKind || "") === "search"
   readonly property string errorTitle: errorSource === "status"
@@ -83,6 +108,7 @@ Panel {
     if (data.libraryLoadingMore === true) return "Загружаем следующую страницу…"
     var kind = String(data.loadingKind || "")
     if (kind === "wave") return "Настраиваем «Мою волну»…"
+    if (kind === "radio") return "Запускаем радио по треку…"
     if (kind === "likes") return "Загружаем любимые треки…"
     if (kind === "playlist") return "Загружаем плейлист…"
     if (kind === "search") return "Ищем треки…"
@@ -157,6 +183,8 @@ Panel {
     coverTransitionTimer.restart()
     coverExpanded = next
     if (next) {
+      lyricsOpen = false
+      trackInfoOpen = false
       page = 0
       searchField.focus = false
       panelScroll.contentY = 0
@@ -179,6 +207,134 @@ Panel {
   function formatTime(value) {
     var seconds = Math.max(0, Math.round(Number(value || 0)))
     return Math.floor(seconds / 60) + ":" + String(seconds % 60).padStart(2, "0")
+  }
+  function emptyLyrics(trackId, loading) {
+    return { trackId: String(trackId || ""), loading: loading === true,
+      available: false, synced: false, format: "", writers: [], lines: [], error: "" }
+  }
+  function currentLyricsLineIndex() {
+    if (!lyricsData.synced || String(lyricsData.trackId || "") !== currentTrackId) return -1
+    var current = -1
+    for (var i = 0; i < lyricsLines.length; i++) {
+      var timestamp = Number(lyricsLines[i].time)
+      if (timestamp < 0) continue
+      if (timestamp <= displayPosition + .05) current = i
+      else break
+    }
+    return current
+  }
+  function setLyricsOpen(value) {
+    var next = value === true && hasTrack
+    if (lyricsOpen === next) return
+    lyricsOpen = next
+    lyricsAutoScroll = true
+    if (!next) return
+    trackInfoOpen = false
+    if (String(lyricsData.trackId || "") !== currentTrackId)
+      lyricsData = emptyLyrics(currentTrackId, true)
+    refreshLyrics(false)
+    lyricsScrollTimer.restart()
+  }
+  function refreshLyrics(force) {
+    if (!lyricsOpen || !hasTrack || lyricsProcess.running) return
+    lyricsProcess.command = [cli, force === true ? "lyrics_refresh" : "lyrics"]
+    lyricsProcess.running = true
+  }
+  function applyLyrics(text) {
+    try {
+      var parsed = JSON.parse(String(text || "{}"))
+      if (String(parsed.trackId || "") !== currentTrackId) {
+        lyricsData = emptyLyrics(currentTrackId, true)
+        lyricsPollTimer.restart()
+        return
+      }
+      lyricsData = parsed
+      if (parsed.loading === true) lyricsPollTimer.restart()
+      else lyricsScrollTimer.restart()
+    } catch (e) {
+      var failed = emptyLyrics(currentTrackId, false)
+      failed.error = "Музыкальный сервис вернул некорректный текст песни"
+      lyricsData = failed
+    }
+  }
+  function scrollToCurrentLyric() {
+    if (!lyricsOpen || !lyricsAutoScroll || !lyricsData.synced
+        || lyricsCurrentIndex < 0 || lyricsCurrentIndex >= lyricsList.count) return
+    lyricsList.positionViewAtIndex(lyricsCurrentIndex, ListView.Center)
+  }
+  function seekToLyric(value) {
+    if (!lyricsData.synced || Number(value) < 0) return
+    pendingSeek = Math.max(0, Math.min(Number(data.duration || value), Math.round(Number(value))))
+    lyricsAutoScroll = true
+    commitSeek()
+  }
+  function emptyTrackInfo(trackId, loading) {
+    return { trackId: String(trackId || ""), loading: loading === true,
+      available: false, credits: [], error: "" }
+  }
+  function buildTrackInfoRows() {
+    var rows = []
+    function add(label, value) {
+      var text = String(value === undefined || value === null ? "" : value).trim()
+      if (text !== "") rows.push({ kind: "detail", label: label, value: text })
+    }
+    add("Альбом", trackInfoData.album)
+    add("Дата релиза", trackInfoData.releaseDate || trackInfoData.year)
+    add("Жанр", trackInfoData.genre)
+    add("Лейбл", (trackInfoData.labels || []).join(", "))
+    var trackNumber = Number(trackInfoData.trackNumber || 0)
+    var discNumber = Number(trackInfoData.discNumber || 0)
+    if (trackNumber > 0)
+      add("Номер трека", String(trackNumber) + (discNumber > 1 ? " · диск " + discNumber : ""))
+    if (Number(trackInfoData.duration || 0) > 0)
+      add("Длительность", formatTime(trackInfoData.duration))
+    add("Версия", trackInfoData.version)
+    if (trackInfoData.explicit === true) add("Контент", "Ненормативная лексика")
+    add("Другие названия", (trackInfoData.aliases || []).join(", "))
+    if (String(trackInfoData.description || "").trim() !== "")
+      rows.push({ kind: "detail", label: "Описание",
+        value: String(trackInfoData.description).trim() })
+    var credits = trackInfoData.credits || []
+    if (credits.length > 0) rows.push({ kind: "section", label: "УЧАСТНИКИ", value: "" })
+    for (var i = 0; i < credits.length; i++) {
+      var credit = credits[i] || {}
+      add(String(credit.title || "Участник"), credit.value)
+    }
+    return rows
+  }
+  function setTrackInfoOpen(value) {
+    var next = value === true && hasTrack
+    if (trackInfoOpen === next) return
+    trackInfoOpen = next
+    if (!next) return
+    lyricsOpen = false
+    if (String(trackInfoData.trackId || "") !== currentTrackId)
+      trackInfoData = emptyTrackInfo(currentTrackId, true)
+    refreshTrackInfo(false)
+  }
+  function refreshTrackInfo(force) {
+    if (!trackInfoOpen || !hasTrack || trackInfoProcess.running) return
+    trackInfoProcess.command = [cli, force === true ? "track_info_refresh" : "track_info"]
+    trackInfoProcess.running = true
+  }
+  function applyTrackInfo(text) {
+    try {
+      var parsed = JSON.parse(String(text || "{}"))
+      if (String(parsed.trackId || "") !== currentTrackId) {
+        trackInfoData = emptyTrackInfo(currentTrackId, true)
+        trackInfoPollTimer.restart()
+        return
+      }
+      trackInfoData = parsed
+      if (parsed.loading === true) trackInfoPollTimer.restart()
+      else Qt.callLater(function() {
+        if (root.trackInfoOpen) trackInfoList.positionViewAtBeginning()
+      })
+    } catch (e) {
+      var failed = emptyTrackInfo(currentTrackId, false)
+      failed.error = "Музыкальный сервис вернул некорректные сведения о треке"
+      trackInfoData = failed
+    }
   }
   function refresh() {
     if (statusProcess.running) return
@@ -216,7 +372,7 @@ Panel {
     dismissedError = ""
     errorSource = ""
     var loadingKinds = { "artist": "artist", "likes": "likes", "playlist": "playlist",
-      "wave": "wave", "search": "search" }
+      "wave": "wave", "track_radio": "radio", "search": "search" }
     if (loadingKinds[command] !== undefined || command === "load_more_library") {
       var optimistic = {}
       for (var key in data) optimistic[key] = data[key]
@@ -282,6 +438,7 @@ Panel {
         parsed.muted = false
       }
       data = parsed
+      positionClockMs = Date.now()
       hasLoadedStatus = true
       var nextError = String(parsed.error || "")
       if (nextError !== lastError) dismissedError = ""
@@ -326,6 +483,10 @@ Panel {
     settingsOpen = false
     confirmLogout = false
     page = Math.max(0, Math.min(2, index))
+    if (page !== 0) {
+      setLyricsOpen(false)
+      setTrackInfoOpen(false)
+    }
     if (page === 0) queueScrollTimer.restart()
     if (page === 2) {
       Qt.callLater(function() {
@@ -342,10 +503,27 @@ Panel {
   }
 
   onBusyChanged: if (busy) busySeconds = 0
-  onHasTrackChanged: if (!hasTrack) setCoverExpanded(false)
+  onHasTrackChanged: if (!hasTrack) {
+    setCoverExpanded(false)
+    setLyricsOpen(false)
+    setTrackInfoOpen(false)
+  }
+  onCurrentTrackIdChanged: {
+    if (lyricsOpen) {
+      lyricsData = emptyLyrics(currentTrackId, true)
+      lyricsAutoScroll = true
+      lyricsPollTimer.restart()
+    }
+    if (trackInfoOpen) {
+      trackInfoData = emptyTrackInfo(currentTrackId, true)
+      trackInfoPollTimer.restart()
+    }
+  }
+  onLyricsCurrentIndexChanged: if (lyricsAutoScroll) lyricsScrollTimer.restart()
 
   onOpenedChanged: {
     if (opened) {
+      positionClockMs = Date.now()
       refresh()
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
       queueScrollTimer.restart()
@@ -379,6 +557,32 @@ Panel {
           copy.network = JSON.parse(networkOut.text || "{}")
           root.data = copy
         } catch (e) {}
+      }
+    }
+  }
+  Process {
+    id: lyricsProcess; command: []
+    stdout: StdioCollector { id: lyricsOut; waitForEnd: true }
+    stderr: StdioCollector { id: lyricsErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0) root.applyLyrics(lyricsOut.text)
+      else {
+        var failed = root.emptyLyrics(root.currentTrackId, false)
+        failed.error = String(lyricsErr.text || "Не удалось получить текст песни")
+        root.lyricsData = failed
+      }
+    }
+  }
+  Process {
+    id: trackInfoProcess; command: []
+    stdout: StdioCollector { id: trackInfoOut; waitForEnd: true }
+    stderr: StdioCollector { id: trackInfoErr; waitForEnd: true }
+    onExited: function(exitCode) {
+      if (exitCode === 0) root.applyTrackInfo(trackInfoOut.text)
+      else {
+        var failed = root.emptyTrackInfo(root.currentTrackId, false)
+        failed.error = String(trackInfoErr.text || "Не удалось получить сведения о треке")
+        root.trackInfoData = failed
       }
     }
   }
@@ -452,8 +656,26 @@ Panel {
     interval: root.opened || root.playing || root.data.authPending ? 1000 : 5000
     running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh()
   }
+  Timer {
+    interval: 100
+    running: root.opened && root.playing
+    repeat: true
+    onTriggered: root.positionClockMs = Date.now()
+  }
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
+  Timer { id: lyricsPollTimer; interval: 500; repeat: false; onTriggered: root.refreshLyrics(false) }
+  Timer { id: trackInfoPollTimer; interval: 500; repeat: false; onTriggered: root.refreshTrackInfo(false) }
+  Timer { id: lyricsScrollTimer; interval: 100; repeat: false; onTriggered: root.scrollToCurrentLyric() }
+  Timer {
+    id: lyricsResumeScrollTimer
+    interval: 3500
+    repeat: false
+    onTriggered: {
+      root.lyricsAutoScroll = true
+      root.scrollToCurrentLyric()
+    }
+  }
   Timer {
     id: coverTransitionTimer
     interval: root.coverTransitionDuration + 40
@@ -865,7 +1087,7 @@ Panel {
               Text {
                 anchors.left: parent.left; anchors.top: expandedProgressTrack.bottom
                 anchors.topMargin: Style.space(3)
-                text: root.formatTime(root.data.position)
+                text: root.formatTime(root.playbackPosition)
                   + (root.seeking && root.pendingSeek >= 0
                     ? "  (" + root.formatTime(root.pendingSeek) + ")" : "")
                 color: root.dim; font.family: root.fontFamily
@@ -901,6 +1123,12 @@ Panel {
                 horizontalPadding: 0; verticalPadding: 0; iconSize: 22
                 iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
                 onClicked: root.action("next")
+              }
+              Button {
+                width: Style.space(42); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 20
+                iconText: "󰐻"; tooltipText: "Радио по треку"; foreground: root.foreground
+                onClicked: root.action("track_radio")
               }
               Button {
                 width: Style.space(42); height: Style.space(38)
@@ -1102,7 +1330,7 @@ Panel {
                 }
                 Text {
                   anchors.left: parent.left; anchors.top: progressTrack.bottom; anchors.topMargin: Style.space(3)
-                  text: root.formatTime(root.data.position)
+                  text: root.formatTime(root.playbackPosition)
                     + (root.seeking && root.pendingSeek >= 0 ? "  (" + root.formatTime(root.pendingSeek) + ")" : "")
                   color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
                 }
@@ -1140,6 +1368,13 @@ Panel {
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 20
                     iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
                     onClicked: root.action("next")
+                  }
+                  Button {
+                    width: Style.space(34); height: Style.space(30)
+                    horizontalPadding: 0; verticalPadding: 0; iconSize: 18
+                    iconText: "󰐻"; tooltipText: "Радио по треку"; foreground: root.foreground
+                    enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                    onClicked: root.action("track_radio")
                   }
                   Button {
                     width: Style.space(34); height: Style.space(30)
@@ -1224,38 +1459,68 @@ Panel {
               }
 
               PanelSeparator {
-                visible: root.queueListLoading || root.trackListDisplay.length > 0
+                visible: root.hasTrack || root.queueListLoading || root.trackListDisplay.length > 0
                 foreground: root.foreground
               }
 
               Item {
-                visible: root.queueListLoading || root.trackListDisplay.length > 0
+                visible: root.hasTrack || root.queueListLoading || root.trackListDisplay.length > 0
                 width: parent.width
                 height: visible ? Style.space(24) : 0
                 clip: true
 
                 Text {
                   id: queueHeading
-                  visible: !root.queueListLoading
-                  anchors.left: parent.left; anchors.right: queueModeButton.left
+                  visible: !root.queueListLoading || root.currentTrackPaneOpen
+                  anchors.left: parent.left; anchors.right: lyricsToggleButton.left
                   anchors.rightMargin: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.browsingArtist
-                    ? "ТРЕКИ ИСПОЛНИТЕЛЯ · " + String(root.data.artistBrowseName || "")
-                    : (root.browsingLibrary
-                      ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
-                      : "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : ""))
+                  text: root.trackInfoOpen ? "О ТРЕКЕ"
+                    : (root.lyricsOpen ? "ТЕКСТ ПЕСНИ"
+                    : (root.browsingArtist
+                      ? "ТРЕКИ ИСПОЛНИТЕЛЯ · " + String(root.data.artistBrowseName || "")
+                      : (root.browsingLibrary
+                        ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
+                        : "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : ""))))
                   elide: Text.ElideRight
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.letterSpacing: 1
                 }
 
                 Button {
+                  id: lyricsToggleButton
+                  visible: root.hasTrack
+                  anchors.right: trackInfoToggleButton.left; anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(28); height: Style.space(24)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: root.lyricsOpen ? "󰐑" : "󰨖"
+                  iconSize: Style.font.icon
+                  tooltipText: root.lyricsOpen ? "Вернуться к очереди" : "Открыть текст песни"
+                  foreground: root.lyricsOpen ? Color.accent : root.dim
+                  onClicked: root.setLyricsOpen(!root.lyricsOpen)
+                }
+
+                Button {
+                  id: trackInfoToggleButton
+                  visible: root.hasTrack
+                  anchors.right: queueModeButton.left; anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(28); height: Style.space(24)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: root.trackInfoOpen ? "󰐑" : "󰋽"
+                  iconSize: Style.font.icon
+                  tooltipText: root.trackInfoOpen ? "Вернуться к очереди" : "Сведения и участники"
+                  foreground: root.trackInfoOpen ? Color.accent : root.dim
+                  onClicked: root.setTrackInfoOpen(!root.trackInfoOpen)
+                }
+
+                Button {
                   id: queueModeButton
-                  visible: !root.queueListLoading
+                  visible: !root.queueListLoading && !root.currentTrackPaneOpen
                   anchors.right: queuePosition.left; anchors.rightMargin: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(26); height: Style.space(24)
+                  width: root.currentTrackPaneOpen ? 0 : Style.space(26); height: Style.space(24)
                   horizontalPadding: 0; verticalPadding: 0
                   iconText: root.browsingCollection ? "󰁍" : root.playbackModeIcon
                   iconSize: Style.font.icon
@@ -1271,32 +1536,36 @@ Panel {
 
                 Text {
                   id: queuePosition
-                  visible: !root.queueListLoading
+                  visible: !root.queueListLoading || root.currentTrackPaneOpen
                   anchors.right: parent.right
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.browsingLibrary && Number(root.data.libraryTotal || 0) > root.trackListDisplay.length
-                    ? root.trackListDisplay.length + "/" + Number(root.data.libraryTotal || 0)
-                    : (root.browsingCollection ? String(root.trackListDisplay.length)
-                    : (root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : ""))
-                  color: root.dim; font.family: root.fontFamily
-                  font.pixelSize: Style.font.caption
+                  text: root.trackInfoOpen ? (root.trackInfoLoading ? "…" : "")
+                    : (root.lyricsOpen
+                      ? (root.lyricsLoading ? "…" : (root.lyricsData.synced ? "LRC"
+                        : (root.lyricsData.available ? "TEXT" : "")))
+                    : (root.browsingLibrary && Number(root.data.libraryTotal || 0) > root.trackListDisplay.length
+                      ? root.trackListDisplay.length + "/" + Number(root.data.libraryTotal || 0)
+                      : (root.browsingCollection ? String(root.trackListDisplay.length)
+                      : (root.data.queueCount ? root.data.queueIndex + "/" + root.data.queueCount : ""))))
+                  color: root.lyricsOpen && root.lyricsData.synced ? Color.accent : root.dim
+                  font.family: root.fontFamily; font.pixelSize: Style.font.caption
                 }
 
                 Rectangle {
-                  visible: root.queueListLoading
+                  visible: root.queueListLoading && !root.currentTrackPaneOpen
                   anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
                   width: parent.width * .48; height: Style.space(7); radius: height / 2
                   color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .1)
                 }
                 Rectangle {
-                  visible: root.queueListLoading
+                  visible: root.queueListLoading && !root.currentTrackPaneOpen
                   anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                   width: Style.space(48); height: Style.space(7); radius: height / 2
                   color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .07)
                 }
                 Rectangle {
                   id: queueHeaderShimmer
-                  visible: root.queueListLoading
+                  visible: root.queueListLoading && !root.currentTrackPaneOpen
                   width: parent.width * .16; height: parent.height
                   color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .045)
                   rotation: 8
@@ -1305,13 +1574,13 @@ Panel {
                     to: queueHeaderShimmer.parent.width + queueHeaderShimmer.width
                     duration: 1050; loops: Animation.Infinite
                     easing.type: Easing.InOutQuad
-                    running: root.queueListLoading
+                    running: root.queueListLoading && !root.currentTrackPaneOpen
                   }
                 }
               }
 
               SkeletonList {
-                visible: root.queueListLoading
+                visible: !root.currentTrackPaneOpen && root.queueListLoading
                 width: parent.width
                 height: visible ? Style.space(260) : 0
                 rowCount: 5
@@ -1320,7 +1589,8 @@ Panel {
 
               ListView {
                 id: queueList
-                visible: !root.queueListLoading && root.trackListDisplay.length > 0
+                visible: !root.currentTrackPaneOpen && !root.queueListLoading
+                  && root.trackListDisplay.length > 0
                 width: parent.width
                 height: visible ? Style.space(260) : 0
                 clip: true
@@ -1419,6 +1689,237 @@ Panel {
                     anchors.centerIn: parent
                     text: "󰔟  Загружаем ещё 50…"
                     color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                  }
+                }
+              }
+
+              SkeletonList {
+                visible: root.lyricsOpen && root.lyricsLoading
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+                rowCount: 5
+                foreground: root.foreground
+              }
+
+              Item {
+                visible: root.lyricsOpen && !root.lyricsLoading
+                  && (!root.lyricsData.available || root.lyricsLines.length === 0)
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+
+                Column {
+                  anchors.centerIn: parent
+                  width: parent.width - Style.space(32)
+                  spacing: Style.space(10)
+                  Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: String(root.lyricsData.error || "") !== ""
+                      ? String(root.lyricsData.error) : "Текст этой песни недоступен"
+                    color: String(root.lyricsData.error || "") !== "" ? Color.urgent : root.dim
+                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                  }
+                  Button {
+                    visible: String(root.lyricsData.error || "") !== ""
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Повторить"; iconText: "󰑐"; bordered: true
+                    foreground: root.foreground
+                    enabled: !lyricsProcess.running
+                    onClicked: root.refreshLyrics(true)
+                  }
+                }
+              }
+
+              ListView {
+                id: lyricsList
+                visible: root.lyricsOpen && !root.lyricsLoading
+                  && root.lyricsData.available && root.lyricsLines.length > 0
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+                clip: true
+                model: root.lyricsLines
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
+                cacheBuffer: height
+                spacing: Style.space(2)
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+                onMovementStarted: {
+                  root.lyricsAutoScroll = false
+                  lyricsResumeScrollTimer.stop()
+                }
+                onMovementEnded: lyricsResumeScrollTimer.restart()
+
+                delegate: BorderSurface {
+                  id: lyricRow
+                  required property var modelData
+                  required property int index
+                  readonly property bool isCurrent: index === root.lyricsCurrentIndex
+                  readonly property bool canSeek: root.lyricsData.synced && Number(modelData.time) >= 0
+                  width: lyricsList.width
+                    - (lyricsList.contentHeight > lyricsList.height ? Style.space(8) : 0)
+                  height: String(modelData.text || "") === "" ? Style.space(18)
+                    : Math.max(Style.space(38), lyricText.implicitHeight + Style.space(14))
+                  radius: Style.cornerRadius
+                  color: isCurrent
+                    ? Style.selectedFillFor(root.foreground, Color.accent)
+                    : (lyricMouse.containsMouse && canSeek
+                      ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
+                  borderSpec: isCurrent
+                    ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
+
+                  Text {
+                    id: lyricText
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: Style.space(9)
+                    anchors.verticalCenter: parent.verticalCenter
+                    text: String(lyricRow.modelData.text || "")
+                    wrapMode: Text.WordWrap
+                    horizontalAlignment: Text.AlignHCenter
+                    color: lyricRow.isCurrent ? Color.accent
+                      : (root.lyricsData.synced ? root.dim : root.foreground)
+                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                    font.bold: lyricRow.isCurrent
+                  }
+                  MouseArea {
+                    id: lyricMouse
+                    anchors.fill: parent
+                    enabled: lyricRow.canSeek
+                    hoverEnabled: true
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: root.seekToLyric(lyricRow.modelData.time)
+                  }
+                }
+
+                footer: Text {
+                  width: lyricsList.width
+                  height: visible ? implicitHeight + Style.space(20) : 0
+                  visible: (root.lyricsData.writers || []).length > 0
+                  topPadding: Style.space(10)
+                  horizontalAlignment: Text.AlignHCenter
+                  wrapMode: Text.WordWrap
+                  text: "Авторы текста: " + (root.lyricsData.writers || []).join(", ")
+                  color: root.dim; font.family: root.fontFamily
+                  font.pixelSize: Style.font.caption
+                }
+              }
+
+              SkeletonList {
+                visible: root.trackInfoOpen && root.trackInfoLoading
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+                rowCount: 5
+                foreground: root.foreground
+              }
+
+              Item {
+                visible: root.trackInfoOpen && !root.trackInfoLoading
+                  && root.trackInfoRows.length === 0
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+
+                Column {
+                  anchors.centerIn: parent
+                  width: parent.width - Style.space(32)
+                  spacing: Style.space(10)
+                  Text {
+                    width: parent.width
+                    horizontalAlignment: Text.AlignHCenter
+                    wrapMode: Text.WordWrap
+                    text: String(root.trackInfoData.error || "") !== ""
+                      ? String(root.trackInfoData.error) : "Подробные сведения недоступны"
+                    color: String(root.trackInfoData.error || "") !== "" ? Color.urgent : root.dim
+                    font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                  }
+                  Button {
+                    visible: String(root.trackInfoData.error || "") !== ""
+                    anchors.horizontalCenter: parent.horizontalCenter
+                    text: "Повторить"; iconText: "󰑐"; bordered: true
+                    foreground: root.foreground
+                    enabled: !trackInfoProcess.running
+                    onClicked: root.refreshTrackInfo(true)
+                  }
+                }
+              }
+
+              ListView {
+                id: trackInfoList
+                visible: root.trackInfoOpen && !root.trackInfoLoading
+                  && root.trackInfoRows.length > 0
+                width: parent.width
+                height: visible ? Style.space(260) : 0
+                clip: true
+                model: root.trackInfoRows
+                boundsBehavior: Flickable.StopAtBounds
+                interactive: contentHeight > height
+                cacheBuffer: height
+                spacing: Style.space(4)
+                ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                delegate: BorderSurface {
+                  id: trackInfoRow
+                  required property var modelData
+                  readonly property bool isSection: String(modelData.kind || "") === "section"
+                  width: trackInfoList.width
+                    - (trackInfoList.contentHeight > trackInfoList.height ? Style.space(8) : 0)
+                  height: isSection ? Style.space(28)
+                    : Math.max(Style.space(44), trackInfoRowContent.implicitHeight + Style.space(14))
+                  radius: Style.cornerRadius
+                  color: isSection ? "transparent"
+                    : Style.normalFillFor(root.foreground, Color.accent)
+                  borderSpec: Border.none()
+
+                  Column {
+                    id: trackInfoRowContent
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: trackInfoRow.isSection ? 0 : Style.space(9)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(2)
+                    Text {
+                      width: parent.width
+                      text: String(trackInfoRow.modelData.label || "")
+                      color: trackInfoRow.isSection ? root.dim : Color.accent
+                      font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                      font.bold: trackInfoRow.isSection
+                      font.letterSpacing: trackInfoRow.isSection ? .7 : 0
+                    }
+                    Text {
+                      visible: !trackInfoRow.isSection
+                      width: parent.width
+                      text: String(trackInfoRow.modelData.value || "")
+                      wrapMode: Text.WordWrap
+                      color: root.foreground; font.family: root.fontFamily
+                      font.pixelSize: Style.font.bodySmall
+                    }
+                  }
+                }
+
+                footer: Item {
+                  width: trackInfoList.width
+                  height: String(root.trackInfoData.error || "") !== ""
+                    ? trackInfoErrorContent.implicitHeight + Style.space(20) : 0
+                  Column {
+                    id: trackInfoErrorContent
+                    visible: String(root.trackInfoData.error || "") !== ""
+                    anchors.left: parent.left; anchors.right: parent.right
+                    anchors.margins: Style.space(10)
+                    anchors.verticalCenter: parent.verticalCenter
+                    spacing: Style.space(8)
+                    Text {
+                      width: parent.width
+                      horizontalAlignment: Text.AlignHCenter
+                      wrapMode: Text.WordWrap
+                      text: String(root.trackInfoData.error || "")
+                      color: Color.urgent; font.family: root.fontFamily
+                      font.pixelSize: Style.font.caption
+                    }
+                    Button {
+                      anchors.horizontalCenter: parent.horizontalCenter
+                      text: "Повторить"; iconText: "󰑐"; bordered: true
+                      foreground: root.foreground
+                      enabled: !trackInfoProcess.running
+                      onClicked: root.refreshTrackInfo(true)
+                    }
                   }
                 }
               }

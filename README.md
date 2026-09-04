@@ -35,6 +35,9 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 - Now Playing, Library, Search, queue, and artist browsing
 - “My Wave” with mood, discovery, language controls, and recommendation feedback
 - Likes, “Do not recommend”, personal playlists, and individual clickable artists
+- Synced lyrics with active-line highlighting, auto-scroll, and click-to-seek
+- Track radio with a sequence of similar recommendations and radio feedback
+- On-demand release details and recording credits
 - Ordered, shuffle, repeat queue, and repeat track modes
 - System media keys and privacy-safe MPRIS integration
 - Persistent queue, position, volume, pause state, and preferences
@@ -56,11 +59,15 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Like or unlike the current track with the heart button or `L`
 - Toggle “Do not recommend” with the dislike button or `D`; a new dislike immediately skips a track in “My Wave”
 - Click the cover to smoothly expand it across the popup and keep track details, a seekable progress bar, and primary actions; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
+- Use the synced-lyrics button to replace the queue with song lyrics; LRC lines highlight and scroll with playback, and clicking a line seeks to it
+- If synced LRC is unavailable, plain lyrics are shown instead; missing lyrics or loading errors never interrupt playback
+- Start Track Radio from the current song with the radio-tower button
+- Open the information view for available album, release date, genre, labels, track number, version, description, and recording credits
 - Change playback mode with the button beside the queue counter
 - Select any queue item directly
 - Click an individual artist to browse their tracks
 
-Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache.
+Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
 
 ### Library
 

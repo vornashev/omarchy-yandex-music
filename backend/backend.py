@@ -15,6 +15,7 @@ import subprocess
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from pathlib import Path
 from typing import Any, Callable
 
@@ -64,6 +65,8 @@ RATE_LIMIT_MESSAGE = "Яндекс Музыка временно огранич�
 PLAYBACK_REPORT_FROM = "desktop_win-home-playlist_of_the_day-playlist-default"
 RADIO_REPORT_FROM = "mobile-radio-user-default"
 TELEMETRY_QUEUE_SIZE = 100
+LYRICS_CACHE_MAX_ENTRIES = 8
+TRACK_INFO_CACHE_MAX_ENTRIES = 8
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -298,6 +301,12 @@ class Player:
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
+        self.lyrics_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.lyrics_loading: set[str] = set()
+        self.lyrics_generation = 0
+        self.track_info_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
+        self.track_info_loading: set[str] = set()
+        self.track_info_generation = 0
         self.artist_results: list[Any] = []
         self.library_results: list[Any] = []
         self.library_source: list[Any] = []
@@ -334,11 +343,11 @@ class Player:
             "authenticated": False, "connecting": False, "authPending": False,
             "authUrl": "", "authCode": "", "error": "", "playing": False,
             "loading": False, "loadingKind": "", "loadingStage": "",
-            "title": "", "artist": "", "album": "",
+            "title": "", "trackId": "", "artist": "", "album": "",
             "artUrl": "", "artistId": "", "artists": [], "queueName": "", "artistBrowseName": "",
             "libraryBrowseName": "", "libraryTotal": 0,
             "libraryHasMore": False, "libraryLoadingMore": False, "libraryFromCache": False,
-            "position": 0, "duration": 0, "stopped": True,
+            "position": 0.0, "positionObservedAt": 0.0, "duration": 0, "stopped": True,
             "volume": self.volume, "muted": self.muted,
             "liked": False, "disliked": False, "restoring": False,
             "preferences": dict(self.preferences),
@@ -682,6 +691,8 @@ class Player:
         self.stop()
         with self.lock:
             self.client = None; self.playlists = []; self.artist_results = []; self.library_results = []
+            self.lyrics_cache.clear(); self.lyrics_loading.clear(); self.lyrics_generation += 1
+            self.track_info_cache.clear(); self.track_info_loading.clear(); self.track_info_generation += 1
             self.library_source = []; self.library_offset = 0
             self.library_generation += 1; self.library_revision += 1
             self.active_library_cache_key = ""; self.collection_cache = {}
@@ -693,11 +704,12 @@ class Player:
             self.radio_station = ""; self.radio_batch_id = ""; self.radio_track_batches = {}
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
-                              title="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
+                              title="", trackId="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
                               artistBrowseName="", libraryBrowseName="", libraryTotal=0,
                               libraryHasMore=False, libraryLoadingMore=False, libraryFromCache=False,
                               loading=False, loadingKind="", playing=False, stopped=True,
-                              position=0, liked=False, disliked=False, error="")
+                              position=0.0, positionObservedAt=time.time(),
+                              liked=False, disliked=False, error="")
         self._publish_mpris()
         TOKEN_FILE.unlink(missing_ok=True); STATE_FILE.unlink(missing_ok=True)
 
@@ -1027,7 +1039,7 @@ class Player:
                 track_id = self._track_id(track)
                 was_disliked = track_id in self.disliked_ids
                 was_liked = track_id in self.liked_ids
-                advance_wave = bool(self.radio_station) and not was_disliked
+                advance_radio = bool(self.radio_station) and not was_disliked
             if not track_id: return
             changed = self._api_call(lambda: self.client.users_dislikes_tracks_remove(track_id)
                                      if was_disliked else self.client.users_dislikes_tracks_add(track_id))
@@ -1047,7 +1059,7 @@ class Player:
                                       disliked=not was_disliked)
                 self.state["error"] = ""
             self._save_state(True)
-            if advance_wave: self.next()
+            if advance_radio: self.next()
         except Exception as exc:
             self._set_error(f"Не удалось изменить отметку «Не рекомендовать»: {exc}")
 
@@ -1082,7 +1094,27 @@ class Player:
                 self._set_error(f"Не удалось запустить «Мою волну»: {exc}")
         self._loading(load, "wave")
 
-    def _extend_wave(self, advance: bool = False) -> None:
+    def play_track_radio(self) -> None:
+        with self.lock:
+            track = self._current_track_locked()
+            track_id = self._track_id(track) if track is not None else ""
+        if not track_id: return
+
+        def load() -> None:
+            try:
+                assert self.client
+                station = f"track:{track_id}"
+                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
+                tracks = [row.track for row in (result.sequence if result else [])
+                          if getattr(row, "track", None)]
+                if not tracks: raise RuntimeError("Яндекс не вернул рекомендации для этого трека")
+                batch_id = str(result.batch_id or "") if result else ""
+                self._set_queue(tracks, "Радио по треку", station, batch_id)
+            except Exception as exc:
+                self._set_error(f"Не удалось запустить радио по треку: {exc}")
+        self._loading(load, "radio")
+
+    def _extend_radio(self, advance: bool = False) -> None:
         with self.lock:
             if not self.radio_station or not self.client: return
             if self.radio_extending:
@@ -1091,7 +1123,8 @@ class Player:
             self.radio_extending = True
             self.radio_advance_pending = advance
             if advance:
-                self.state.update(loading=True, loadingKind="wave", loadingStage="", error="")
+                loading_kind = "wave" if self.radio_station == "user:onyourwave" else "radio"
+                self.state.update(loading=True, loadingKind=loading_kind, loadingStage="", error="")
             station = self.radio_station
             queue_id = self._track_id(self.queue[-1]) if self.queue else ""
             generation = self.queue_generation
@@ -1125,18 +1158,18 @@ class Player:
                     self.radio_advance_pending = False
                     self.radio_extending = False
                 if failed_to_advance:
-                    raise RuntimeError("Яндекс не вернул новые треки для «Моей волны»")
+                    raise RuntimeError("Яндекс не вернул новые треки для радио")
                 if should_advance:
                     self._play_current()
                 else:
                     with self.lock:
-                        if self.state.get("loadingKind") == "wave":
+                        if self.state.get("loadingKind") in ("wave", "radio"):
                             self.state.update(loading=False, loadingKind="", loadingStage="")
                 self._save_state(True)
             except Exception as exc:
                 with self.lock:
                     self.radio_extending = False; self.radio_advance_pending = False
-                self._set_error(f"Не удалось продолжить «Мою волну»: {exc}")
+                self._set_error(f"Не удалось продолжить радио: {exc}")
         threading.Thread(target=load, daemon=True).start()
 
     def _extend_collection(self, advance: bool = False) -> None:
@@ -1259,6 +1292,257 @@ class Player:
         with self.lock: tracks = list(self.search_results)
         if 0 <= index < len(tracks): self._set_queue(tracks[index:] + tracks[:index], "Результаты поиска")
 
+    @staticmethod
+    def _parse_lrc(content: str) -> list[dict[str, Any]]:
+        """Parse standard LRC timestamps into ordered, seekable lyric lines."""
+        timestamp = re.compile(r"\[(\d{1,3}):([0-5]?\d)(?:[\.:](\d{1,3}))?\]")
+        enhanced_timestamp = re.compile(r"<\d{1,3}:[0-5]?\d(?:[\.:]\d{1,3})?>")
+        offset_match = re.search(r"(?im)^\[offset:([+-]?\d+)\]\s*$", content)
+        offset = int(offset_match.group(1)) / 1000 if offset_match else 0.0
+        lines: list[dict[str, Any]] = []
+        for source_index, raw_line in enumerate(content.splitlines()):
+            matches = list(timestamp.finditer(raw_line))
+            if not matches: continue
+            text = enhanced_timestamp.sub("", timestamp.sub("", raw_line)).strip()
+            if not text: continue
+            for match in matches:
+                fraction_text = match.group(3) or ""
+                fraction = int(fraction_text) / (10 ** len(fraction_text)) if fraction_text else 0.0
+                seconds = int(match.group(1)) * 60 + int(match.group(2)) + fraction + offset
+                lines.append({"time": round(max(0.0, seconds), 3), "text": text,
+                              "sourceIndex": source_index})
+        lines.sort(key=lambda line: (line["time"], line["sourceIndex"]))
+        for line in lines: line.pop("sourceIndex", None)
+        return lines
+
+    @staticmethod
+    def _plain_lyrics_lines(content: str) -> list[dict[str, Any]]:
+        lines = [line.rstrip() for line in content.replace("\r\n", "\n").replace("\r", "\n").split("\n")]
+        while lines and not lines[0].strip(): lines.pop(0)
+        while lines and not lines[-1].strip(): lines.pop()
+        return [{"time": -1, "text": line} for line in lines]
+
+    @staticmethod
+    def _is_not_found_error(exc: Any) -> bool:
+        return exc.__class__.__name__ == "NotFoundError" or bool(re.search(r"\b404\b", str(exc)))
+
+    def _fetch_lyrics_format(self, client: Client, track_id: str,
+                             format_: str) -> tuple[str, list[str]]:
+        lyrics = self._api_call(lambda: client.tracks_lyrics(track_id, format_=format_))
+        if not lyrics: return "", []
+        content = self._api_call(lyrics.fetch_lyrics)
+        writers = [str(writer) for writer in (getattr(lyrics, "writers", None) or []) if writer]
+        return str(content or ""), writers
+
+    def _lyrics_entry(self, client: Client, track_id: str) -> dict[str, Any]:
+        lrc_content = ""
+        lrc_writers: list[str] = []
+        lrc_error: Exception | None = None
+        try:
+            lrc_content, lrc_writers = self._fetch_lyrics_format(client, track_id, "LRC")
+        except Exception as exc:
+            if self._is_rate_limit_error(exc): raise
+            lrc_error = exc
+
+        synced_lines = self._parse_lrc(lrc_content)
+        if synced_lines:
+            return {"available": True, "synced": True, "format": "LRC",
+                    "writers": lrc_writers, "lines": synced_lines, "error": ""}
+
+        try:
+            text_content, text_writers = self._fetch_lyrics_format(client, track_id, "TEXT")
+        except Exception as exc:
+            if lrc_content.strip():
+                plain_lines = self._plain_lyrics_lines(lrc_content)
+                if plain_lines:
+                    return {"available": True, "synced": False, "format": "TEXT",
+                            "writers": lrc_writers, "lines": plain_lines, "error": ""}
+            if self._is_not_found_error(exc) and (lrc_error is None or self._is_not_found_error(lrc_error)):
+                return {"available": False, "synced": False, "format": "",
+                        "writers": [], "lines": [], "error": ""}
+            raise
+
+        plain_lines = self._plain_lyrics_lines(text_content)
+        if plain_lines:
+            return {"available": True, "synced": False, "format": "TEXT",
+                    "writers": text_writers or lrc_writers, "lines": plain_lines, "error": ""}
+        if lrc_error and not self._is_not_found_error(lrc_error): raise lrc_error
+        return {"available": False, "synced": False, "format": "",
+                "writers": [], "lines": [], "error": ""}
+
+    @staticmethod
+    def _lyrics_response(track_id: str, entry: dict[str, Any] | None = None,
+                         *, loading: bool = False) -> dict[str, Any]:
+        value = entry or {}
+        return {"trackId": track_id, "loading": loading,
+                "available": bool(value.get("available", False)),
+                "synced": bool(value.get("synced", False)),
+                "format": str(value.get("format", "")),
+                "writers": list(value.get("writers", [])),
+                "lines": [dict(line) for line in value.get("lines", [])],
+                "error": str(value.get("error", ""))}
+
+    def _store_lyrics_locked(self, track_id: str, entry: dict[str, Any]) -> None:
+        self.lyrics_cache[track_id] = entry
+        self.lyrics_cache.move_to_end(track_id)
+        while len(self.lyrics_cache) > LYRICS_CACHE_MAX_ENTRIES:
+            self.lyrics_cache.popitem(last=False)
+
+    def lyrics(self, *, force: bool = False) -> dict[str, Any]:
+        """Return current lyrics or start an on-demand, in-memory-only load."""
+        with self.lock:
+            track = self._current_track_locked()
+            track_id = self._track_id(track) if track is not None else ""
+            client = self.client
+            if not track_id or not client: return self._lyrics_response(track_id)
+            if force: self.lyrics_cache.pop(track_id, None)
+            cached = self.lyrics_cache.get(track_id)
+            if cached is not None:
+                self.lyrics_cache.move_to_end(track_id)
+                return self._lyrics_response(track_id, cached)
+            if track_id in self.lyrics_loading:
+                return self._lyrics_response(track_id, loading=True)
+            self.lyrics_loading.add(track_id)
+            generation = self.lyrics_generation
+
+        def load() -> None:
+            try:
+                entry = self._lyrics_entry(client, track_id)
+            except Exception as exc:
+                entry = {"available": False, "synced": False, "format": "",
+                         "writers": [], "lines": [],
+                         "error": f"Не удалось загрузить текст: {self._friendly_error(exc)}"}
+            with self.lock:
+                if generation != self.lyrics_generation or self.client is not client: return
+                self.lyrics_loading.discard(track_id)
+                self._store_lyrics_locked(track_id, entry)
+
+        threading.Thread(target=load, daemon=True).start()
+        return self._lyrics_response(track_id, loading=True)
+
+    def _track_info_entry(self, client: Client, track_id: str,
+                          fallback_track: Any) -> dict[str, Any]:
+        errors: list[str] = []
+        full_info = None
+        credits_result = None
+        try:
+            full_info = self._api_call(lambda: client.tracks_full_info(track_id))
+        except Exception as exc:
+            if self._is_rate_limit_error(exc): raise
+            if not self._is_not_found_error(exc): errors.append(self._friendly_error(exc))
+        try:
+            credits_result = self._api_call(lambda: client.tracks_credits(track_id))
+        except Exception as exc:
+            if self._is_rate_limit_error(exc): raise
+            if not self._is_not_found_error(exc): errors.append(self._friendly_error(exc))
+
+        track = getattr(full_info, "track", None) or fallback_track
+        albums = list(getattr(track, "albums", None) or [])
+        album = albums[0] if albums else None
+        artists = [{"id": str(getattr(artist, "id", "")),
+                    "name": str(getattr(artist, "name", ""))}
+                   for artist in (getattr(track, "artists", None) or [])
+                   if getattr(artist, "name", None)]
+        labels = []
+        for label in (getattr(album, "labels", None) or []):
+            name = label if isinstance(label, str) else getattr(label, "name", "")
+            if name and str(name) not in labels: labels.append(str(name))
+        major_name = str(getattr(getattr(track, "major", None), "name", "") or "")
+        if major_name and major_name not in labels: labels.append(major_name)
+        track_position = getattr(album, "track_position", None)
+        aliases = [str(alias) for alias in (getattr(full_info, "aliases", None) or []) if alias]
+        credits = [{"title": str(getattr(credit, "title", "") or ""),
+                    "value": str(getattr(credit, "value", "") or "")}
+                   for credit in (getattr(credits_result, "credits", None) or [])
+                   if getattr(credit, "title", None) or getattr(credit, "value", None)]
+        year = getattr(album, "year", None) or getattr(album, "original_release_year", None) or ""
+        if isinstance(year, (dict, list, tuple)): year = ""
+        description = (getattr(track, "short_description", None)
+                       or getattr(album, "description", None)
+                       or getattr(album, "short_description", None) or "")
+        release_date = str(getattr(album, "release_date", "") or "")[:10]
+        entry = {
+            "available": bool(track or credits),
+            "title": str(getattr(track, "title", "") or ""),
+            "artists": artists,
+            "album": str(getattr(album, "title", "") or ""),
+            "albumId": str(getattr(album, "id", "") or ""),
+            "year": str(year), "releaseDate": release_date,
+            "genre": str(getattr(album, "genre", "") or ""),
+            "labels": labels,
+            "trackNumber": int(getattr(track_position, "index", 0) or 0),
+            "discNumber": int(getattr(track_position, "volume", 0) or 0),
+            "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+            "version": str(getattr(track, "version", "") or ""),
+            "explicit": bool(getattr(track, "explicit", False)
+                             or getattr(track, "content_warning", "") == "explicit"),
+            "aliases": aliases, "description": str(description), "credits": credits,
+            "error": ("Часть сведений недоступна: " + "; ".join(dict.fromkeys(errors)))
+                     if errors else "",
+        }
+        return entry
+
+    @staticmethod
+    def _track_info_response(track_id: str, entry: dict[str, Any] | None = None,
+                             *, loading: bool = False) -> dict[str, Any]:
+        value = entry or {}
+        return {"trackId": track_id, "loading": loading,
+                "available": bool(value.get("available", False)),
+                "title": str(value.get("title", "")),
+                "artists": [dict(artist) for artist in value.get("artists", [])],
+                "album": str(value.get("album", "")),
+                "albumId": str(value.get("albumId", "")),
+                "year": str(value.get("year", "")),
+                "releaseDate": str(value.get("releaseDate", "")),
+                "genre": str(value.get("genre", "")),
+                "labels": list(value.get("labels", [])),
+                "trackNumber": int(value.get("trackNumber", 0)),
+                "discNumber": int(value.get("discNumber", 0)),
+                "duration": int(value.get("duration", 0)),
+                "version": str(value.get("version", "")),
+                "explicit": bool(value.get("explicit", False)),
+                "aliases": list(value.get("aliases", [])),
+                "description": str(value.get("description", "")),
+                "credits": [dict(credit) for credit in value.get("credits", [])],
+                "error": str(value.get("error", ""))}
+
+    def _store_track_info_locked(self, track_id: str, entry: dict[str, Any]) -> None:
+        self.track_info_cache[track_id] = entry
+        self.track_info_cache.move_to_end(track_id)
+        while len(self.track_info_cache) > TRACK_INFO_CACHE_MAX_ENTRIES:
+            self.track_info_cache.popitem(last=False)
+
+    def track_info(self, *, force: bool = False) -> dict[str, Any]:
+        """Return current track details or start an isolated on-demand load."""
+        with self.lock:
+            track = self._current_track_locked()
+            track_id = self._track_id(track) if track is not None else ""
+            client = self.client
+            if not track_id or not client: return self._track_info_response(track_id)
+            if force: self.track_info_cache.pop(track_id, None)
+            cached = self.track_info_cache.get(track_id)
+            if cached is not None:
+                self.track_info_cache.move_to_end(track_id)
+                return self._track_info_response(track_id, cached)
+            if track_id in self.track_info_loading:
+                return self._track_info_response(track_id, loading=True)
+            self.track_info_loading.add(track_id)
+            generation = self.track_info_generation
+
+        def load() -> None:
+            try:
+                entry = self._track_info_entry(client, track_id, track)
+            except Exception as exc:
+                entry = {"available": False,
+                         "error": f"Не удалось загрузить сведения: {self._friendly_error(exc)}"}
+            with self.lock:
+                if generation != self.track_info_generation or self.client is not client: return
+                self.track_info_loading.discard(track_id)
+                self._store_track_info_locked(track_id, entry)
+
+        threading.Thread(target=load, daemon=True).start()
+        return self._track_info_response(track_id, loading=True)
+
     def play_queue(self, index: int) -> None:
         with self.lock:
             if not (0 <= index < len(self.queue)): return
@@ -1351,7 +1635,8 @@ class Player:
             uri = getattr(track, "cover_uri", "") or ""
             cover = "https://" + uri.replace("%%", "400x400") if uri else ""
         artist_rows = [{"id": str(a.id), "name": a.name} for a in track_artists]
-        return {"title": track.title or "", "artist": artists, "artistId": artist_id,
+        return {"title": track.title or "", "trackId": self._track_id(track),
+                "artist": artists, "artistId": artist_id,
                 "artists": artist_rows, "album": album, "artUrl": cover}
 
     def _url(self, track: Any) -> str:
@@ -1421,12 +1706,16 @@ class Player:
                     if resume_position > 0: self._mpv_command(["seek", resume_position, "absolute"])
                     self._mpv_command(["set_property", "mute", self.muted])
                     self._mpv_command(["set_property", "pause", bool(start_paused)])
+                    position = float(self._mpv_command(
+                        ["get_property", "time-pos"], False) or resume_position)
+                    position_observed_at = time.time()
                     with self.lock:
                         if generation != self.play_generation: return
                         track_id = self._track_id(track)
                         self.state.update(meta); self.state.update(playing=not start_paused,
                             stopped=False, loading=False, loadingKind="", loadingStage="",
-                            position=resume_position, duration=int(getattr(track, "duration_ms", 0) or 0)//1000,
+                            position=position, positionObservedAt=position_observed_at,
+                            duration=int(getattr(track, "duration_ms", 0) or 0)//1000,
                             liked=track_id in self.liked_ids, disliked=track_id in self.disliked_ids,
                             error="")
                         # The monitor marks the file active only after mpv has
@@ -1487,8 +1776,11 @@ class Player:
                 return
             paused = bool(self._mpv_command(["get_property", "pause"]))
             self._mpv_command(["set_property", "pause", not paused])
+            position = float(self._mpv_command(["get_property", "time-pos"], False)
+                             or self.state.get("position", 0) or 0)
             with self.lock:
-                self.state.update(playing=paused, stopped=False)
+                self.state.update(playing=paused, stopped=False, position=position,
+                                  positionObservedAt=time.time())
                 self._update_playback_clock_locked(paused)
                 track = self._current_track_locked() if paused and not self.playback_report else None
             if track is not None: self._begin_playback_reporting(track)
@@ -1499,7 +1791,8 @@ class Player:
         try:
             target = max(0, min(int(seconds), int(self.state["duration"] or seconds)))
             self._mpv_command(["seek", target, "absolute"])
-            with self.lock: self.state["position"] = target
+            with self.lock:
+                self.state.update(position=float(target), positionObservedAt=time.time())
             self._publish_mpris(seeked=True); self._save_state(True)
         except Exception as exc: self._set_error(exc)
 
@@ -1530,12 +1823,12 @@ class Player:
             if not self.queue: return
             mode = str(self.preferences.get("playbackMode", "repeatQueue"))
             detached = self.detached_track is not None
-            extend_wave = False
+            extend_radio = False
             extend_collection = False
             if automatic and mode == "repeatTrack" and not detached:
                 pass
             elif self.radio_station and self.index >= len(self.queue) - 1:
-                extend_wave = True
+                extend_radio = True
             elif self.queue_source and self.index >= len(self.queue) - 1:
                 extend_collection = True
             elif mode == "shuffle" and len(self.queue) > 1:
@@ -1549,8 +1842,8 @@ class Player:
                 end_queue = True
         if end_queue:
             self.stop(); return
-        if extend_wave:
-            self._extend_wave(advance=True); return
+        if extend_radio:
+            self._extend_radio(advance=True); return
         if extend_collection:
             self._extend_collection(advance=True); return
         self._save_state(True); self._play_current()
@@ -1578,7 +1871,8 @@ class Player:
         with self.lock:
             self.had_file = False
             self.active_ticks = 0
-            self.state.update(playing=False, stopped=True, position=0)
+            self.state.update(playing=False, stopped=True, position=0.0,
+                              positionObservedAt=time.time())
         self._publish_mpris(); self._save_state(True)
 
     def shutdown(self) -> None:
@@ -1613,7 +1907,8 @@ class Player:
                     continue
 
                 paused = bool(self._mpv_command(["get_property", "pause"], False))
-                position = int(float(self._mpv_command(["get_property", "time-pos"], False) or 0))
+                position = float(self._mpv_command(["get_property", "time-pos"], False) or 0)
+                position_observed_at = time.time()
                 duration = int(float(self._mpv_command(["get_property", "duration"], False) or 0))
                 volume = int(float(self._mpv_command(["get_property", "volume"], False) or self.volume))
                 muted = bool(self._mpv_command(["get_property", "mute"], False))
@@ -1622,8 +1917,9 @@ class Player:
                     self.had_file = self.active_ticks >= 2 and position >= 3
                     self._update_playback_clock_locked(not paused)
                     self.volume = volume; self.muted = muted
-                    self.state.update(playing=not paused, position=position, duration=duration,
-                                      volume=volume, muted=muted)
+                    self.state.update(playing=not paused, position=position,
+                                      positionObservedAt=position_observed_at,
+                                      duration=duration, volume=volume, muted=muted)
                 self._publish_mpris(); self._save_state()
             except Exception: pass
 
@@ -1662,10 +1958,15 @@ class Player:
         if cmd == "status": return self.status()
         if cmd == "details": return self.status(include_queue=True)
         if cmd == "network": return self.network_status(start=True)
+        if cmd == "lyrics": return self.lyrics()
+        if cmd == "lyrics_refresh": return self.lyrics(force=True)
+        if cmd == "track_info": return self.track_info()
+        if cmd == "track_info_refresh": return self.track_info(force=True)
         if cmd == "auth": self.authenticate()
         elif cmd == "logout": self.logout()
         elif cmd == "likes": self.play_likes()
         elif cmd == "wave": self.play_wave()
+        elif cmd == "track_radio": self.play_track_radio()
         elif cmd == "like": self.toggle_like()
         elif cmd == "dislike": self.toggle_dislike()
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
