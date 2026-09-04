@@ -21,6 +21,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Disliking a track in “My Wave” immediately advances to the next track
 - Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
 - Full-width cover mode remains active when the popup is closed and reopened
+- Letter commands follow physical QWERTY key positions and work with English and Russian layouts
 
 ### Fixed
 
@@ -29,6 +30,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - The `L` shortcut is intercepted before built-in `h/j/k/l` navigation and no longer switches player tabs
 - After an external Stop command, playback is marked as stopped, position resets, and Play starts the current track from the beginning
 - Leaving Search now releases the hidden field focus, restoring tab/player shortcuts and preventing hidden query edits
+- Cover mode vertical animations are synchronized, the gutter remains constant, panel height is held through transitions, and the temporary second inter-block gap is compensated without a final tab-row snap
 
 ## [0.7.4] - 2026-09-03
 

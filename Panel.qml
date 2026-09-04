@@ -19,6 +19,8 @@ Panel {
   property bool waveOptionsOpen: false
   property bool coverExpanded: false
   property bool coverTransitioning: false
+  property int coverStablePanelHeight: 0
+  readonly property int coverTransitionDuration: 280
   property string copiedAuthCode: ""
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ authenticated: false, playlists: [], searchResults: [] })
@@ -150,6 +152,7 @@ Panel {
   function setCoverExpanded(value) {
     var next = value === true && authenticated && hasTrack && !settingsOpen
     if (coverExpanded === next) return
+    if (next) coverStablePanelHeight = panel.contentHeight
     coverTransitioning = true
     coverTransitionTimer.restart()
     coverExpanded = next
@@ -187,8 +190,15 @@ Panel {
     if (queueList.contentY + queueList.height >= queueList.contentHeight - Style.space(50))
       root.action("load_more_library")
   }
-  function runPlayerShortcut(value) {
+  function normalizeShortcutKey(value) {
     var t = String(value || "").toLowerCase()
+    var qwertyFromRussian = {
+      "т": "n", "з": "p", "д": "l", "в": "d", "а": "f", "с": "c"
+    }
+    return qwertyFromRussian[t] || t
+  }
+  function runPlayerShortcut(value) {
+    var t = normalizeShortcutKey(value)
     if (!hasTrack) return false
     if (t === " ") action("pause")
     else if (t === "l") action("like")
@@ -446,7 +456,7 @@ Panel {
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
   Timer {
     id: coverTransitionTimer
-    interval: 320
+    interval: root.coverTransitionDuration + 40
     repeat: false
     onTriggered: root.coverTransitioning = false
   }
@@ -551,7 +561,10 @@ Panel {
     open: root.opened
     focusTarget: keyCatcher
     contentWidth: panel.fittedContentWidth(Style.space(430))
-    contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(620))
+    contentHeight: (root.coverExpanded || root.coverTransitioning)
+        && root.coverStablePanelHeight > 0
+      ? root.coverStablePanelHeight
+      : panel.fittedContentHeight(content.implicitHeight, Style.space(620))
 
     // PanelKeyCatcher reserves h/j/k/l for directional navigation before
     // onTextKey runs. Give player shortcuts the first chance, especially L.
@@ -581,12 +594,13 @@ Panel {
       onMoveRequested: function(dx, dy) { if (dx !== 0 && !root.settingsOpen) root.selectPage(root.page + dx) }
       onTextKey: function(t) {
         if (root.settingsOpen) return
-        if (t === "1") root.selectPage(0)
-        else if (t === "2") root.selectPage(1)
-        else if (t === "3" || t === "/") root.selectPage(2)
-        else if (t === "c" && !root.authenticated
+        var shortcut = root.normalizeShortcutKey(t)
+        if (shortcut === "1") root.selectPage(0)
+        else if (shortcut === "2") root.selectPage(1)
+        else if (shortcut === "3" || shortcut === "/") root.selectPage(2)
+        else if (shortcut === "c" && !root.authenticated
             && String(root.data.authCode || "") !== "") root.copyAuthCode()
-        else root.runPlayerShortcut(t)
+        else root.runPlayerShortcut(shortcut)
       }
 
       Flickable {
@@ -609,7 +623,15 @@ Panel {
           id: content
           // Never derive layout width from contentHeight: switching pages or
           // animating the cover may toggle the scrollbar and create a feedback loop.
-          property real stableGutter: root.coverExpanded ? 0 : Style.space(14)
+          property real stableGutter: Style.space(14)
+          readonly property real regularCoverBodyHeight: Style.space(68)
+            + authenticatedContent.implicitHeight
+          readonly property real expandedCoverBodyHeight: width
+            + expandedPlayer.implicitHeight
+          readonly property real regularCoverHeightBalance: Math.max(0,
+            expandedCoverBodyHeight - regularCoverBodyHeight)
+          readonly property real expandedCoverHeightBalance: Math.max(0,
+            regularCoverBodyHeight - expandedCoverBodyHeight)
           x: stableGutter / 2
           width: panelScroll.width - stableGutter
           spacing: Style.space(12)
@@ -621,7 +643,10 @@ Panel {
             height: root.coverExpanded ? width : Style.space(68)
             spacing: root.coverExpanded ? 0 : Style.space(14)
             Behavior on height {
-              NumberAnimation { duration: 280; easing.type: Easing.OutCubic }
+              NumberAnimation {
+                duration: root.coverTransitionDuration
+                easing.type: Easing.OutCubic
+              }
             }
             Behavior on spacing {
               NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
@@ -771,13 +796,17 @@ Panel {
           Column {
             id: expandedPlayer
             width: parent.width
-            height: root.coverExpanded ? implicitHeight : 0
+            height: root.coverExpanded
+              ? implicitHeight + content.expandedCoverHeightBalance : 0
             opacity: root.coverExpanded ? 1 : 0
             spacing: Style.space(9)
             clip: true
             enabled: root.coverExpanded
             Behavior on height {
-              NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+              NumberAnimation {
+                duration: root.coverTransitionDuration
+                easing.type: Easing.OutCubic
+              }
             }
             Behavior on opacity {
               NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
@@ -987,14 +1016,29 @@ Panel {
             id: authenticatedContent
             visible: root.authenticated
             width: parent.width
-            height: root.coverExpanded ? 0 : implicitHeight
+            // Keep the popup equally tall in both cover states without
+            // distorting the square artwork or compacting player controls.
+            // Any difference between the two natural layouts becomes
+            // invisible space below this column.
+            height: root.coverExpanded ? 0
+              : implicitHeight + content.regularCoverHeightBalance
             opacity: root.coverExpanded ? 0 : 1
             spacing: Style.space(12)
             clip: true
             enabled: !root.coverExpanded
+            // While both animated blocks have a non-zero height, Column adds
+            // a second gap. Cancel it visually so removing the zero-height
+            // expanded block cannot move the tabs at the final frame.
+            transform: Translate {
+              y: expandedPlayer.height > 0 && authenticatedContent.height > 0
+                ? -content.spacing : 0
+            }
             Behavior on height {
               enabled: root.coverTransitioning
-              NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+              NumberAnimation {
+                duration: root.coverTransitionDuration
+                easing.type: Easing.OutCubic
+              }
             }
             Behavior on opacity {
               NumberAnimation { duration: 140; easing.type: Easing.OutCubic }

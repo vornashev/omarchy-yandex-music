@@ -127,7 +127,7 @@ After installation, click the player in the bar, start Yandex Device OAuth, and 
 
 Inside the popup:
 
-Letter shortcuts work only while the popup is open and are not intercepted in the search field or settings. There is no separate Stop shortcut: `Space` pauses playback without losing the position.
+Letter shortcuts follow physical QWERTY key positions, so they work with both English and Russian layouts. They are active only while the popup is open and are not intercepted in the search field or settings. The UI keeps the Latin mnemonic labels. There is no separate Stop shortcut: `Space` pauses playback without losing the position.
 
 - `1`, `2`, `3` — Now Playing, Library, Search
 - `Space` — play/pause
