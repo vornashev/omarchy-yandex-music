@@ -83,6 +83,7 @@ PERSONAL_PLAYLISTS = (
 )
 LIBRARY_HUB_CACHE_TTL = 10 * 60
 LIBRARY_HUB_CACHE_MAX_ENTRIES = len(LIBRARY_HUB_SECTIONS)
+COLLECTION_SOURCES = ("queue", "library", "libraryHub", "catalogSearch", "catalogEntity", "recommendation")
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -336,6 +337,10 @@ class Player:
         self.library_hub_offset = 0
         self.library_hub_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.personal_playlist_models: dict[str, Any] = {}
+        self.collection_generation = 0
+        self.collection_revision = 0
+        self.collection = self._empty_collection()
+        self.collection_recommendation_tracks: list[Any] = []
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
@@ -358,6 +363,7 @@ class Player:
         self.track_info_generation = 0
         self.artist_results: list[Any] = []
         self.library_results: list[Any] = []
+        self.library_result_refs: list[tuple[str, str]] = []
         self.library_source: list[Any] = []
         self.library_offset = 0
         self.library_generation = 0
@@ -394,7 +400,8 @@ class Player:
             "loading": False, "loadingKind": "", "loadingStage": "",
             "title": "", "trackId": "", "artist": "", "album": "",
             "artUrl": "", "artistId": "", "artists": [], "queueName": "", "artistBrowseName": "",
-            "libraryBrowseName": "", "libraryTotal": 0,
+            "libraryBrowseName": "", "libraryPlaylistKind": "", "libraryEditable": False,
+            "libraryTotal": 0,
             "libraryHasMore": False, "libraryLoadingMore": False, "libraryFromCache": False,
             "position": 0.0, "positionObservedAt": 0.0, "duration": 0, "stopped": True,
             "volume": self.volume, "muted": self.muted,
@@ -746,6 +753,7 @@ class Player:
         self.stop()
         with self.lock:
             self.client = None; self.playlists = []; self.artist_results = []; self.library_results = []
+            self.library_result_refs = []
             self.search_results = []
             self.catalog_generation += 1; self.suggestion_generation += 1; self.catalog_revision += 1
             self.catalog = self._empty_catalog(); self.catalog["revision"] = self.catalog_revision
@@ -761,6 +769,9 @@ class Player:
             self.library_hub = self._empty_library_hub(); self.library_hub["revision"] = self.library_hub_revision
             self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
             self.library_hub_cache.clear(); self.personal_playlist_models.clear()
+            self.collection_generation += 1; self.collection_revision += 1
+            self.collection = self._empty_collection(); self.collection["revision"] = self.collection_revision
+            self.collection_recommendation_tracks = []
             self.liked_ids = set(); self.liked_rows = []; self.liked_rows_at = 0
             self.disliked_ids = set()
             self.queue = []; self.queue_source = []; self.queue_extending = False
@@ -772,7 +783,8 @@ class Player:
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               title="", trackId="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
-                              artistBrowseName="", libraryBrowseName="", libraryTotal=0,
+                              artistBrowseName="", libraryBrowseName="", libraryPlaylistKind="",
+                              libraryEditable=False, libraryTotal=0,
                               libraryHasMore=False, libraryLoadingMore=False, libraryFromCache=False,
                               loading=False, loadingKind="", playing=False, stopped=True,
                               position=0.0, positionObservedAt=time.time(),
@@ -780,13 +792,24 @@ class Player:
         self._publish_mpris()
         TOKEN_FILE.unlink(missing_ok=True); STATE_FILE.unlink(missing_ok=True)
 
+    @classmethod
+    def _own_playlist_metadata(cls, playlist: Any) -> dict[str, Any]:
+        owner = getattr(playlist, "owner", None)
+        return {"kind": cls._text(getattr(playlist, "kind", "")),
+                "title": cls._text(getattr(playlist, "title", "")) or "Плейлист",
+                "count": cls._int(getattr(playlist, "track_count", 0)),
+                "owner": cls._text(getattr(owner, "uid", None)
+                                   or getattr(playlist, "uid", "")),
+                "uuid": cls._text(getattr(playlist, "playlist_uuid", ""))}
+
     def _load_playlists(self) -> None:
         try:
             assert self.client
-            rows = self._api_call(lambda: self.client.users_playlists_list()) or []
+            client = self.client
+            rows = self._api_call(lambda: client.users_playlists_list()) or []
             with self.lock:
-                self.playlists = [{"kind": str(p.kind), "title": p.title,
-                                   "count": int(p.track_count or 0)} for p in rows]
+                if self.client is client:
+                    self.playlists = [self._own_playlist_metadata(row) for row in rows]
         except Exception as exc: self._set_error(f"Не удалось загрузить плейлисты: {exc}")
 
     @staticmethod
@@ -802,7 +825,8 @@ class Player:
         return text.split(":", 1)[0]
 
     def _tracks_from_short_page(self, rows: list[Any], client: Client | None = None,
-                                *, update_loading: bool = True) -> list[Any]:
+                                *, update_loading: bool = True,
+                                result_refs: list[tuple[str, str]] | None = None) -> list[Any]:
         """Resolve one collection page in one API request while retaining source order."""
         client = client or self.client
         assert client
@@ -823,6 +847,8 @@ class Player:
             track = embedded(row) or by_id.get(self._short_track_id(row))
             if track is not None:
                 tracks.append(track)
+                if result_refs is not None:
+                    result_refs.append(self._playlist_track_ref(row))
         return tracks
 
     def _reset_library_locked(self) -> int:
@@ -830,10 +856,12 @@ class Player:
         self.library_revision += 1
         self.library_source = []
         self.library_results = []
+        self.library_result_refs = []
         self.library_offset = 0
         self.active_library_cache_key = ""
-        self.state.update(libraryBrowseName="", libraryTotal=0,
-                          libraryHasMore=False, libraryLoadingMore=False, libraryFromCache=False)
+        self.state.update(libraryBrowseName="", libraryPlaylistKind="", libraryEditable=False,
+                          libraryTotal=0, libraryHasMore=False,
+                          libraryLoadingMore=False, libraryFromCache=False)
         return self.library_generation
 
     def _store_collection_cache_locked(self) -> None:
@@ -843,8 +871,11 @@ class Player:
         self.collection_cache[key] = {
             "source": list(self.library_source),
             "results": list(self.library_results),
+            "resultRefs": list(self.library_result_refs),
             "offset": self.library_offset,
             "title": str(self.state.get("libraryBrowseName", "")),
+            "playlistKind": str(self.state.get("libraryPlaylistKind", "")),
+            "editable": bool(self.state.get("libraryEditable", False)),
             "storedAt": now,
             "accessedAt": now,
         }
@@ -863,10 +894,13 @@ class Player:
         self.active_library_cache_key = key
         self.library_source = list(cached["source"])
         self.library_results = list(cached["results"])
+        self.library_result_refs = [tuple(value) for value in cached.get("resultRefs", [])]
         self.library_offset = min(self._int(cached["offset"]), len(self.library_source))
         cached["accessedAt"] = now
         self.library_revision += 1
         self.state.update(libraryBrowseName=str(cached["title"]),
+                          libraryPlaylistKind=str(cached.get("playlistKind", "")),
+                          libraryEditable=bool(cached.get("editable", False)),
                           libraryTotal=len(self.library_source),
                           libraryHasMore=self.library_offset < len(self.library_source),
                           libraryLoadingMore=False, libraryFromCache=True,
@@ -917,14 +951,18 @@ class Player:
             source, results, offset = update(
                 list(cached["source"]), list(cached["results"]), self._int(cached["offset"]))
             if source and results:
-                cached.update(source=source, results=results, offset=offset,
-                              storedAt=time.monotonic(), accessedAt=time.monotonic())
+                cached.update(source=source, results=results,
+                              resultRefs=[self._playlist_track_ref(item) for item in results],
+                              offset=offset, storedAt=time.monotonic(),
+                              accessedAt=time.monotonic())
             else:
                 self.collection_cache.pop("likes", None)
 
         if self.active_library_cache_key != "likes": return
         self.library_source, self.library_results, self.library_offset = update(
             self.library_source, self.library_results, self.library_offset)
+        self.library_result_refs = [self._playlist_track_ref(item)
+                                    for item in self.library_results]
         self.library_revision += 1
         self.state.update(libraryTotal=len(self.library_source),
                           libraryHasMore=self.library_offset < len(self.library_source),
@@ -1045,13 +1083,16 @@ class Player:
             try:
                 assert self.client
                 rows = self._get_liked_rows()
-                tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE])
+                result_refs: list[tuple[str, str]] = []
+                tracks = self._tracks_from_short_page(
+                    rows[:LIBRARY_PAGE_SIZE], result_refs=result_refs)
                 if not tracks: raise RuntimeError("В списке нет доступных треков")
                 with self.lock:
                     if generation != self.library_generation: return
                     self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
                     self.library_source = rows
                     self.library_results = tracks
+                    self.library_result_refs = result_refs
                     self.library_offset = min(LIBRARY_PAGE_SIZE, len(rows))
                     self.active_library_cache_key = "likes"
                     self.library_revision += 1
@@ -1390,25 +1431,31 @@ class Player:
     def play_playlist(self, kind: str) -> None:
         cache_key = f"playlist:{kind}"
         with self.lock:
+            client = self.client
             self.artist_results = []
             generation = self._reset_library_locked()
             self.state["artistBrowseName"] = ""
             if self._activate_collection_cache_locked(cache_key): return
         def load() -> None:
             try:
-                assert self.client
-                playlist = self._api_call(lambda: self.client.users_playlists(kind))
+                if not client: return
+                playlist = self._api_call(lambda: client.users_playlists(kind))
                 rows = list(self._api_call(playlist.fetch_tracks))
-                tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE])
-                if not tracks: raise RuntimeError("В плейлисте нет доступных треков")
+                result_refs: list[tuple[str, str]] = []
+                tracks = self._tracks_from_short_page(
+                    rows[:LIBRARY_PAGE_SIZE], client, result_refs=result_refs)
                 with self.lock:
-                    if generation != self.library_generation: return
+                    if generation != self.library_generation or self.client is not client: return
                     self.library_source = rows
                     self.library_results = tracks
+                    self.library_result_refs = result_refs
                     self.library_offset = min(LIBRARY_PAGE_SIZE, len(rows))
                     self.active_library_cache_key = cache_key
                     self.library_revision += 1
-                    self.state.update(libraryBrowseName=playlist.title, libraryTotal=len(rows),
+                    self.state.update(libraryBrowseName=playlist.title,
+                                      libraryPlaylistKind=self._text(playlist.kind),
+                                      libraryEditable=self._playlist_is_mine(client, playlist),
+                                      libraryTotal=len(rows),
                                       libraryHasMore=self.library_offset < len(rows),
                                       libraryLoadingMore=False, libraryFromCache=False,
                                       loading=False, loadingKind="", error="")
@@ -1416,6 +1463,7 @@ class Player:
             except Exception as exc:
                 with self.lock:
                     if generation != self.library_generation: return
+                    if self.client is not client: return
                 self._set_error(f"Не удалось загрузить плейлист: {exc}")
         self._loading(load, "playlist")
 
@@ -1431,10 +1479,12 @@ class Player:
 
         def load() -> None:
             try:
-                tracks = self._tracks_from_short_page(rows)
+                result_refs: list[tuple[str, str]] = []
+                tracks = self._tracks_from_short_page(rows, result_refs=result_refs)
                 with self.lock:
                     if generation != self.library_generation: return
                     self.library_results.extend(tracks)
+                    self.library_result_refs.extend(result_refs)
                     self.library_offset = start + len(rows)
                     self.library_revision += 1
                     self.state.update(libraryHasMore=self.library_offset < len(self.library_source),
@@ -1446,6 +1496,514 @@ class Player:
                     self.state["libraryLoadingMore"] = False
                 self._set_error(f"Не удалось загрузить следующую страницу: {exc}")
         threading.Thread(target=load, daemon=True).start()
+
+    @staticmethod
+    def _empty_collection() -> dict[str, Any]:
+        return {"busy": False, "operation": "", "error": "", "message": "",
+                "playlistKind": "", "playlistTitle": "", "recommendations": [],
+                "membershipLoading": False, "membershipError": "", "memberships": {},
+                "membershipTrackId": "", "membershipAlbumId": "", "revision": 0}
+
+    def _collection_touch_locked(self) -> None:
+        self.collection_revision += 1
+        self.collection["revision"] = self.collection_revision
+
+    def _collection_current(self, client: Any, generation: int) -> bool:
+        return self.client is client and generation == self.collection_generation
+
+    @classmethod
+    def _playlist_track_ref(cls, value: Any) -> tuple[str, str]:
+        track = getattr(value, "track", None) or value
+        track_id = cls._text(getattr(track, "id", "")
+                             or getattr(track, "track_id", ""))
+        if ":" in track_id:
+            track_id, compound_album = track_id.split(":", 1)
+        else:
+            compound_album = ""
+        album_id = cls._text(getattr(value, "album_id", "")
+                             or getattr(track, "album_id", ""))
+        if not album_id:
+            albums = cls._safe_rows(getattr(track, "albums", None))
+            album_id = cls._text(getattr(albums[0], "id", "")) if albums else compound_album
+        return track_id, album_id
+
+    def _collection_track_locked(self, source: str, index: int,
+                                 expected_track_id: str, expected_album_id: str) -> Any | None:
+        sources = {
+            "queue": self.queue,
+            "library": self.library_results,
+            "libraryHub": self.library_hub_tracks,
+            "catalogSearch": self.catalog_search_models.get("tracks", []),
+            "catalogEntity": self.catalog_entity_tracks,
+            "recommendation": self.collection_recommendation_tracks,
+        }
+        rows = sources.get(source, [])
+        if not 0 <= index < len(rows): return None
+        track = rows[index]
+        if source == "library" and index < len(self.library_result_refs):
+            track_id, album_id = self.library_result_refs[index]
+        else:
+            track_id, album_id = self._playlist_track_ref(track)
+        if expected_track_id and track_id != expected_track_id: return None
+        if expected_album_id and album_id != expected_album_id: return None
+        return track
+
+    @staticmethod
+    def _revision_conflict(exc: Any) -> bool:
+        text = str(exc).lower()
+        return "409" in text or "conflict" in text or "revision" in text
+
+    @classmethod
+    def _playlist_revision(cls, playlist: Any) -> int:
+        return max(1, cls._int(getattr(playlist, "revision", 1), 1))
+
+    @classmethod
+    def _playlist_is_mine(cls, client: Any, playlist: Any) -> bool:
+        account_uid = cls._text(getattr(client, "account_uid", ""))
+        owner = getattr(playlist, "owner", None)
+        owner_uid = cls._text(getattr(owner, "uid", "")
+                              or getattr(playlist, "uid", ""))
+        return bool(account_uid and owner_uid and account_uid == owner_uid)
+
+    def _reject_collection_operation(self, message: str) -> None:
+        with self.lock:
+            self.collection.update(busy=False, operation="", error=message, message="")
+            self._collection_touch_locked()
+
+    def _begin_collection_operation(self, operation: str, *, playlist_kind: str = "",
+                                    playlist_title: str = "") -> tuple[Any, int] | None:
+        with self.lock:
+            if self.collection.get("busy") or not self.client: return None
+            client = self.client
+            self.collection_generation += 1
+            generation = self.collection_generation
+            self.collection.update(busy=True, operation=operation, error="", message="",
+                                   playlistKind=playlist_kind, playlistTitle=playlist_title)
+            self._collection_touch_locked()
+            return client, generation
+
+    def playlist_memberships(self, source: str, index: int,
+                             expected_track_id: str = "", expected_album_id: str = "") -> None:
+        source = self._text(source)
+        expected_track_id = self._text(expected_track_id)
+        expected_album_id = self._text(expected_album_id)
+        if source not in COLLECTION_SOURCES:
+            self._reject_collection_operation("Не удалось определить выбранный трек.")
+            return
+        client = None
+        generation = -1
+        playlists: list[dict[str, Any]] = []
+        track_id = ""
+        album_id = ""
+        with self.lock:
+            track = self._collection_track_locked(
+                source, index, expected_track_id, expected_album_id)
+            if track is None or not self.client or self.collection.get("busy"):
+                client = None
+            else:
+                client = self.client
+                track_id, album_id = self._playlist_track_ref(track)
+                if source == "library":
+                    track_id = expected_track_id or track_id
+                    album_id = expected_album_id or album_id
+                self.collection_generation += 1
+                generation = self.collection_generation
+                playlists = [dict(row) for row in self.playlists]
+                self.collection.update(
+                    membershipLoading=True, membershipError="", memberships={},
+                    membershipTrackId=track_id, membershipAlbumId=album_id)
+                self._collection_touch_locked()
+        if client is None:
+            self._reject_collection_operation("Список изменился. Выберите трек ещё раз.")
+            return
+
+        def load() -> None:
+            try:
+                kinds = list(dict.fromkeys(
+                    self._text(row.get("kind", "")) for row in playlists
+                    if self._text(row.get("kind", ""))))
+                fetched = self._api_call(
+                    lambda: client.users_playlists(kinds), update_loading=False) if kinds else []
+                models = self._safe_rows(fetched)
+                by_kind = {self._text(getattr(model, "kind", "")): model for model in models}
+                memberships: dict[str, bool] = {}
+                for kind in kinds:
+                    playlist = by_kind.get(kind)
+                    if playlist is None:
+                        playlist = self._api_call(
+                            lambda kind=kind: client.users_playlists(kind), update_loading=False)
+                    if playlist is None or isinstance(playlist, (list, tuple)):
+                        raise RuntimeError("404")
+                    if not self._playlist_is_mine(client, playlist):
+                        raise PermissionError("playlist is not editable")
+                    rows = self._safe_rows(getattr(playlist, "tracks", None))
+                    count = self._int(getattr(playlist, "track_count", len(rows)))
+                    fetch_tracks = getattr(playlist, "fetch_tracks", None)
+                    if len(rows) < count and callable(fetch_tracks):
+                        rows = self._safe_rows(
+                            self._api_call(fetch_tracks, update_loading=False))
+                    memberships[kind] = any(
+                        self._playlist_track_ref(row)[0] == track_id for row in rows)
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self.collection.update(membershipLoading=False, membershipError="",
+                                           memberships=memberships)
+                    self._collection_touch_locked()
+            except Exception as exc:
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self.collection.update(
+                        membershipLoading=False, memberships={},
+                        membershipError=self._catalog_error(exc, "Проверка плейлистов"))
+                    self._collection_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def _fail_collection_operation(self, client: Any, generation: int,
+                                   exc: Any, context: str) -> None:
+        with self.lock:
+            if not self._collection_current(client, generation): return
+            if self._revision_conflict(exc):
+                error = "Плейлист изменился в другом клиенте. Обновите его и повторите действие."
+            else:
+                error = self._catalog_error(exc, context)
+            self.collection.update(busy=False, operation="", error=error, message="")
+            self._collection_touch_locked()
+
+    def _update_playlist_summary_locked(self, playlist: Any) -> None:
+        summary = self._own_playlist_metadata(playlist)
+        if not summary["kind"]: return
+        if not summary["count"]:
+            summary["count"] = len(self._safe_rows(getattr(playlist, "tracks", None)))
+        previous = list(self.playlists)
+        self.playlists = [summary]
+        self.playlists.extend(row for row in previous
+                              if str(row.get("kind", "")) != summary["kind"])
+        self.collection_cache.pop(f"playlist:{summary['kind']}", None)
+        self.library_hub_cache.pop("playlists", None)
+        for key in list(self.catalog_cache):
+            if key.startswith("playlist:"): self.catalog_cache.pop(key, None)
+
+    def _resolved_playlist_page(self, client: Any, source: list[Any],
+                                count: int) -> tuple[list[Any], list[tuple[str, str]]]:
+        tracks: list[Any] = []
+        result_refs: list[tuple[str, str]] = []
+        for start in range(0, min(count, len(source)), LIBRARY_PAGE_SIZE):
+            tracks.extend(self._tracks_from_short_page(
+                source[start:start + LIBRARY_PAGE_SIZE], client, update_loading=False,
+                result_refs=result_refs))
+        return tracks, result_refs
+
+    def _refresh_open_playlist_views(self, client: Any, playlist: Any) -> Any:
+        """Refresh browse rows from a full server snapshot after a confirmed mutation."""
+        kind = self._text(getattr(playlist, "kind", ""))
+        with self.lock:
+            if self.client is not client: return
+            library_open = (self.active_library_cache_key == f"playlist:{kind}")
+            entity = self.catalog.get("entity", {})
+            catalog_open = (entity.get("type") == "playlist"
+                            and self._text(entity.get("kind", "")) == kind
+                            and bool(entity.get("editable", False)))
+            visible = max(self.library_offset if library_open else 0,
+                          self.catalog_entity_offset if catalog_open else 0)
+        if not (library_open or catalog_open): return playlist
+        fresh = self._api_call(
+            lambda: client.users_playlists(kind), update_loading=False)
+        if fresh is None or isinstance(fresh, (list, tuple)):
+            raise RuntimeError("404")
+        fetch_tracks = getattr(fresh, "fetch_tracks", None)
+        source = self._safe_rows(self._api_call(fetch_tracks, update_loading=False)
+                                 if callable(fetch_tracks)
+                                 else getattr(fresh, "tracks", None))
+        playlist = fresh
+        if visible == 0:
+            visible = min(LIBRARY_PAGE_SIZE, len(source))
+        tracks, result_refs = (self._resolved_playlist_page(client, source, visible)
+                               if visible else ([], []))
+        with self.lock:
+            if self.client is not client: return
+            if self.active_library_cache_key == f"playlist:{kind}":
+                self.library_source = list(source)
+                self.library_results = list(tracks[:visible])
+                self.library_result_refs = list(result_refs[:visible])
+                self.library_offset = min(visible, len(source))
+                self.library_revision += 1
+                self.state.update(libraryBrowseName=self._text(getattr(playlist, "title", "")),
+                                  libraryPlaylistKind=kind, libraryEditable=True,
+                                  libraryTotal=len(source),
+                                  libraryHasMore=self.library_offset < len(source),
+                                  libraryLoadingMore=False, libraryFromCache=False)
+                self._store_collection_cache_locked()
+            entity = self.catalog.get("entity", {})
+            if (entity.get("type") == "playlist"
+                    and self._text(entity.get("kind", "")) == kind
+                    and bool(entity.get("editable", False))):
+                count = min(self.catalog_entity_offset or CATALOG_TRACK_PAGE_SIZE, len(source))
+                self.catalog_entity_source = list(source)
+                self.catalog_entity_tracks = list(tracks[:count])
+                self.catalog_entity_offset = count
+                entity.update(self._playlist_metadata(playlist))
+                entity.update(tracks=[{**self._metadata(track), "index": index}
+                                      for index, track in enumerate(self.catalog_entity_tracks)],
+                              hasMore=count < len(source), loadingMore=False)
+                self._catalog_touch_locked()
+                self._store_catalog_entity_locked(f"playlist:{entity.get('id', '')}")
+        return playlist
+
+    def _retry_playlist_change(self, client: Any, kind: str,
+                               change: Callable[[Any], Any], exc: Exception,
+                               retry_conflict: bool) -> Any:
+        if not self._revision_conflict(exc):
+            raise exc
+        playlist = self._api_call(lambda: client.users_playlists(kind), update_loading=False)
+        if playlist is None or isinstance(playlist, (list, tuple)):
+            raise RuntimeError("404") from exc
+        if not self._playlist_is_mine(client, playlist):
+            raise PermissionError("playlist is not editable") from exc
+        if not retry_conflict:
+            self._refresh_open_playlist_views(client, playlist)
+            raise exc
+        return change(playlist)
+
+    def _playlist_change_with_refresh(self, client: Any, kind: str,
+                                      change: Callable[[Any], Any],
+                                      *, retry_conflict: bool = True) -> Any:
+        playlist = self._api_call(lambda: client.users_playlists(kind), update_loading=False)
+        if playlist is None or isinstance(playlist, (list, tuple)):
+            raise RuntimeError("404")
+        if not self._playlist_is_mine(client, playlist):
+            raise PermissionError("playlist is not editable")
+        try:
+            updated = change(playlist)
+        except Exception as exc:
+            updated = self._retry_playlist_change(
+                client, kind, change, exc, retry_conflict)
+        if updated is None: raise RuntimeError("empty playlist response")
+        return updated
+
+    def playlist_add_track(self, kind: str, source: str, index: int,
+                           expected_track_id: str = "", expected_album_id: str = "") -> None:
+        kind = self._text(kind); source = self._text(source)
+        if not kind or source not in COLLECTION_SOURCES:
+            self._reject_collection_operation("Не удалось определить плейлист или выбранный трек.")
+            return
+        with self.lock:
+            track = self._collection_track_locked(
+                source, index, self._text(expected_track_id), self._text(expected_album_id))
+        if track is None:
+            self._reject_collection_operation("Список изменился. Выберите трек ещё раз.")
+            return
+        track_id, album_id = self._playlist_track_ref(track)
+        if source == "library":
+            track_id = self._text(expected_track_id) or track_id
+            album_id = self._text(expected_album_id) or album_id
+        if not track_id or not album_id:
+            self._reject_collection_operation("Для этого трека не удалось определить альбом.")
+            return
+        started = self._begin_collection_operation("add", playlist_kind=kind)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            try:
+                already_added = False
+                def change(playlist: Any) -> Any:
+                    nonlocal already_added
+                    rows = self._safe_rows(getattr(playlist, "tracks", None))
+                    count = self._int(getattr(playlist, "track_count", len(rows)))
+                    fetch_tracks = getattr(playlist, "fetch_tracks", None)
+                    if len(rows) < count and callable(fetch_tracks):
+                        rows = self._safe_rows(
+                            self._api_call(fetch_tracks, update_loading=False))
+                    if any(self._playlist_track_ref(row)[0] == track_id for row in rows):
+                        already_added = True
+                        return playlist
+                    return self._api_call(lambda: client.users_playlists_insert_track(
+                        kind, track_id, album_id, at=len(rows),
+                        revision=self._playlist_revision(playlist)), update_loading=False)
+                updated = self._playlist_change_with_refresh(client, kind, change)
+                updated = self._refresh_open_playlist_views(client, updated)
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self._update_playlist_summary_locked(updated)
+                    if source == "recommendation":
+                        self.collection_recommendation_tracks = [
+                            row for row in self.collection_recommendation_tracks
+                            if self._playlist_track_ref(row) != (track_id, album_id)]
+                        self.collection["recommendations"] = [
+                            {**self._metadata(row), "index": idx}
+                            for idx, row in enumerate(self.collection_recommendation_tracks)]
+                    memberships = dict(self.collection.get("memberships", {}))
+                    memberships[kind] = True
+                    self.collection.update(
+                        busy=False, operation="", error="", memberships=memberships,
+                        message=("Трек уже есть в этом плейлисте."
+                                 if already_added else "Трек добавлен в плейлист."))
+                    self._collection_touch_locked()
+            except Exception as exc:
+                self._fail_collection_operation(client, generation, exc, "Добавление трека")
+        threading.Thread(target=load, daemon=True).start()
+
+    def playlist_create(self, title: str, source: str = "", index: int = -1,
+                        expected_track_id: str = "", expected_album_id: str = "") -> None:
+        title = self._text(title)[:100]
+        source = self._text(source)
+        if not title:
+            self._reject_collection_operation("Введите название плейлиста.")
+            return
+        track = None
+        if source:
+            if source not in COLLECTION_SOURCES:
+                self._reject_collection_operation("Не удалось определить выбранный трек.")
+                return
+            with self.lock:
+                track = self._collection_track_locked(
+                    source, index, self._text(expected_track_id), self._text(expected_album_id))
+            if track is None:
+                self._reject_collection_operation("Список изменился. Выберите трек ещё раз.")
+                return
+        started = self._begin_collection_operation("create", playlist_title=title)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            created = None
+            try:
+                created = self._api_call(
+                    lambda: client.users_playlists_create(title, visibility="private"),
+                    update_loading=False)
+                if created is None: raise RuntimeError("empty playlist response")
+                if track is not None:
+                    track_id, album_id = self._playlist_track_ref(track)
+                    if source == "library":
+                        track_id = self._text(expected_track_id) or track_id
+                        album_id = self._text(expected_album_id) or album_id
+                    if not track_id or not album_id: raise RuntimeError("track has no album")
+                    created_kind = self._text(getattr(created, "kind", ""))
+                    if not created_kind: raise RuntimeError("created playlist has no id")
+                    def add_created(playlist: Any) -> Any:
+                        rows = self._safe_rows(getattr(playlist, "tracks", None))
+                        return self._api_call(lambda: client.users_playlists_insert_track(
+                            created_kind, track_id, album_id, at=len(rows),
+                            revision=self._playlist_revision(playlist)), update_loading=False)
+                    created = self._playlist_change_with_refresh(
+                        client, created_kind, add_created)
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self._update_playlist_summary_locked(created)
+                    created_kind = self._text(getattr(created, "kind", ""))
+                    memberships = dict(self.collection.get("memberships", {}))
+                    if track is not None and created_kind:
+                        memberships[created_kind] = True
+                    self.collection.update(busy=False, operation="", error="",
+                        memberships=memberships, playlistKind=created_kind,
+                        playlistTitle=self._text(getattr(created, "title", "")) or title,
+                        message=("Приватный плейлист создан, трек добавлен."
+                                 if track is not None else "Приватный плейлист создан."))
+                    self._collection_touch_locked()
+            except Exception as exc:
+                if created is not None:
+                    with self.lock:
+                        if self._collection_current(client, generation):
+                            self._update_playlist_summary_locked(created)
+                            self.collection.update(busy=False, operation="", message="",
+                                error="Плейлист создан, но трек добавить не удалось. Повторите добавление.")
+                            self._collection_touch_locked()
+                    return
+                self._fail_collection_operation(client, generation, exc, "Создание плейлиста")
+        threading.Thread(target=load, daemon=True).start()
+
+    def playlist_delete_track(self, kind: str, source: str, index: int,
+                              expected_track_id: str = "", expected_album_id: str = "") -> None:
+        kind = self._text(kind); source = self._text(source)
+        visible: list[Any] = []
+        with self.lock:
+            editable = (source == "library" and self.state.get("libraryEditable")
+                        and self._text(self.state.get("libraryPlaylistKind", "")) == kind)
+            if not editable:
+                track = None
+            else:
+                track = self._collection_track_locked(
+                    source, index, self._text(expected_track_id), self._text(expected_album_id))
+                visible = list(self.library_result_refs[:index + 1])
+                if len(visible) <= index:
+                    visible = [self._playlist_track_ref(row)
+                               for row in self.library_results[:index + 1]]
+        if not editable:
+            self._reject_collection_operation("Удалять треки можно только из собственного плейлиста.")
+            return
+        if track is None:
+            self._reject_collection_operation("Список изменился. Выберите трек ещё раз.")
+            return
+        target_ref = visible[index]
+        occurrence = sum(1 for row in visible if row == target_ref) - 1
+        if occurrence < 0:
+            self._reject_collection_operation("Список изменился. Выберите трек ещё раз.")
+            return
+        started = self._begin_collection_operation("delete", playlist_kind=kind)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            try:
+                def change(playlist: Any) -> Any:
+                    matches = [position for position, row in enumerate(
+                        self._safe_rows(getattr(playlist, "tracks", None)))
+                               if self._playlist_track_ref(row) == target_ref]
+                    if occurrence >= len(matches): raise RuntimeError("404")
+                    position = matches[occurrence]
+                    return self._api_call(lambda: client.users_playlists_delete_track(
+                        kind, position, position + 1,
+                        revision=self._playlist_revision(playlist)), update_loading=False)
+                updated = self._playlist_change_with_refresh(
+                    client, kind, change, retry_conflict=False)
+                updated = self._refresh_open_playlist_views(client, updated)
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self._update_playlist_summary_locked(updated)
+                    self.collection.update(busy=False, operation="", error="",
+                                           message="Трек удалён из плейлиста.")
+                    self._collection_touch_locked()
+            except Exception as exc:
+                self._fail_collection_operation(client, generation, exc, "Удаление трека")
+        threading.Thread(target=load, daemon=True).start()
+
+    def playlist_recommendations(self, kind: str, title: str = "") -> None:
+        kind = self._text(kind); title = self._text(title)
+        if not kind:
+            self._reject_collection_operation("Не удалось определить плейлист.")
+            return
+        started = self._begin_collection_operation(
+            "recommendations", playlist_kind=kind, playlist_title=title)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            try:
+                playlist = self._api_call(lambda: client.users_playlists(kind), update_loading=False)
+                if playlist is None or not self._playlist_is_mine(client, playlist):
+                    raise PermissionError("playlist is not editable")
+                result = self._api_call(
+                    lambda: client.users_playlists_recommendations(kind), update_loading=False)
+                tracks = self._safe_rows(getattr(result, "tracks", None))[:CATALOG_TRACK_PAGE_SIZE]
+                with self.lock:
+                    if not self._collection_current(client, generation): return
+                    self.collection_recommendation_tracks = list(tracks)
+                    self.collection.update(busy=False, operation="", error="", message="",
+                        playlistKind=kind,
+                        playlistTitle=title or self._text(getattr(playlist, "title", "")),
+                        recommendations=[{**self._metadata(track), "index": index}
+                                         for index, track in enumerate(tracks)])
+                    self._collection_touch_locked()
+            except Exception as exc:
+                self._fail_collection_operation(client, generation, exc, "Рекомендации")
+        threading.Thread(target=load, daemon=True).start()
+
+    def collection_clear(self) -> None:
+        with self.lock:
+            self.collection_generation += 1
+            self.collection = self._empty_collection()
+            self.collection_recommendation_tracks = []
+            self._collection_touch_locked()
 
     @staticmethod
     def _empty_library_hub() -> dict[str, Any]:
@@ -1663,11 +2221,19 @@ class Player:
                             if playlist is None:
                                 failures += 1
                                 continue
-                            personal_models[playlist_id] = playlist
+                            ready_value = getattr(generated, "ready", None)
+                            generation_ready = ready_value is None or bool(ready_value)
+                            if generation_ready:
+                                personal_models[playlist_id] = playlist
                             items.append({**self._playlist_metadata(playlist),
                                 "personalId": playlist_id,
                                 "title": self._text(getattr(playlist, "title", "")) or fallback_title,
-                                "available": bool(getattr(generated, "ready", True))})
+                                "subtitle": ("" if generation_ready
+                                             else "Подборка ещё формируется"),
+                                "generationReady": generation_ready,
+                                # `ready=false` means Yandex has not formed this
+                                # generated playlist yet, so the UI must disable it.
+                                "available": generation_ready})
                         except Exception:
                             failures += 1
                     if failures: warning = "Некоторые персональные подборки пока недоступны."
@@ -1790,21 +2356,29 @@ class Player:
             playlist = self.personal_playlist_models.get(playlist_id)
 
         def load() -> None:
+            generation_ready = True
             try:
                 nonlocal playlist
                 if playlist is None:
                     generated = self._api_call(lambda: client.playlists_personal(playlist_id))
+                    ready_value = getattr(generated, "ready", None)
+                    generation_ready = ready_value is None or bool(ready_value)
                     playlist = getattr(generated, "data", None)
                 if playlist is None: raise RuntimeError("404")
                 rows = self._safe_rows(getattr(playlist, "tracks", None))
+                if not generation_ready and not rows:
+                    raise RuntimeError("personal playlist generation is not ready")
                 if not rows and callable(getattr(playlist, "fetch_tracks", None)):
                     rows = self._safe_rows(self._api_call(playlist.fetch_tracks))
-                tracks = self._tracks_from_short_page(rows[:LIBRARY_PAGE_SIZE], client)
+                result_refs: list[tuple[str, str]] = []
+                tracks = self._tracks_from_short_page(
+                    rows[:LIBRARY_PAGE_SIZE], client, result_refs=result_refs)
                 if not tracks: raise RuntimeError("В подборке нет доступных треков")
                 with self.lock:
                     if self.client is not client or generation != self.library_generation: return
                     self.personal_playlist_models[playlist_id] = playlist
                     self.library_source = rows; self.library_results = tracks
+                    self.library_result_refs = result_refs
                     self.library_offset = min(LIBRARY_PAGE_SIZE, len(rows))
                     self.active_library_cache_key = cache_key
                     self.library_revision += 1
@@ -1818,7 +2392,12 @@ class Player:
                 with self.lock:
                     if self.client is not client: return
                     if generation != self.library_generation: return
-                self._set_error(self._catalog_error(exc, "Персональная подборка"))
+                if not generation_ready:
+                    title = dict(PERSONAL_PLAYLISTS)[playlist_id]
+                    self._set_error(
+                        f"«{title}» пока не сформирован Яндекс Музыкой. Попробуйте позже.")
+                else:
+                    self._set_error(self._catalog_error(exc, "Персональная подборка"))
         self._loading(load, "personal")
 
     def play_library_hub_track(self, index: int) -> None:
@@ -2051,6 +2630,8 @@ class Player:
                     for section in CATALOG_SECTIONS:
                         value = page[section]
                         self.catalog_search_models[section] = list(value["models"])
+                        if section == "tracks":
+                            for index, row in enumerate(value["items"]): row["index"] = index
                         count = len(value["items"])
                         has_more = value["total"] > count or (
                             value["perPage"] > 0 and count >= value["perPage"])
@@ -2095,7 +2676,9 @@ class Player:
                         for model, row in zip(page[section]["models"], page[section]["items"]):
                             key = self._catalog_key(section, row)
                             if key in seen: continue
-                            seen.add(key); target["items"].append(row)
+                            seen.add(key)
+                            if section == "tracks": row["index"] = len(self.catalog_search_models[section])
+                            target["items"].append(row)
                             self.catalog_search_models[section].append(model)
                         target["total"] = max(int(target.get("total", 0)), page[section]["total"])
                         received = len(page[section]["items"])
@@ -2431,6 +3014,7 @@ class Player:
                 tracks = self._tracks_from_short_page(
                     source[:CATALOG_TRACK_PAGE_SIZE], client, update_loading=False)
                 entity = {**self._playlist_metadata(playlist), "type": "playlist", "id": entity_id,
+                          "editable": self._playlist_is_mine(client, playlist),
                           "loading": False, "loadingMore": False,
                           "description": self._text(getattr(playlist, "description_formatted", None)
                                                     or getattr(playlist, "description", None)),
@@ -3179,6 +3763,7 @@ class Player:
             data["libraryRevision"] = self.library_revision
             data["libraryHubRevision"] = self.library_hub_revision
             data["catalogRevision"] = self.catalog_revision
+            data["collectionRevision"] = self.collection_revision
             data["searchResults"] = [{**self._metadata(t), "index": i} for i,t in enumerate(self.search_results)]
             data["queueIndex"] = (self.index + 1
                                   if self.detached_track is None and self.index >= 0 else 0)
@@ -3186,11 +3771,17 @@ class Player:
             if include_queue:
                 data["catalog"] = copy.deepcopy(self.catalog)
                 data["libraryHub"] = copy.deepcopy(self.library_hub)
-                data["libraryTracks"] = [
-                    {**self._metadata(track), "index": i,
-                     "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
-                     "current": False}
-                    for i, track in enumerate(self.library_results)]
+                data["collection"] = copy.deepcopy(self.collection)
+                data["libraryTracks"] = []
+                for i, track in enumerate(self.library_results):
+                    metadata = self._metadata(track)
+                    if i < len(self.library_result_refs):
+                        track_id, album_id = self.library_result_refs[i]
+                        if track_id: metadata["trackId"] = track_id
+                        if album_id: metadata["albumId"] = album_id
+                    data["libraryTracks"].append({**metadata, "index": i,
+                        "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
+                        "current": False})
                 rows = []
                 for i, track in enumerate(self.queue):
                     meta = self._metadata(track)
@@ -3229,6 +3820,24 @@ class Player:
             self._int(req.get("index", -1), -1))
         elif cmd == "play_station": self.play_station(
             str(req.get("station", "")), str(req.get("title", "")))
+        elif cmd == "playlist_memberships": self.playlist_memberships(
+            str(req.get("source", "")), self._int(req.get("index", -1), -1),
+            str(req.get("trackId", "")), str(req.get("albumId", "")))
+        elif cmd == "playlist_add_track": self.playlist_add_track(
+            str(req.get("kind", "")), str(req.get("source", "")),
+            self._int(req.get("index", -1), -1), str(req.get("trackId", "")),
+            str(req.get("albumId", "")))
+        elif cmd == "playlist_create": self.playlist_create(
+            str(req.get("title", "")), str(req.get("source", "")),
+            self._int(req.get("index", -1), -1), str(req.get("trackId", "")),
+            str(req.get("albumId", "")))
+        elif cmd == "playlist_delete_track": self.playlist_delete_track(
+            str(req.get("kind", "")), str(req.get("source", "")),
+            self._int(req.get("index", -1), -1), str(req.get("trackId", "")),
+            str(req.get("albumId", "")))
+        elif cmd == "playlist_recommendations": self.playlist_recommendations(
+            str(req.get("kind", "")), str(req.get("title", "")))
+        elif cmd == "collection_clear": self.collection_clear()
         elif cmd == "search": self.search(str(req.get("query", "")))
         elif cmd == "catalog_search": self.catalog_search(
             str(req.get("query", "")), str(req.get("type", "all")))

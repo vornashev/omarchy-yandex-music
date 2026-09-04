@@ -24,14 +24,18 @@ All notable changes to this project are documented here. The format follows [Kee
 - An in-field spinner covering both the suggestion debounce and API loading interval
 - Non-autoplay album, artist, and playlist pages with explicit track playback, linked metadata, and preserved search back-navigation
 - Artist biography, popular tracks, similar artists, and independently paginated Albums and Singles sections
-- Stage 4 Library sections for Playlist of the Day, Missed Likes, Premiere, Deja Vu, listening history, favorite albums and artists, saved playlists, and available radio stations
-- Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, personalization, and explicit playback
+- Stage 4 Library sections for Playlist of the Day, Missed Likes, Premiere, Deja Vu, listening history, favorite albums and artists, saved playlists, and searchable radio stations with automatic scroll pagination
+- Stage 5 collection management: add tracks from the queue, Library, listening history, or catalog to an owned playlist; create a private playlist; confirm removal; and lazily browse recommendations
+- Per-track membership checks mark owned playlists that already contain the selected track and disable duplicate additions
+- A dedicated `CollectionController.qml`, sixteen backend mutation-flow tests, and seven QML interaction tests
+- Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, personalization, collection mutations, and explicit playback
 
 ### Changed
 
 - Background reporting is ordered, serialized with other API calls, and never blocks player controls
 - Disliking a track in “My Wave” immediately advances to the next track
 - Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
+- Track playlist actions now appear on row hover and replace the queue duration without taking additional horizontal space
 - Full-width cover mode remains active when the popup is closed and reopened
 - Letter commands follow physical QWERTY key positions and work with English and Russian layouts
 - Lyrics load on demand through a separate background operation, do not inflate regular status/details polling, and never turn failures into global player errors
@@ -43,6 +47,11 @@ All notable changes to this project are documented here. The format follows [Kee
 - The legacy artist list no longer replaces the Now Playing queue
 - Expanded Library sections load only when opened, use generation/client guards, and retain data in a bounded ten-minute memory-only cache; Recently Played resolves metadata in 50-item pages instead of eagerly loading the full history
 - History tracks, generated playlists, and stations replace the queue only after an explicit selection; favorite entity pages return to the Library
+- Personal playlists returned with `ready=false` are shown dimmed and cannot be activated until Yandex has formed them
+- Every playlist mutation refetches the current `revision`; safe inserts retry once after conflict, while deletion refreshes the list and requires a new confirmation
+- Mutation results use client/generation guards, share `_api_call()`/`api_lock`, refresh the open playlist, invalidate related memory caches, and never replace or start the queue
+- Frequent `status` responses expose only `collectionRevision`; membership results, recommendation rows, and local operation results are included only in `details`
+- Membership lookup batches owned playlist IDs, falls back only for incomplete track lists, and is protected by target/client/generation guards; backend insertion independently skips duplicates
 
 ### Fixed
 
@@ -59,6 +68,12 @@ All notable changes to this project are documented here. The format follows [Kee
 - Leaving Search now releases the hidden field focus, restoring tab/player shortcuts and preventing hidden query edits
 - Cover mode vertical animations are synchronized, the gutter remains constant, panel height is held through transitions, and the temporary second inter-block gap is compensated without a final tab-row snap
 - LRC highlighting no longer trails the one-second monitor/status cycles: the backend records fractional mpv position and its observation time, while the panel smoothly interpolates between updates
+- Paginated search tracks receive stable indexes after deduplication, so playback and playlist actions address the selected row instead of the first result
+- Playlist deletion preserves each row’s original `trackId:albumId` reference, including duplicate track IDs attached to different albums
+- Collection actions no longer become permanently busy when another UI command is in flight; closing the main panel clears an idle dialog or resumes an in-flight result safely
+- The collection dialog now sizes itself from the visible `KeyboardPanel` viewport instead of the zero-sized controller root, so the pressed add button opens a visible dialog
+- Playlist rows are re-fetched from a complete server snapshot after a confirmed mutation because SDK mutation responses may omit `tracks`; deleting one row no longer makes a non-empty playlist look empty
+- The empty-playlist hint is hidden while lyrics or track information are open instead of overlapping that content
 
 ## [0.7.4] - 2026-09-03
 

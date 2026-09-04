@@ -9,11 +9,17 @@ Item {
     loadingMore: false, hasMore: false, total: 0,
     error: "", warning: "", items: [], revision: 0 })
   property var ownPlaylists: []
+  property string stationQuery: ""
+  property int stationPageSize: 50
+  property int stationVisibleCount: stationPageSize
   readonly property string view: String(snapshot.view || "home")
   readonly property string section: String(snapshot.section || "")
+  readonly property bool stationMode: view === "section" && section === "stations"
   readonly property bool loading: snapshot.loading === true
-  readonly property bool loadingMore: snapshot.loadingMore === true
-  readonly property bool hasMore: snapshot.hasMore === true
+  readonly property bool loadingMore: !stationMode && snapshot.loadingMore === true
+  readonly property bool hasMore: stationMode
+    ? stationVisibleCount < filteredStationItems().length
+    : snapshot.hasMore === true
   readonly property var rows: buildRows()
 
   signal sectionRequested(string section)
@@ -35,6 +41,28 @@ Item {
       stations: "РАДИОСТАНЦИИ"
     }
     return labels[String(value || "")] || "МЕДИАТЕКА"
+  }
+
+  function filteredStationItems() {
+    var items = snapshot.items || []
+    if (!stationMode) return items
+    var query = String(stationQuery || "").trim().toLowerCase()
+    if (query === "") return items
+    var filtered = []
+    for (var i = 0; i < items.length; i++) {
+      var value = items[i] || {}
+      var haystack = (String(value.title || "") + " "
+        + String(value.subtitle || "")).toLowerCase()
+      if (haystack.indexOf(query) >= 0) filtered.push(value)
+    }
+    return filtered
+  }
+
+  function setStationQuery(value) {
+    var next = String(value || "")
+    if (stationQuery === next) return
+    stationQuery = next
+    stationVisibleCount = stationPageSize
   }
 
   function buildRows() {
@@ -68,7 +96,7 @@ Item {
       return rows
     }
 
-    rows.push({ kind: "back", title: "Назад в медиатеку" })
+    rows.push({ kind: "back", title: "Назад в медиатеку", icon: "󰁍" })
     rows.push({ kind: "section", title: sectionTitle(section) })
     if (String(snapshot.error || "") !== "") {
       rows.push({ kind: "error", title: String(snapshot.error) })
@@ -77,22 +105,33 @@ Item {
     }
     if (String(snapshot.warning || "") !== "")
       rows.push({ kind: "warning", title: String(snapshot.warning) })
-    var items = snapshot.items || []
-    for (var j = 0; j < items.length; j++) {
-      var value = items[j] || {}
+    var items = stationMode ? filteredStationItems() : (snapshot.items || [])
+    var visibleItems = stationMode ? items.slice(0, stationVisibleCount) : items
+    for (var j = 0; j < visibleItems.length; j++) {
+      var value = visibleItems[j] || {}
       rows.push({ kind: String(value.entityType || "item"), value: value })
     }
     if (!loading && items.length === 0)
-      rows.push({ kind: "empty", title: "Здесь пока ничего нет" })
-    if (hasMore || loadingMore)
+      rows.push({ kind: "empty", title: stationMode && String(stationQuery || "").trim() !== ""
+        ? "Ничего не найдено" : "Здесь пока ничего нет" })
+    if (!stationMode && (hasMore || loadingMore))
       rows.push({ kind: "loadMore", title: loadingMore ? "Загружаем…" : "Загрузить ещё" })
     return rows
   }
 
   function applySnapshot(value) {
+    var previousView = view
+    var previousSection = section
     snapshot = value || ({ view: "home", section: "", loading: false,
       loadingMore: false, hasMore: false, total: 0,
       error: "", warning: "", items: [], revision: 0 })
+    if (previousView !== view || previousSection !== section) {
+      stationQuery = ""
+      stationVisibleCount = stationPageSize
+    } else if (stationMode) {
+      stationVisibleCount = Math.max(stationPageSize,
+        Math.min(stationVisibleCount, filteredStationItems().length))
+    }
   }
 
   function openSection(value) {
@@ -103,6 +142,11 @@ Item {
 
   function requestMore() {
     if (!hasMore || loadingMore) return
+    if (stationMode) {
+      stationVisibleCount = Math.min(filteredStationItems().length,
+        stationVisibleCount + stationPageSize)
+      return
+    }
     var copy = {}
     for (var key in snapshot) copy[key] = snapshot[key]
     copy.loadingMore = true
@@ -121,6 +165,7 @@ Item {
       collectionRequested(String(value.command || ""), String(value.argument || ""))
     else {
       var item = value.value || {}
+      if (item.available === false) return
       var type = String(item.entityType || kind)
       if (String(item.personalId || "") !== "")
         collectionRequested("browse_personal", String(item.personalId))

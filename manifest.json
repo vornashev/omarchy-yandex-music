@@ -4,7 +4,7 @@
   "name": "Yandex Music",
   "version": "0.8.0",
   "author": "vornashev",
-  "description": "Native Yandex Music player with My Wave, library, queue, MPRIS and settings",
+  "description": "Native Yandex Music player with catalog, editable playlists, library, queue and MPRIS",
   "kinds": ["bar-widget"],
   "entryPoints": { "barWidget": "BarWidget.qml" },
   "barWidget": {

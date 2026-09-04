@@ -48,7 +48,7 @@ omarchy-restart-shell
 ```bash
 install -m 755 backend/backend.py ~/.local/share/omarchy-yandex-music/backend.py
 install -m 755 backend/backend.py ~/.config/omarchy/plugins/vornashev.yandex-music/backend/backend.py
-install -m 644 Panel.qml CatalogController.qml CatalogImage.qml LibraryController.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
+install -m 644 Panel.qml CatalogController.qml CatalogImage.qml LibraryController.qml CollectionController.qml manifest.json ~/.config/omarchy/plugins/vornashev.yandex-music/
 systemctl --user restart omarchy-yandex-music.service
 omarchy-restart-shell
 ```
@@ -108,3 +108,6 @@ omarchy-yandex-music status | jq
 13. Проверять, что service active и QuickShell отвечает после installer/shell restart.
 14. Любой тест `logout()` обязан подменять `TOKEN_FILE` и `STATE_FILE` путями из `TemporaryDirectory`; полный test suite не должен читать, изменять или удалять реальную OAuth-сессию разработчика.
 15. Для Stage 4 проверять отдельную ленивую загрузку каждого library section, batch-resolve истории страницами `50 + 50 + остаток`, локальные partial/error states, stale generation, bounded cache, сохранение viewport и отсутствие `_set_queue()` до явного выбора трека или станции.
+16. Для Stage 5 использовать только fake clients: проверять свежий playlist `revision`, один retry безопасного insert при conflict, refresh без автоматического retry destructive delete, duplicate occurrence, batch membership lookup, backend duplicate guard, private create+add, lazy recommendations, stale target/client guards и неизменную очередь.
+17. QML-тестом Stage 5 проверять value snapshot цели, отдельные add/delete/create/recommendation signals, обязательное подтверждение удаления и отсутствие неявного playback signal. Реальные playlist mutations без отдельного явного согласия владельца не выполнять.
+18. В `status` Stage 5 оставлять только `collectionRevision`; membership map, recommendation rows и результат mutation проверять через `details`. После закрытия action dialog snapshot, membership map и модели рекомендаций должны очищаться.

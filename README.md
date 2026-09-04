@@ -35,6 +35,7 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 - Now Playing, Library, and a unified Search catalog for tracks, artists, albums, and playlists
 - “My Wave” with mood, discovery, language controls, and recommendation feedback
 - Likes, “Do not recommend”, user and generated playlists, listening history, favorite entities, and radio stations
+- Add tracks to playlists, create private playlists, remove tracks from owned playlists, and browse recommendations for extending them
 - Synced lyrics with active-line highlighting, auto-scroll, and click-to-seek
 - Track radio with a sequence of similar recommendations and radio feedback
 - On-demand release details and recording credits
@@ -65,6 +66,7 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Open the information view for available album, release date, genre, labels, track number, version, description, and recording credits
 - Change playback mode with the button beside the queue counter
 - Select any queue item directly
+- Hover a track row to reveal its playlist action; in the queue it replaces the duration, opens an owned-playlist picker or creates a new private playlist without activating the row, and playlists that already contain the track are marked and cannot receive a duplicate
 - Click an artist or album link to open its page in the Search catalog
 
 Opening “My Likes” or a personal library playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
@@ -72,10 +74,11 @@ Opening “My Likes” or a personal library playlist does **not** interrupt the
 ### Library
 
 - Browse “My Likes” and owned playlists without autoplay
+- Remove a selected track from an owned playlist after confirmation, or open playlist recommendations and add one explicitly
 - Lazily loaded generated mixes: Playlist of the Day, Missed Likes, Premiere, and Deja Vu
 - A Recently Played section whose tracks and listening contexts load in pages of 50 items
 - Favorite albums, artists, and saved third-party playlists linked to the existing catalog pages
-- A catalog of available genre, activity, mood, and other stations; a queue starts only after an explicit station selection
+- A searchable catalog of genre, activity, mood, and other stations with automatic scroll pagination; a queue starts only after an explicit station selection
 - Sections and fetched data use bounded memory-only caches cleared on sign-out or backend restart
 - Expand “My Wave” and configure:
   - mood: any, fun, active, calm, or sad
@@ -86,7 +89,7 @@ Opening “My Likes” or a personal library playlist does **not** interrupt the
 
 Search across tracks, artists, albums, and playlists, or use the sectioned **All** view. Suggestions appear after 300 ms once at least two characters are entered; a spinner inside the field remains visible while they are loading. Use ↑/↓ to highlight one and Enter or a mouse click to search for it. Results load page by page with an explicit load-more action.
 
-Artist, album, and playlist pages open inside the same Search tab without changing playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages place popular tracks first, followed by independently paginated Albums and Singles, then up to ten similar artists; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. When playback starts from an artist’s popular tracks, the queue fetches subsequent 20-track pages in the background and continues past the initially visible list. Catalog lists use their own virtualized scrolling below the fixed tabs and controls. Artwork automatically retries transient CDN failures and shows a fallback glyph if the image remains unavailable.
+Artist, album, and playlist pages open inside the same Search tab without changing playback. Every track row has a separate add-to-playlist action that does not start playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages place popular tracks first, followed by independently paginated Albums and Singles, then up to ten similar artists; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. When playback starts from an artist’s popular tracks, the queue fetches subsequent 20-track pages in the background and continues past the initially visible list. Catalog lists use their own virtualized scrolling below the fixed tabs and controls. Artwork automatically retries transient CDN failures and shows a fallback glyph if the image remains unavailable.
 
 ### Settings
 

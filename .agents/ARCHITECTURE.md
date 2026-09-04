@@ -10,6 +10,7 @@
 - `BarPlayer.qml` — визуальный мини-плеер в баре.
 - `WidgetLogic.qml` — bootstrap, процессы CLI, polling status, загрузка панели.
 - `Panel.qml` — попап: «Сейчас», «Медиатека», «Поиск», настройки, OAuth и ошибки.
+- `CatalogController.qml`, `LibraryController.qml`, `CollectionController.qml` — testable state/navigation для каталога, персонализации и mutation UX без зависимостей Quickshell.
 - `manifest.json` — metadata Omarchy и версия.
 
 `WidgetLogic.qml` запускает `bootstrap.sh`, затем опрашивает CLI:
@@ -42,11 +43,13 @@
 - `catalog_artist_more <albums|singles>`, `catalog_entity_more`, `play_catalog_track <source> <index>`;
 - `library_section <personal|history|albums|artists|playlists|stations>`, `library_section_more`, `library_retry`, `library_back`;
 - `browse_personal <daily|missedLikes|recentTracks|neverHeard>`, `play_library_hub_track <index>`, `play_station <id> <title>`;
+- `playlist_memberships <source> <index> <trackId> <albumId>`, `playlist_add_track <kind> <source> <index> <trackId> <albumId>`, `playlist_create <source> <index> <trackId> <albumId> <title>`;
+- `playlist_delete_track <kind> <source> <index> <trackId> <albumId>`, `playlist_recommendations <kind> <title>`, `collection_clear`;
 - `play_queue <index>`, `play_library_track <index>`;
 - `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `mode`, `like`, `dislike`, `stop`;
 - `setting <key> <value>`.
 
-`status` отдаёт компактное состояние. `details` дополнительно формирует queue/library lists и snapshot каталога. Тексты и credits не входят ни в один из этих ответов: `lyrics` и `track_info` возвращают отдельные snapshots текущего трека и при необходимости запускают фоновую загрузку, а команды с суффиксом `_refresh` сбрасывают соответствующую кэшированную запись для ручного повтора. Не переносить тяжёлые списки в частый bar polling.
+`status` отдаёт компактное состояние. `details` дополнительно формирует queue/library lists и snapshots каталога, персонализации и управления коллекцией. Для collection flow частый `status` содержит только `collectionRevision`, а локальные ошибки, сообщения и recommendation rows входят только в `details`. Тексты и credits не входят ни в один из этих ответов: `lyrics` и `track_info` возвращают отдельные snapshots текущего трека и при необходимости запускают фоновую загрузку, а команды с суффиксом `_refresh` сбрасывают соответствующую кэшированную запись для ручного повтора. Не переносить тяжёлые списки в частый bar polling.
 
 ## 4.1. Единый каталог
 
@@ -63,12 +66,23 @@
 ## 4.2. Персонализация медиатеки
 
 - `LibraryController.qml` строит виртуализированные home/section rows и отделяет навигацию по сущностям от явных playback actions.
-- Плейлист дня, Тайник, Премьера, Дежавю, история, любимые альбомы/исполнители/плейлисты и станции загружаются отдельными ленивыми командами; открытие вкладки не вызывает все endpoint одновременно.
+- Плейлист дня, Тайник, Премьера, Дежавю, история, любимые альбомы/исполнители/плейлисты и станции загружаются отдельными ленивыми командами; открытие вкладки не вызывает все endpoint одновременно. Если generated playlist приходит с `ready=false`, его неполная модель не кэшируется, а строка отображается приглушённой и не активируется до следующего успешного обновления раздела.
 - Все новые SDK-запросы проходят через `_api_call()`/`api_lock`, используют client/generation guards и сохраняют ошибки внутри `libraryHub`, не меняя глобальную ошибку работающего плеера.
 - История сначала получает только лёгкие ссылки через `music_history(full_models_count=0)`, затем дополняет метаданные batch-вызовами `music_history_items()` страницами по 50 элементов; треки истории хранятся отдельно от JSON snapshot и запускаются только явным выбором.
 - Личный персональный плейлист открывается как track collection без автозапуска и переиспользует постраничную библиотечную очередь. Любимые album/artist/playlist открывают существующие catalog entity pages и Back возвращает во вкладку «Медиатека».
-- Станция получает очередь только через явный `play_station`; дальнейшее продолжение и feedback используют общий radio-chain protocol.
+- Backend одним ленивым `rotor_stations_list()` передаёт полный каталог станций; `LibraryController.qml` локально фильтрует его по названию/подзаголовку и раскрывает страницы по 50 элементов у конца `ListView`, не выполняя дополнительных API-запросов. Станция получает очередь только через явный `play_station`; дальнейшее продолжение и feedback используют общий radio-chain protocol.
 - Section snapshots, track models и generated playlist models имеют ограниченный десятиминутный in-memory cache и полностью очищаются при logout/restart. В `status` попадает только revision, а сами rows — только в `details`.
+
+## 4.3. Управление коллекцией
+
+- UI передаёт не ссылку на QML delegate, а immutable snapshot цели: `source/index/trackId/albumId`; backend повторно сверяет ID с текущей model collection перед чтением membership и записью.
+- При каждом открытии action dialog `playlist_memberships` одним batch-вызовом проверяет собственные плейлисты; неполный playlist model разрешается отдельно только при необходимости. Membership map остаётся details-only, защищён generation/client/target guards и очищается вместе с dialog. Уже содержащий трек плейлист блокируется в UI, а backend повторно предотвращает duplicate insert.
+- Источники ограничены queue, collection browse, history, catalog search/entity и текущими recommendations. Операции не вызывают `_set_queue()` и не меняют активную очередь.
+- Создание из action dialog всегда создаёт приватный плейлист. Add/delete сначала получают свежую модель собственного плейлиста и используют её `revision`; insert при явном conflict можно безопасно повторить один раз, delete после conflict только обновляет открытый список и требует нового подтверждения.
+- Удаление адресуется half-open диапазоном `[index, index + 1)` и учитывает номер появления дублирующегося `trackId:albumId` в открытом списке.
+- Recommendations загружаются только по кнопке, ограничиваются первой страницей, хранят track models только в памяти и очищаются при закрытии, logout или restart.
+- После подтверждённой mutation обновляются summary собственных плейлистов и открытая страница, а связанные collection/catalog/library caches инвалидируются. Очередь остаётся playback snapshot и не заменяется.
+- Pins и presaves не входят в Stage 5: без отдельного экрана быстрых контекстов и будущих релизов их состояние и обратное действие были бы непонятны.
 
 ## 8. OAuth, файлы и безопасность
 

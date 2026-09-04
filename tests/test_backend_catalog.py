@@ -131,6 +131,10 @@ class CatalogTests(unittest.TestCase):
         player.catalog_entity_offset = 0
         player.catalog_cache = OrderedDict()
         player.search_results = []
+        player.collection_generation = 0
+        player.collection_revision = 0
+        player.collection = player._empty_collection()
+        player.collection_recommendation_tracks = []
         player.state = {"loadingStage": "", "error": "player error stays"}
         player.queue = [track("old")]
         player.queue_source = []
@@ -198,6 +202,7 @@ class CatalogTests(unittest.TestCase):
         self.wait_until(lambda: not player.catalog["search"]["loadingMore"])
         rows = player.catalog["search"]["sections"]["tracks"]["items"]
         self.assertEqual([row["trackId"] for row in rows], ["1", "2", "3"])
+        self.assertEqual([row["index"] for row in rows], [0, 1, 2])
         self.assertEqual(player.catalog["search"]["page"], 1)
 
     def test_suggestions_threshold_and_stale_generation(self):
@@ -502,6 +507,8 @@ class CatalogTests(unittest.TestCase):
         player.library_hub = player._empty_library_hub(); player.library_hub_tracks = []
         player.library_hub_source = []; player.library_hub_offset = 0
         player.library_hub_cache = OrderedDict(); player.personal_playlist_models = {}
+        player.collection = {**player._empty_collection(), "recommendations": [{"trackId": "private"}]}
+        player.collection_recommendation_tracks = [track("private")]
         player.liked_ids = set(); player.liked_rows = []; player.liked_rows_at = 0; player.disliked_ids = set()
         player.queue_source = []; player.queue_extending = False; player.queue_advance_pending = False
         player.queue_generation = 0; player.queue_revision = 0; player.queue_collection_key = ""
@@ -525,6 +532,8 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(player.library_hub_tracks, [])
         self.assertEqual(player.library_hub["view"], "home")
         self.assertEqual(player.personal_playlist_models, {})
+        self.assertEqual(player.collection["recommendations"], [])
+        self.assertEqual(player.collection_recommendation_tracks, [])
 
 
 if __name__ == "__main__":

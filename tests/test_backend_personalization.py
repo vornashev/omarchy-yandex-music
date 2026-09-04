@@ -125,6 +125,7 @@ class PersonalizationTests(unittest.TestCase):
         player.library_revision = 0
         player.library_source = []
         player.library_results = []
+        player.library_result_refs = []
         player.library_offset = 0
         player.active_library_cache_key = ""
         player.collection_cache = {}
@@ -170,12 +171,47 @@ class PersonalizationTests(unittest.TestCase):
         self.assertEqual([call[0] for call in client.calls], ["personal"] * 4)
         self.assertEqual([row["personalId"] for row in player.library_hub["items"]],
                          [value for value, _title in backend.PERSONAL_PLAYLISTS])
+        self.assertTrue(all(row["available"] for row in player.library_hub["items"]))
         self.assertEqual(len(player.personal_playlist_models), 4)
         call_count = len(client.calls)
         player.library_back()
         player.library_section("personal")
         self.assertFalse(player.library_hub["loading"])
         self.assertEqual(len(client.calls), call_count)
+
+    def test_stale_personal_generation_is_disabled_but_not_cached(self):
+        client = FakePersonalizationClient()
+        client.personal["missedLikes"].ready = False
+        player = self.make_player(client)
+
+        player.library_section("personal")
+        self.wait_until(lambda: not player.library_hub["loading"])
+
+        row = next(value for value in player.library_hub["items"]
+                   if value["personalId"] == "missedLikes")
+        self.assertFalse(row["available"])
+        self.assertFalse(row["generationReady"])
+        self.assertNotIn("missedLikes", player.personal_playlist_models)
+
+        client.personal["missedLikes"].ready = True
+        player.browse_personal_playlist("missedLikes")
+        self.wait_until(lambda: not player.state["loading"])
+        self.assertEqual(player.state["libraryBrowseName"], "Тайник")
+        self.assertIn("missedLikes", player.personal_playlist_models)
+
+    def test_stale_personal_generation_has_specific_error_when_still_pending(self):
+        client = FakePersonalizationClient()
+        client.personal["missedLikes"] = SimpleNamespace(
+            ready=False, data=playlist(2, "Тайник", []))
+        player = self.make_player(client)
+
+        player.library_section("personal")
+        self.wait_until(lambda: not player.library_hub["loading"])
+        player.browse_personal_playlist("missedLikes")
+        self.wait_until(lambda: not player.state["loading"])
+
+        self.assertIn("не сформирован Яндекс Музыкой", player.state["error"])
+        self.assertEqual(player.state["libraryBrowseName"], "")
 
     def test_history_resolves_and_displays_fifty_items_per_page(self):
         client = FakePersonalizationClient()

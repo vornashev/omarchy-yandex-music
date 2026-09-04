@@ -46,6 +46,26 @@ elif request["command"] == "browse_personal" and len(args) > 1:
 elif request["command"] == "play_station" and len(args) > 1:
     request["station"] = args[1]
     request["title"] = " ".join(args[2:])
+elif request["command"] == "playlist_memberships" and len(args) > 4:
+    request["source"] = args[1]
+    request["index"] = int(args[2])
+    request["trackId"] = args[3]
+    request["albumId"] = args[4]
+elif request["command"] in ("playlist_add_track", "playlist_delete_track") and len(args) > 5:
+    request["kind"] = args[1]
+    request["source"] = args[2]
+    request["index"] = int(args[3])
+    request["trackId"] = args[4]
+    request["albumId"] = args[5]
+elif request["command"] == "playlist_create" and len(args) > 5:
+    request["source"] = args[1]
+    request["index"] = int(args[2])
+    request["trackId"] = args[3]
+    request["albumId"] = args[4]
+    request["title"] = " ".join(args[5:])
+elif request["command"] == "playlist_recommendations" and len(args) > 1:
+    request["kind"] = args[1]
+    request["title"] = " ".join(args[2:])
 elif request["command"] == "setting" and len(args) > 2:
     request["key"] = args[1]
     request["value"] = args[2]

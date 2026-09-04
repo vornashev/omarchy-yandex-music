@@ -20,6 +20,9 @@ TestCase {
     sectionSpy.clear(); backSpy.clear(); retrySpy.clear(); loadMoreSpy.clear(); collectionSpy.clear()
     entitySpy.clear(); trackSpy.clear(); stationSpy.clear()
     controller.ownPlaylists = []
+    controller.stationPageSize = 50
+    controller.stationVisibleCount = 50
+    controller.setStationQuery("")
     controller.applySnapshot({ view: "home", section: "", loading: false,
       loadingMore: false, hasMore: false, total: 0,
       error: "", warning: "", items: [], revision: 0 })
@@ -84,6 +87,57 @@ TestCase {
     compare(stationSpy.signalArguments[0][1], "Рок")
   }
 
+  function test_stations_are_filtered_and_paginated_locally() {
+    controller.stationPageSize = 2
+    controller.stationVisibleCount = 2
+    controller.applySnapshot({ view: "section", section: "stations", loading: false,
+      error: "", warning: "", items: [
+        { entityType: "station", stationId: "genre:rock", title: "Рок", subtitle: "Жанр" },
+        { entityType: "station", stationId: "mood:calm", title: "Спокойствие", subtitle: "Настроение" },
+        { entityType: "station", stationId: "activity:run", title: "Бег", subtitle: "Спорт" }
+      ] })
+
+    compare(controller.rows.filter(function(row) { return row.kind === "station" }).length, 2)
+    verify(controller.hasMore)
+    verify(findRow("loadMore", "", "") === null)
+    controller.requestMore()
+    compare(controller.rows.filter(function(row) { return row.kind === "station" }).length, 3)
+    verify(!controller.hasMore)
+    compare(loadMoreSpy.count, 0)
+
+    controller.setStationQuery("НАСТРО")
+    compare(controller.stationVisibleCount, 2)
+    var stations = controller.rows.filter(function(row) { return row.kind === "station" })
+    compare(stations.length, 1)
+    compare(stations[0].value.stationId, "mood:calm")
+  }
+
+  function test_station_search_resets_after_leaving_section() {
+    controller.stationPageSize = 1
+    controller.applySnapshot({ view: "section", section: "stations", loading: false,
+      error: "", warning: "", items: [
+        { entityType: "station", stationId: "genre:rock", title: "Рок" },
+        { entityType: "station", stationId: "genre:jazz", title: "Джаз" }
+      ] })
+    controller.setStationQuery("рок")
+    controller.requestMore()
+    controller.applySnapshot({ view: "home", section: "", loading: false,
+      error: "", warning: "", items: [] })
+    compare(controller.stationQuery, "")
+    compare(controller.stationVisibleCount, 1)
+  }
+
+  function test_station_search_has_empty_result_state() {
+    controller.applySnapshot({ view: "section", section: "stations", loading: false,
+      error: "", warning: "", items: [
+        { entityType: "station", stationId: "genre:rock", title: "Рок", subtitle: "Жанр" }
+      ] })
+    controller.setStationQuery("джаз")
+    var empty = findRow("empty", "", "")
+    verify(empty !== null)
+    compare(empty.title, "Ничего не найдено")
+  }
+
   function test_history_load_more_is_explicit_and_shows_loading_state() {
     controller.applySnapshot({ view: "section", section: "history", loading: false,
       loadingMore: false, hasMore: true, total: 125,
@@ -104,8 +158,19 @@ TestCase {
     controller.activate(findRow("retry", "", ""))
     compare(retrySpy.count, 1)
     compare(retrySpy.signalArguments[0][0], "artists")
-    controller.activate(findRow("back", "", ""))
+    var backRow = findRow("back", "", "")
+    compare(backRow.icon, "󰁍")
+    controller.activate(backRow)
     compare(backSpy.count, 1)
+  }
+
+  function test_unavailable_personal_playlist_ignores_activation() {
+    controller.applySnapshot({ view: "section", section: "personal", loading: false,
+      error: "", warning: "", items: [{ entityType: "playlist", personalId: "missedLikes",
+        title: "Тайник", available: false }] })
+    controller.activate(findRow("playlist", "", ""))
+    compare(collectionSpy.count, 0)
+    compare(trackSpy.count, 0)
   }
 
   function test_personal_playlist_opens_without_playback_signal() {

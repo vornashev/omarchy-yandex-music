@@ -45,6 +45,9 @@ Panel {
   property real catalogSearchContentY: 0
   property var libraryHubDisplay: ({ view: "home", section: "", loading: false,
     error: "", warning: "", items: [], revision: 0 })
+  property var collectionDisplay: ({ busy: false, operation: "", error: "", message: "",
+    playlistKind: "", playlistTitle: "", recommendations: [], revision: 0 })
+  property bool collectionResumePending: false
   property var pendingSuggestionCommand: []
   property string lastError: ""
   property string dismissedError: ""
@@ -103,7 +106,7 @@ Panel {
   readonly property bool busy: data.connecting === true || data.restoring === true
     || data.loading === true || data.libraryLoadingMore === true
     || libraryController.loading || libraryController.loadingMore
-    || actionProcess.running || settingsProcess.running
+    || collectionController.busy || actionProcess.running || settingsProcess.running
     || (refreshing && !hasLoadedStatus)
   readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
@@ -136,6 +139,13 @@ Panel {
       return "Подключаем аудиопоток к mpv…"
     if (kind === "track") return "Подготавливаем трек…"
     if (settingsProcess.running) return "Сохраняем настройки…"
+    if (collectionController.busy) {
+      var operation = String(collectionDisplay.operation || "")
+      if (operation === "create") return "Создаём приватный плейлист…"
+      if (operation === "delete") return "Удаляем трек из плейлиста…"
+      if (operation === "recommendations") return "Подбираем рекомендации…"
+      return "Обновляем плейлист…"
+    }
     if (actionProcess.running && lastActionCommand === "like") return "Обновляем отметку «Мне нравится»…"
     if (actionProcess.running && lastActionCommand === "dislike") return "Обновляем отметку «Не рекомендовать»…"
     if (actionProcess.running) return "Выполняем действие…"
@@ -204,6 +214,7 @@ Panel {
       trackInfoOpen = false
       page = 0
       searchField.focus = false
+      stationSearchField.focus = false
       panelScroll.contentY = 0
       keyCatcher.forceActiveFocus()
     }
@@ -220,6 +231,10 @@ Panel {
     confirmLogout = false
     page = pageBeforeSettings
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  function openCollectionTrack(source, index, row, canDelete, playlistKind, playlistTitle) {
+    collectionController.openTrack(source, index, row, canDelete, playlistKind, playlistTitle)
+    collectionPopup.open()
   }
   function formatTime(value) {
     var seconds = Math.max(0, Math.round(Number(value || 0)))
@@ -495,7 +510,7 @@ Panel {
     return rows
   }
   function action(command, argument) {
-    if (actionProcess.running) return
+    if (actionProcess.running) return false
     lastActionCommand = command
     lastActionArgument = argument
     dismissedError = ""
@@ -528,6 +543,7 @@ Panel {
     } else if (argument !== undefined && argument !== null) args.push(String(argument))
     actionProcess.command = args; actionProcess.running = true
     if (command === "catalog_search" && catalogResultsList) catalogResultsList.positionViewAtBeginning()
+    return true
   }
   function retryLastOperation() {
     dismissedError = ""
@@ -590,6 +606,11 @@ Panel {
               Math.max(0, libraryList.contentHeight - libraryList.height))
           })
         }
+      }
+      if (parsed.collection
+          && Number(parsed.collectionRevision || 0) !== Number(data.collectionRevision || 0)) {
+        collectionDisplay = parsed.collection
+        collectionController.applySnapshot(parsed.collection)
       }
       if (parsed.catalog && Number(parsed.catalogRevision || 0) !== Number(data.catalogRevision || 0)) {
         var oldView = String(catalogDisplay.view || "search")
@@ -687,6 +708,7 @@ Panel {
       // A hidden TextField keeps active focus unless it is transferred
       // explicitly, which would make it consume shortcuts from other pages.
       searchField.focus = false
+      stationSearchField.focus = false
       keyCatcher.forceActiveFocus()
     }
   }
@@ -715,6 +737,37 @@ Panel {
     onStationPlaybackRequested: function(station, title) {
       root.action("play_station", [station, title])
       root.selectPage(0)
+    }
+  }
+
+  CollectionController {
+    id: collectionController
+    ownPlaylists: root.data.playlists || []
+    onMembershipsRequested: function(source, index, trackId, albumId) {
+      if (!root.action("playlist_memberships", [source, index, trackId, albumId]))
+        collectionController.membershipRequestFailed()
+    }
+    onAddRequested: function(kind, source, index, trackId, albumId) {
+      if (!root.action("playlist_add_track", [kind, source, index, trackId, albumId]))
+        collectionController.requestPending = false
+    }
+    onCreateRequested: function(title, source, index, trackId, albumId) {
+      if (!root.action("playlist_create", [source, index, trackId, albumId, title]))
+        collectionController.requestPending = false
+    }
+    onDeleteRequested: function(kind, source, index, trackId, albumId) {
+      if (!root.action("playlist_delete_track", [kind, source, index, trackId, albumId]))
+        collectionController.requestPending = false
+    }
+    onRecommendationsRequested: function(kind, title) {
+      if (!root.action("playlist_recommendations", [kind, title]))
+        collectionController.requestPending = false
+    }
+    onClearRequested: {
+      if (!collectionClearProcess.running) {
+        collectionClearProcess.command = [root.cli, "collection_clear"]
+        collectionClearProcess.running = true
+      }
     }
   }
 
@@ -783,6 +836,14 @@ Panel {
     } else {
       settingsOpen = false
       confirmLogout = false
+      if (collectionPopup.opened) {
+        collectionResumePending = collectionController.busy
+        collectionPopup.close()
+      }
+    }
+    if (opened && collectionResumePending) {
+      collectionResumePending = false
+      if (collectionController.opened) collectionPopup.open()
     }
   }
 
@@ -838,6 +899,10 @@ Panel {
         root.trackInfoData = failed
       }
     }
+  }
+  Process {
+    id: collectionClearProcess; command: []
+    onExited: settleTimer.restart()
   }
   Process {
     id: suggestionProcess; command: []
@@ -923,6 +988,8 @@ Panel {
     onTriggered: root.positionClockMs = Date.now()
   }
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
+  Timer { id: collectionDismissTimer; interval: 250; repeat: false
+    onTriggered: collectionPopup.dismissReady = true }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
   Timer { id: lyricsPollTimer; interval: 500; repeat: false; onTriggered: root.refreshLyrics(false) }
   Timer { id: trackInfoPollTimer; interval: 500; repeat: false; onTriggered: root.refreshTrackInfo(false) }
@@ -1054,7 +1121,8 @@ Panel {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
         if (event.modifiers & ~Qt.KeypadModifier) return
-        if (root.settingsOpen || searchField.activeFocus || !root.hasTrack) return
+        if (root.settingsOpen || searchField.activeFocus
+            || stationSearchField.activeFocus || !root.hasTrack) return
         var t = event.text ? String(event.text).toLowerCase() : ""
         if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z)
           t = String.fromCharCode(event.key).toLowerCase()
@@ -1066,7 +1134,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       Keys.forwardTo: [shortcutInterceptor]
-      blocked: searchField.activeFocus
+      blocked: searchField.activeFocus || stationSearchField.activeFocus
       onCloseRequested: {
         if (root.coverExpanded) root.setCoverExpanded(false)
         else if (root.settingsOpen) root.closeSettings()
@@ -1751,18 +1819,21 @@ Panel {
               }
 
               Text {
-                visible: !root.hasTrack; width: parent.width; horizontalAlignment: Text.AlignHCenter
+                visible: !root.hasTrack && !root.browsingLibrary
+                width: parent.width; horizontalAlignment: Text.AlignHCenter
                 text: "Выберите плейлист в медиатеке или найдите трек"
                 color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
               }
 
               PanelSeparator {
-                visible: root.hasTrack || root.queueListLoading || root.trackListDisplay.length > 0
+                visible: root.hasTrack || root.browsingLibrary
+                  || root.queueListLoading || root.trackListDisplay.length > 0
                 foreground: root.foreground
               }
 
               Item {
-                visible: root.hasTrack || root.queueListLoading || root.trackListDisplay.length > 0
+                visible: root.hasTrack || root.browsingLibrary
+                  || root.queueListLoading || root.trackListDisplay.length > 0
                 width: parent.width
                 height: visible ? Style.space(24) : 0
                 clip: true
@@ -1770,7 +1841,9 @@ Panel {
                 Text {
                   id: queueHeading
                   visible: !root.queueListLoading || root.currentTrackPaneOpen
-                  anchors.left: parent.left; anchors.right: lyricsToggleButton.left
+                  anchors.left: parent.left
+                  anchors.right: playlistRecommendationsButton.visible
+                    ? playlistRecommendationsButton.left : lyricsToggleButton.left
                   anchors.rightMargin: Style.space(6)
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.trackInfoOpen ? "О ТРЕКЕ"
@@ -1781,6 +1854,25 @@ Panel {
                   elide: Text.ElideRight
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.letterSpacing: 1
+                }
+
+                Button {
+                  id: playlistRecommendationsButton
+                  visible: root.browsingLibrary && root.data.libraryEditable === true
+                    && !root.currentTrackPaneOpen
+                  anchors.right: lyricsToggleButton.left; anchors.rightMargin: Style.space(6)
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: visible ? Style.space(28) : 0; height: Style.space(24)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: "󰎈"
+                  iconSize: Style.font.icon
+                  tooltipText: "Рекомендации для дополнения"
+                  foreground: root.dim
+                  onClicked: {
+                    if (collectionController.openRecommendations(
+                        String(root.data.libraryPlaylistKind || ""),
+                        String(root.data.libraryBrowseName || ""))) collectionPopup.open()
+                  }
                 }
 
                 Button {
@@ -1882,6 +1974,18 @@ Panel {
                 foreground: root.foreground
               }
 
+              Item {
+                visible: !root.currentTrackPaneOpen && root.browsingLibrary
+                  && !root.queueListLoading && root.trackListDisplay.length === 0
+                width: parent.width; height: visible ? Style.space(260) : 0
+                Text {
+                  anchors.centerIn: parent
+                  text: "Плейлист пока пуст"
+                  color: root.dim; font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                }
+              }
+
               ListView {
                 id: queueList
                 visible: !root.currentTrackPaneOpen && !root.queueListLoading
@@ -1902,15 +2006,18 @@ Panel {
                   required property var modelData
                   readonly property bool isCurrent: !root.browsingCollection
                     && Number(root.data.queueIndex || 0) - 1 === Number(modelData.index)
+                  readonly property bool hovered: queueHover.hovered
                   width: queueList.width - (queueList.contentHeight > queueList.height ? Style.space(8) : 0)
                   height: Style.space(50)
                   radius: Style.cornerRadius
                   color: isCurrent
                     ? Style.selectedFillFor(root.foreground, Color.accent)
-                    : (queueMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
+                    : (queueRow.hovered ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
                   borderSpec: isCurrent
                     ? Border.controlSpec("normal", root.foreground, Color.accent)
                     : Border.none()
+
+                  HoverHandler { id: queueHover }
 
                   Row {
                     z: 1
@@ -1975,14 +2082,38 @@ Panel {
                         }
                       }
                     }
-                    Text {
-                      width: Style.space(40); anchors.verticalCenter: parent.verticalCenter
-                      horizontalAlignment: Text.AlignRight; text: root.formatTime(modelData.duration)
-                      color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                    Item {
+                      width: Style.space(40); height: Style.space(26)
+                      anchors.verticalCenter: parent.verticalCenter
+                      Text {
+                        visible: !queueRow.hovered
+                        anchors.fill: parent
+                        verticalAlignment: Text.AlignVCenter
+                        horizontalAlignment: Text.AlignRight
+                        text: root.formatTime(modelData.duration)
+                        color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                      }
+                      Button {
+                        visible: queueRow.hovered
+                        width: Style.space(26); height: Style.space(26)
+                        anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                        horizontalPadding: 0; verticalPadding: 0
+                        iconText: "󰍝"; iconSize: Style.font.icon
+                        tooltipText: root.browsingLibrary && root.data.libraryEditable === true
+                          ? "Добавить или удалить из плейлиста" : "Добавить в плейлист"
+                        foreground: root.dim
+                        onClicked: root.openCollectionTrack(
+                          root.browsingLibrary ? "library" : "queue", Number(modelData.index), modelData,
+                          root.browsingLibrary && root.data.libraryEditable === true,
+                          String(root.data.libraryPlaylistKind || ""),
+                          String(root.data.libraryBrowseName || ""))
+                      }
                     }
                   }
                   MouseArea {
-                    id: queueMouse; anchors.fill: parent; hoverEnabled: true
+                    id: queueMouse; anchors.fill: parent
+                    anchors.rightMargin: Style.space(36)
+                    hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
                       if (root.browsingLibrary) root.action("play_library_track", modelData.index)
@@ -2334,17 +2465,65 @@ Panel {
                 height: Style.space(360)
                 clip: true
 
+                TextField {
+                  id: stationSearchField
+                  visible: libraryController.stationMode
+                  anchors.top: parent.top
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  height: visible ? Style.space(36) : 0
+                  placeholderText: "Найти радиостанцию"
+                  foreground: root.foreground
+                  font.family: root.fontFamily
+                  text: libraryController.stationQuery
+                  onTextEdited: {
+                    libraryController.setStationQuery(text)
+                    libraryList.positionViewAtBeginning()
+                  }
+                  onVisibleChanged: {
+                    if (visible) {
+                      Qt.callLater(function() {
+                        if (stationSearchField.visible && !root.settingsOpen)
+                          stationSearchField.forceActiveFocus()
+                      })
+                    } else {
+                      focus = false
+                      Qt.callLater(function() {
+                        if (root.opened && !root.settingsOpen) keyCatcher.forceActiveFocus()
+                      })
+                    }
+                  }
+                  Keys.onEscapePressed: {
+                    if (text !== "") {
+                      libraryController.setStationQuery("")
+                      libraryList.positionViewAtBeginning()
+                    } else {
+                      focus = false
+                      keyCatcher.forceActiveFocus()
+                    }
+                  }
+                }
+
                 SkeletonList {
                   visible: libraryController.loading
-                  anchors.fill: parent
+                  anchors.top: stationSearchField.visible ? stationSearchField.bottom : parent.top
+                  anchors.topMargin: stationSearchField.visible ? Style.space(6) : 0
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
                   rowCount: 7
                   foreground: root.foreground
                 }
 
                 ListView {
                   id: libraryList
+                  property bool stationPageScheduled: false
                   visible: !libraryController.loading
-                  anchors.fill: parent
+                  anchors.top: stationSearchField.visible ? stationSearchField.bottom : parent.top
+                  anchors.topMargin: stationSearchField.visible ? Style.space(6) : 0
+                  anchors.left: parent.left
+                  anchors.right: parent.right
+                  anchors.bottom: parent.bottom
                   clip: true
                   boundsBehavior: Flickable.StopAtBounds
                   interactive: contentHeight > height
@@ -2352,6 +2531,26 @@ Panel {
                   model: root.libraryRows
                   spacing: Style.space(2)
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+
+                  function requestStationPageNearEnd() {
+                    if (stationPageScheduled || !libraryController.stationMode
+                        || !libraryController.hasMore) return
+                    var remaining = contentHeight - (contentY + height)
+                    if (remaining > Style.space(116)) return
+                    stationPageScheduled = true
+                    Qt.callLater(function() {
+                      stationPageScheduled = false
+                      var currentRemaining = contentHeight - (contentY + height)
+                      if (libraryController.stationMode && libraryController.hasMore
+                          && currentRemaining <= Style.space(116))
+                        libraryController.requestMore()
+                    })
+                  }
+
+                  onContentYChanged: requestStationPageNearEnd()
+                  onContentHeightChanged: requestStationPageNearEnd()
+                  onHeightChanged: requestStationPageNearEnd()
+                  onMovementEnded: requestStationPageNearEnd()
 
                   delegate: BorderSurface {
                     id: libraryRow
@@ -2361,21 +2560,27 @@ Panel {
                     readonly property bool entityRow: ["track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
                     readonly property bool actionable: ["collection", "navigation", "back", "retry", "loadMore",
                       "track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
+                    readonly property bool hovered: libraryHover.hovered
                     width: libraryList.width
                       - (libraryList.contentHeight > libraryList.height ? Style.space(8) : 0)
                     height: rowKind === "section" ? Style.space(30)
                       : (entityRow || rowKind === "collection" || rowKind === "navigation"
                         ? Style.space(58) : Style.space(42))
                     radius: Style.cornerRadius
-                    color: actionable && libraryMouse.containsMouse
+                    opacity: libraryRow.value.available === false ? .45 : 1
+                    color: actionable && libraryRow.value.available !== false && libraryRow.hovered
                       ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
                     borderSpec: Border.none()
+
+                    HoverHandler { id: libraryHover }
 
                     Text {
                       visible: ["section", "error", "warning", "empty", "back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
                       anchors.left: parent.left; anchors.right: parent.right
                       anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
-                      text: String(libraryRow.modelData.title || "")
+                      text: (libraryRow.rowKind === "back"
+                        ? String(libraryRow.modelData.icon || "") + "  " : "")
+                        + String(libraryRow.modelData.title || "")
                       color: libraryRow.rowKind === "error" ? Color.urgent
                         : (["back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0 ? Color.accent : root.dim)
                       horizontalAlignment: ["back", "retry", "loadMore", "empty"].indexOf(libraryRow.rowKind) >= 0
@@ -2389,6 +2594,7 @@ Panel {
                     }
 
                     Row {
+                      z: 2
                       visible: libraryRow.rowKind === "collection" || libraryRow.rowKind === "navigation"
                         || libraryRow.entityRow
                       anchors.left: parent.left; anchors.right: parent.right
@@ -2414,6 +2620,7 @@ Panel {
                       }
                       Column {
                         width: parent.width - Style.space(49)
+                          - (libraryRow.rowKind === "track" ? Style.space(35) : 0)
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 1
                         Text {
@@ -2439,11 +2646,25 @@ Panel {
                           font.pixelSize: Style.font.caption; elide: Text.ElideRight
                         }
                       }
+                      Button {
+                        visible: libraryRow.rowKind === "track" && libraryRow.hovered
+                        width: libraryRow.rowKind === "track" ? Style.space(26) : 0
+                        height: Style.space(26)
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalPadding: 0; verticalPadding: 0
+                        iconText: "󰍝"; iconSize: Style.font.icon
+                        tooltipText: "Добавить в плейлист"
+                        foreground: root.dim
+                        onClicked: root.openCollectionTrack(
+                          "libraryHub", Number(libraryRow.value.trackIndex || 0), libraryRow.value,
+                          false, "", "")
+                      }
                     }
 
                     MouseArea {
                       id: libraryMouse
                       anchors.fill: parent
+                      anchors.rightMargin: libraryRow.rowKind === "track" ? Style.space(36) : 0
                       enabled: libraryRow.actionable
                         && libraryRow.value.available !== false
                       hoverEnabled: enabled
@@ -2596,6 +2817,7 @@ Panel {
                     readonly property var value: modelData.value || ({})
                     readonly property bool actionable: ["track", "artist", "album", "playlist",
                       "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(rowKind) >= 0
+                    readonly property bool hovered: catalogHover.hovered
                     width: catalogResultsList.width
                       - (catalogResultsList.contentHeight > catalogResultsList.height ? Style.space(8) : 0)
                     height: rowKind === "entityHeader" ? Style.space(112)
@@ -2604,11 +2826,13 @@ Panel {
                       : (rowKind === "track" || rowKind === "artist" || rowKind === "album" || rowKind === "playlist"
                         ? Style.space(58) : Style.space(42))))
                     radius: Style.cornerRadius
-                    color: actionable && catalogMouse.containsMouse
+                    color: actionable && catalogRow.hovered
                       ? Style.hoverFillFor(root.foreground, Color.accent)
                       : (rowKind === "entityHeader" ? Style.normalFillFor(root.foreground, Color.accent) : "transparent")
                     borderSpec: rowKind === "entityHeader"
                       ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
+
+                    HoverHandler { id: catalogHover }
 
                     Row {
                       visible: catalogRow.rowKind === "entityHeader"
@@ -2702,6 +2926,7 @@ Panel {
                       }
                       Column {
                         width: parent.width - Style.space(49)
+                          - (catalogRow.rowKind === "track" ? Style.space(35) : 0)
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 1
                         Text {
@@ -2753,11 +2978,27 @@ Panel {
                           }
                         }
                       }
+                      Button {
+                        visible: catalogRow.rowKind === "track" && catalogRow.hovered
+                        width: catalogRow.rowKind === "track" ? Style.space(26) : 0
+                        height: Style.space(26)
+                        anchors.verticalCenter: parent.verticalCenter
+                        horizontalPadding: 0; verticalPadding: 0
+                        iconText: "󰍝"; iconSize: Style.font.icon
+                        tooltipText: "Добавить в плейлист"
+                        foreground: root.dim
+                        onClicked: root.openCollectionTrack(
+                          String(modelData.source || "search") === "entity"
+                            ? "catalogEntity" : "catalogSearch",
+                          Number(catalogRow.value.index || 0), catalogRow.value,
+                          false, "", "")
+                      }
                     }
 
                     MouseArea {
                       id: catalogMouse
                       anchors.fill: parent
+                      anchors.rightMargin: catalogRow.rowKind === "track" ? Style.space(36) : 0
                       enabled: catalogRow.actionable
                       hoverEnabled: enabled
                       cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
@@ -3047,6 +3288,294 @@ Panel {
           }
         }
       }
+    }
+
+    Item {
+      anchors.fill: parent
+      z: 200
+      visible: collectionController.opened
+
+      MouseArea {
+        anchors.fill: parent
+        enabled: collectionPopup.dismissReady && !collectionController.busy
+        onClicked: collectionPopup.close()
+      }
+
+      Pane {
+        id: collectionPopup
+        readonly property bool opened: collectionController.opened
+        property bool dismissReady: false
+        signal closed()
+        function open() {
+          dismissReady = false
+          collectionDismissTimer.restart()
+          forceActiveFocus()
+        }
+        function close() {
+          if (!opened) return
+          dismissReady = false
+          closed()
+        }
+        x: Math.max(0, (parent.width - width) / 2)
+        y: Math.max(Style.space(44), (parent.height - height) / 2)
+        width: Math.min(parent.width - Style.space(20), Style.space(360))
+        height: Math.min(parent.height - Style.space(80), Style.space(400))
+        padding: Style.space(12)
+        focus: true
+        Keys.onEscapePressed: if (!collectionController.busy) close()
+        onClosed: {
+        if (!(root.collectionResumePending && collectionController.busy)) {
+          root.collectionResumePending = false
+          if (collectionController.opened) collectionController.close()
+        }
+      }
+      background: BorderSurface {
+        color: Color.background
+        borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+        radius: Style.cornerRadius
+      }
+
+      contentItem: Column {
+        spacing: Style.space(8)
+
+        Text {
+          width: parent.width
+          text: collectionController.mode === "recommendations"
+            ? "РЕКОМЕНДАЦИИ · " + String(collectionController.playlistTitle || "Плейлист")
+            : (collectionController.mode === "create" ? "НОВЫЙ ПЛЕЙЛИСТ"
+            : (collectionController.mode === "delete" ? "УДАЛИТЬ ТРЕК"
+            : (collectionController.mode === "result" ? "УПРАВЛЕНИЕ ПЛЕЙЛИСТОМ"
+            : "ДОБАВИТЬ В ПЛЕЙЛИСТ")))
+          color: root.dim; font.family: root.fontFamily
+          font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .8
+          elide: Text.ElideRight
+        }
+
+        Text {
+          visible: ["track", "create", "delete"].indexOf(collectionController.mode) >= 0
+          width: parent.width
+          text: String(collectionController.target.title || "Трек")
+          color: root.foreground; font.family: root.fontFamily
+          font.pixelSize: Style.font.bodySmall; font.bold: true; elide: Text.ElideRight
+        }
+
+        Column {
+          visible: collectionController.mode === "track"
+          width: parent.width; spacing: Style.space(6)
+          Button {
+            width: parent.width; text: "Создать новый приватный плейлист"
+            iconText: "󰐕"; foreground: root.foreground; bordered: true
+            enabled: !collectionController.busy
+            onClicked: collectionController.beginCreate()
+          }
+          Text {
+            visible: (collectionController.ownPlaylists || []).length > 0
+            width: parent.width; text: "ВАШИ ПЛЕЙЛИСТЫ"
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: collectionController.checkingMemberships
+            width: parent.width; text: "Проверяем, где уже есть этот трек…"
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+          }
+          Text {
+            visible: collectionController.membershipError !== ""
+            width: parent.width; wrapMode: Text.WordWrap
+            text: collectionController.membershipError
+            color: Color.urgent; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+          }
+          Button {
+            visible: collectionController.membershipError !== ""
+            width: parent.width; text: "Повторить проверку"
+            foreground: root.foreground; bordered: true
+            enabled: !collectionController.busy && !collectionController.checkingMemberships
+            onClicked: collectionController.retryMemberships()
+          }
+          ListView {
+            width: parent.width
+            height: Math.min(Style.space(132), contentHeight)
+            clip: true; model: collectionController.ownPlaylists || []
+            spacing: Style.space(4)
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            delegate: Button {
+              required property var modelData
+              readonly property bool alreadyAdded: collectionController.playlistContains(
+                String(modelData.kind || ""))
+              width: ListView.view.width
+              text: String(modelData.title || "Плейлист") + " · " + Number(modelData.count || 0)
+                + (alreadyAdded ? " · Уже добавлен" : "")
+              foreground: alreadyAdded ? Color.accent : root.foreground
+              bordered: true
+              enabled: !collectionController.busy
+                && !collectionController.checkingMemberships
+                && collectionController.membershipError === "" && !alreadyAdded
+              onClicked: collectionController.requestAdd(String(modelData.kind || ""))
+            }
+          }
+          Button {
+            visible: collectionController.target.canDelete === true
+            width: parent.width; text: "Удалить из этого плейлиста"
+            iconText: "󰆴"; foreground: Color.urgent; bordered: true
+            enabled: !collectionController.busy
+            onClicked: collectionController.beginDelete()
+          }
+        }
+
+        Column {
+          visible: collectionController.mode === "create"
+          width: parent.width; spacing: Style.space(8)
+          TextField {
+            id: playlistTitleField
+            width: parent.width
+            placeholderText: "Название плейлиста"
+            foreground: root.foreground; font.family: root.fontFamily
+            onTextEdited: collectionController.draftTitle = text
+            Keys.onReturnPressed: collectionController.submitCreate()
+          }
+          Text {
+            width: parent.width; wrapMode: Text.WordWrap
+            text: "Новый плейлист будет приватным. Выбранный трек добавится после создания."
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+          }
+          Row {
+            width: parent.width; spacing: Style.space(8)
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Назад"; foreground: root.foreground; bordered: true
+              enabled: !collectionController.busy
+              onClicked: collectionController.mode = "track"
+            }
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Создать"; foreground: Color.accent; bordered: true
+              enabled: !collectionController.busy
+                && String(collectionController.draftTitle || "").trim() !== ""
+              onClicked: collectionController.submitCreate()
+            }
+          }
+        }
+
+        Column {
+          visible: collectionController.mode === "delete"
+          width: parent.width; spacing: Style.space(10)
+          Text {
+            width: parent.width; wrapMode: Text.WordWrap
+            text: "Удалить выбранный трек из «"
+              + String(collectionController.target.playlistTitle || "плейлиста") + "»?"
+            color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+          }
+          Row {
+            width: parent.width; spacing: Style.space(8)
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Отмена"; foreground: root.foreground; bordered: true
+              enabled: !collectionController.busy
+              onClicked: collectionController.mode = "track"
+            }
+            Button {
+              width: (parent.width - parent.spacing) / 2
+              text: "Удалить"; foreground: Color.urgent; bordered: true
+              enabled: !collectionController.busy
+              onClicked: collectionController.confirmDelete()
+            }
+          }
+        }
+
+        Item {
+          visible: collectionController.mode === "recommendations"
+          width: parent.width
+          height: visible ? Style.space(285) : 0
+          Text {
+            visible: collectionController.busy
+            anchors.centerIn: parent
+            text: "Подбираем треки…"
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+          }
+          Text {
+            visible: !collectionController.busy
+              && collectionController.recommendations.length === 0
+            anchors.centerIn: parent
+            text: "Новых рекомендаций пока нет"
+            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+          }
+          ListView {
+            visible: !collectionController.busy
+              && collectionController.recommendations.length > 0
+            anchors.fill: parent; clip: true
+            model: collectionController.recommendations
+            spacing: Style.space(4)
+            ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+            delegate: BorderSurface {
+              required property var modelData
+              width: ListView.view.width; height: Style.space(52)
+              radius: Style.cornerRadius
+              color: "transparent"; borderSpec: Border.none()
+              Row {
+                anchors.fill: parent; anchors.margins: Style.space(6); spacing: Style.space(8)
+                CatalogImage {
+                  width: Style.space(38); height: width
+                  requestedSource: String(modelData.artUrl || "")
+                  foreground: root.foreground; fontFamily: root.fontFamily
+                  fillMode: Image.PreserveAspectCrop
+                }
+                Column {
+                  width: parent.width - Style.space(80)
+                  anchors.verticalCenter: parent.verticalCenter; spacing: 1
+                  Text {
+                    width: parent.width; text: String(modelData.title || "Трек")
+                    color: root.foreground; font.family: root.fontFamily
+                    font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+                  }
+                  Text {
+                    width: parent.width; text: String(modelData.artist || "")
+                    color: root.dim; font.family: root.fontFamily
+                    font.pixelSize: Style.font.caption; elide: Text.ElideRight
+                  }
+                }
+                Button {
+                  width: Style.space(26); height: Style.space(26)
+                  anchors.verticalCenter: parent.verticalCenter
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: "󰐕"; iconSize: Style.font.icon
+                  tooltipText: "Добавить"
+                  foreground: Color.accent
+                  enabled: !collectionController.busy
+                  onClicked: collectionController.addRecommendation(modelData)
+                }
+              }
+            }
+          }
+        }
+
+        Column {
+          visible: collectionController.mode === "result"
+          width: parent.width; spacing: Style.space(10)
+          Text {
+            width: parent.width; wrapMode: Text.WordWrap
+            text: collectionController.error !== ""
+              ? collectionController.error : collectionController.message
+            color: collectionController.error !== "" ? Color.urgent : root.foreground
+            font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+          }
+          Button {
+            width: parent.width
+            text: collectionController.error !== "" ? "Закрыть" : "Готово"
+            foreground: root.foreground; bordered: true
+            enabled: !collectionController.busy
+            onClicked: collectionPopup.close()
+          }
+        }
+
+        Button {
+          visible: collectionController.mode === "track"
+            || collectionController.mode === "recommendations"
+          width: parent.width; text: "Закрыть"
+          foreground: root.dim; bordered: true
+          enabled: !collectionController.busy
+          onClicked: collectionPopup.close()
+        }
+      }
+    }
     }
 
     Item {
