@@ -37,7 +37,7 @@
 - `search <query>`, `play_search <index>`;
 - `artist <id>`, `play_artist_track <index>`, `close_artist`;
 - `play_queue <index>`, `play_library_track <index>`;
-- `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `mode`, `stop`;
+- `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `mode`, `like`, `dislike`, `stop`;
 - `setting <key> <value>`.
 
 `status` отдаёт компактное состояние. `details` дополнительно формирует queue/library/artist lists. Не переносить тяжёлые списки в частый bar polling.
@@ -60,7 +60,12 @@
 - Сохраняются очередь, индекс, источник коллекции (`queueCollectionKey`), позиция, пауза, громкость и preferences.
 - Восстановление регулируется `autoResume`, `restoreQueue`, `restorePosition`, `restoreVolume`.
 - Режимы: порядок, shuffle, repeat queue, repeat track; синхронизированы с MPRIS.
+- Play/Pause проверяет `idle-active`: после Stop текущий трек загружается заново с начала, а для активного файла переключается pause.
+- Stop предназначен для MPRIS и внутренних сценариев: выгружает поток, сбрасывает позицию, сохраняет текущий трек/очередь и выставляет `stopped`, чтобы MPRIS отличал Stop от Pause.
 - «Моя волна» лениво расширяется; настройки: mood, diversity, language.
+- Playback reporting хранит одну активную сессию с `play_id`, считает фактически проигранное время без пауз и отправляет `play_audio` в начале и конце.
+- Для Волны отправляются `radioStarted`, `trackStarted`, `trackFinished` и `skip`; `batch_id` хранится по треку, а продолжение sequence ждёт feedback предыдущего трека.
+- Телеметрия проходит через отдельную упорядоченную очередь и общий `api_lock`, но без повторов 429 и без пользовательской ошибки: сбой аналитики не останавливает звук.
 - `settings2` принимает JSON body напрямую; form encoding ранее приводил к HTTP 415 `unsupported-media-type`.
 - При снятии лайка с текущего трека очереди likes `detached_track` позволяет убрать строку, не прерывая уже запущенное аудио, и сохранить корректную навигацию.
 - При обрыве/неоткрытии потока есть повторные попытки. Не публиковать direct link в state, logs или MPRIS.

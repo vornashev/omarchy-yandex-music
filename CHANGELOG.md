@@ -4,6 +4,30 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.0] - Unreleased
+
+### Added
+
+- Dislike button and `D` keyboard shortcut for toggling “Do not recommend” on the current track
+- `N` and `P` shortcuts for next and previous while the popup is open
+- Standard listening start and finish reports through `play_audio`
+- “My Wave” feedback for radio start, track start, natural completion, and manual skips
+- Fake tests for playback reporting and mutually exclusive like/dislike state
+
+### Changed
+
+- Background reporting is ordered, serialized with other API calls, and never blocks player controls
+- Disliking a track in “My Wave” immediately advances to the next track
+- Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
+
+### Fixed
+
+- Liking removes an existing dislike, while disliking removes a like and consistently updates the open “My Likes” list, queue, and cache
+- Extending the “My Wave” sequence waits until finished/skip feedback for the previous track has been sent
+- The `L` shortcut is intercepted before built-in `h/j/k/l` navigation and no longer switches player tabs
+- After an external Stop command, playback is marked as stopped, position resets, and Play starts the current track from the beginning
+- Leaving Search now releases the hidden field focus, restoring tab/player shortcuts and preventing hidden query edits
+
 ## [0.7.4] - 2026-09-03
 
 ### Added
@@ -127,6 +151,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.8.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.4...HEAD
 [0.7.4]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2

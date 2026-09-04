@@ -90,6 +90,7 @@ Panel {
     if (kind === "track") return "Подготавливаем трек…"
     if (settingsProcess.running) return "Сохраняем настройки…"
     if (actionProcess.running && lastActionCommand === "like") return "Обновляем отметку «Мне нравится»…"
+    if (actionProcess.running && lastActionCommand === "dislike") return "Обновляем отметку «Не рекомендовать»…"
     if (actionProcess.running) return "Выполняем действие…"
     return "Загрузка…"
   }
@@ -169,6 +170,17 @@ Panel {
         || root.data.libraryLoadingMore === true || actionProcess.running) return
     if (queueList.contentY + queueList.height >= queueList.contentHeight - Style.space(50))
       root.action("load_more_library")
+  }
+  function runPlayerShortcut(value) {
+    var t = String(value || "").toLowerCase()
+    if (!hasTrack) return false
+    if (t === " ") action("pause")
+    else if (t === "l") action("like")
+    else if (t === "d") action("dislike")
+    else if (t === "n") action("next")
+    else if (t === "p") action("previous")
+    else return false
+    return true
   }
   function action(command, argument) {
     if (actionProcess.running) return
@@ -287,10 +299,18 @@ Panel {
     confirmLogout = false
     page = Math.max(0, Math.min(2, index))
     if (page === 0) queueScrollTimer.restart()
-    if (page === 2) Qt.callLater(function() {
-      panelScroll.contentY = 0
-      searchField.forceActiveFocus()
-    })
+    if (page === 2) {
+      Qt.callLater(function() {
+        if (root.page !== 2 || root.settingsOpen) return
+        panelScroll.contentY = 0
+        searchField.forceActiveFocus()
+      })
+    } else {
+      // A hidden TextField keeps active focus unless it is transferred
+      // explicitly, which would make it consume shortcuts from other pages.
+      searchField.focus = false
+      keyCatcher.forceActiveFocus()
+    }
   }
 
   onBusyChanged: if (busy) busySeconds = 0
@@ -508,9 +528,24 @@ Panel {
     contentWidth: panel.fittedContentWidth(Style.space(430))
     contentHeight: panel.fittedContentHeight(content.implicitHeight, Style.space(620))
 
+    // PanelKeyCatcher reserves h/j/k/l for directional navigation before
+    // onTextKey runs. Give player shortcuts the first chance, especially L.
+    Item {
+      id: shortcutInterceptor
+      Keys.onPressed: function(event) {
+        if (event.modifiers & ~Qt.KeypadModifier) return
+        if (root.settingsOpen || searchField.activeFocus || !root.hasTrack) return
+        var t = event.text ? String(event.text).toLowerCase() : ""
+        if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z)
+          t = String.fromCharCode(event.key).toLowerCase()
+        if (root.runPlayerShortcut(t)) event.accepted = true
+      }
+    }
+
     PanelKeyCatcher {
       id: keyCatcher
       anchors.fill: parent
+      Keys.forwardTo: [shortcutInterceptor]
       blocked: searchField.activeFocus
       onCloseRequested: if (root.settingsOpen) root.closeSettings(); else root.close()
       onTabRequested: function(direction) { if (!root.settingsOpen) root.switchPanel(direction) }
@@ -520,10 +555,9 @@ Panel {
         if (t === "1") root.selectPage(0)
         else if (t === "2") root.selectPage(1)
         else if (t === "3" || t === "/") root.selectPage(2)
-        else if ((t === "c" || t === "с") && !root.authenticated
+        else if (t === "c" && !root.authenticated
             && String(root.data.authCode || "") !== "") root.copyAuthCode()
-        else if (t === " " && root.hasTrack) root.action("pause")
-        else if ((t === "l" || t === "д") && root.hasTrack) root.action("like")
+        else root.runPlayerShortcut(t)
       }
 
       Flickable {
@@ -798,30 +832,42 @@ Panel {
                   Button {
                     width: Style.space(34); height: Style.space(30)
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: "󰒮"; tooltipText: "Предыдущий"; foreground: root.foreground
+                    iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
                     onClicked: root.action("previous")
                   }
                   Button {
                     width: Style.space(34); height: Style.space(30)
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: root.playing ? "󰏤" : "󰐊"; tooltipText: root.playing ? "Пауза" : "Продолжить"
+                    iconText: root.playing ? "󰏤" : "󰐊"
+                    tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
                     foreground: root.foreground; enabled: root.hasTrack; opacity: enabled ? 1 : .4
                     onClicked: root.action("pause")
                   }
                   Button {
                     width: Style.space(34); height: Style.space(30)
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: "󰒭"; tooltipText: "Следующий"; foreground: root.foreground
+                    iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
                     onClicked: root.action("next")
                   }
                   Button {
                     width: Style.space(34); height: Style.space(30)
                     horizontalPadding: 0; verticalPadding: 0; iconSize: 19
                     iconText: root.data.liked ? "󰋑" : "󰋕"
-                    tooltipText: root.data.liked ? "Убрать из «Мне нравится»" : "Добавить в «Мне нравится»"
+                    tooltipText: root.data.liked
+                      ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
                     foreground: root.data.liked ? Color.accent : root.foreground
                     enabled: root.hasTrack; opacity: enabled ? 1 : .4
                     onClicked: root.action("like")
+                  }
+                  Button {
+                    width: Style.space(34); height: Style.space(30)
+                    horizontalPadding: 0; verticalPadding: 0; iconSize: 18
+                    iconText: "󰅂"
+                    tooltipText: root.data.disliked
+                      ? "Снять отметку «Не рекомендовать» (D)" : "Не рекомендовать (D)"
+                    foreground: root.data.disliked ? Color.urgent : root.foreground
+                    enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                    onClicked: root.action("dislike")
                   }
                 }
 

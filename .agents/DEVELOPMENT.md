@@ -69,7 +69,8 @@ omarchy-yandex-music status | jq -r .version
 
 ```bash
 cd ~/Projects/omarchy-yandex-music
-python -m py_compile backend/backend.py
+python -m py_compile backend/backend.py tests/test_backend_priority_one.py
+~/.local/share/omarchy-yandex-music/venv/bin/python -m unittest discover -s tests -v
 bash -n bootstrap.sh install.sh uninstall.sh bin/omarchy-yandex-music
 git diff --check
 omarchy plugin validate .
@@ -90,5 +91,7 @@ omarchy-yandex-music status | jq
    - coalescing двух `_get_liked_rows()` в один API call;
    - отсутствие raw response в финальной ошибке.
 5. Не запускать destructive тесты лайков/плейлистов на реальном аккаунте без явной необходимости.
-6. Проверять, что открытие likes/playlist/artist не меняет воспроизведение до выбора трека.
-7. Проверять, что service active и QuickShell отвечает после installer/shell restart.
+6. Для playback reporting fake-тестами проверить порядок start/end и finished/skip, сохранение одного `play_id`, отсутствие повторного старта при переоткрытии потока и взаимное снятие like/dislike.
+7. Не проверять `play_audio`, radio feedback, like или dislike разрушительными действиями на реальном аккаунте без явной необходимости.
+8. Проверять, что открытие likes/playlist/artist не меняет воспроизведение до выбора трека.
+9. Проверять, что service active и QuickShell отвечает после installer/shell restart.

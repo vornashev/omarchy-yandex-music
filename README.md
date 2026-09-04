@@ -33,8 +33,8 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 - Native mini-player in the Omarchy bar
 - Background playback without an open browser
 - Now Playing, Library, Search, queue, and artist browsing
-- “My Wave” with mood, discovery, and language controls
-- Likes, personal playlists, and individual clickable artists
+- “My Wave” with mood, discovery, language controls, and recommendation feedback
+- Likes, “Do not recommend”, personal playlists, and individual clickable artists
 - Ordered, shuffle, repeat queue, and repeat track modes
 - System media keys and privacy-safe MPRIS integration
 - Persistent queue, position, volume, pause state, and preferences
@@ -54,6 +54,7 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Drag the seek slider; the real position remains visible and the target time is shown in parentheses
 - Drag the volume slider or click the speaker to mute
 - Like or unlike the current track with the heart button or `L`
+- Toggle “Do not recommend” with the dislike button or `D`; a new dislike immediately skips a track in “My Wave”
 - Change playback mode with the button beside the queue counter
 - Select any queue item directly
 - Click an individual artist to browse their tracks
@@ -125,9 +126,14 @@ After installation, click the player in the bar, start Yandex Device OAuth, and 
 
 Inside the popup:
 
+Letter shortcuts work only while the popup is open and are not intercepted in the search field or settings. There is no separate Stop shortcut: `Space` pauses playback without losing the position.
+
 - `1`, `2`, `3` — Now Playing, Library, Search
 - `Space` — play/pause
+- `N` — next track
+- `P` — previous track
 - `L` — like/unlike
+- `D` — toggle “Do not recommend”
 - `C` — copy the Device OAuth code while signing in
 - `Escape` — return from settings or close the popup
 
