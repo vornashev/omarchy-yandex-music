@@ -9,7 +9,8 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Added
 
 - Dislike button and `D` keyboard shortcut for toggling “Do not recommend” on the current track
-- `N` and `P` shortcuts for next and previous while the popup is open
+- `N` and `P` shortcuts for next and previous, plus `F` for cover mode, while the popup is open
+- Animated full-width cover mode with track details, a seekable progress bar, and primary playback actions
 - Standard listening start and finish reports through `play_audio`
 - “My Wave” feedback for radio start, track start, natural completion, and manual skips
 - Fake tests for playback reporting and mutually exclusive like/dislike state
@@ -19,6 +20,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Background reporting is ordered, serialized with other API calls, and never blocks player controls
 - Disliking a track in “My Wave” immediately advances to the next track
 - Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
+- Full-width cover mode remains active when the popup is closed and reopened
 
 ### Fixed
 

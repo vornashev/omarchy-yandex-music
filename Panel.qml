@@ -17,6 +17,8 @@ Panel {
   property bool settingsOpen: false
   property bool confirmLogout: false
   property bool waveOptionsOpen: false
+  property bool coverExpanded: false
+  property bool coverTransitioning: false
   property string copiedAuthCode: ""
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ authenticated: false, playlists: [], searchResults: [] })
@@ -145,7 +147,21 @@ Panel {
     settingsProcess.command = [cli, "setting", key, String(value)]
     settingsProcess.running = true
   }
+  function setCoverExpanded(value) {
+    var next = value === true && authenticated && hasTrack && !settingsOpen
+    if (coverExpanded === next) return
+    coverTransitioning = true
+    coverTransitionTimer.restart()
+    coverExpanded = next
+    if (next) {
+      page = 0
+      searchField.focus = false
+      panelScroll.contentY = 0
+      keyCatcher.forceActiveFocus()
+    }
+  }
   function openSettings() {
+    setCoverExpanded(false)
     pageBeforeSettings = page
     confirmLogout = false
     settingsOpen = true
@@ -179,6 +195,7 @@ Panel {
     else if (t === "d") action("dislike")
     else if (t === "n") action("next")
     else if (t === "p") action("previous")
+    else if (t === "f") setCoverExpanded(!coverExpanded)
     else return false
     return true
   }
@@ -295,6 +312,7 @@ Panel {
     queueList.contentY = Math.max(minimumY, Math.min(targetY, maximumY))
   }
   function selectPage(index) {
+    setCoverExpanded(false)
     settingsOpen = false
     confirmLogout = false
     page = Math.max(0, Math.min(2, index))
@@ -314,6 +332,7 @@ Panel {
   }
 
   onBusyChanged: if (busy) busySeconds = 0
+  onHasTrackChanged: if (!hasTrack) setCoverExpanded(false)
 
   onOpenedChanged: {
     if (opened) {
@@ -425,6 +444,12 @@ Panel {
   }
   Timer { id: settleTimer; interval: 350; repeat: false; onTriggered: root.refresh() }
   Timer { id: queueScrollTimer; interval: 120; repeat: false; onTriggered: root.scrollToCurrentTrack() }
+  Timer {
+    id: coverTransitionTimer
+    interval: 320
+    repeat: false
+    onTriggered: root.coverTransitioning = false
+  }
   Timer {
     id: busyDurationTimer
     interval: 1000
@@ -547,7 +572,11 @@ Panel {
       anchors.fill: parent
       Keys.forwardTo: [shortcutInterceptor]
       blocked: searchField.activeFocus
-      onCloseRequested: if (root.settingsOpen) root.closeSettings(); else root.close()
+      onCloseRequested: {
+        if (root.coverExpanded) root.setCoverExpanded(false)
+        else if (root.settingsOpen) root.closeSettings()
+        else root.close()
+      }
       onTabRequested: function(direction) { if (!root.settingsOpen) root.switchPanel(direction) }
       onMoveRequested: function(dx, dy) { if (dx !== 0 && !root.settingsOpen) root.selectPage(root.page + dx) }
       onTextKey: function(t) {
@@ -567,29 +596,49 @@ Panel {
         contentHeight: content.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        interactive: contentHeight > height && (root.settingsOpen || root.page !== 2)
+        interactive: !root.coverExpanded && contentHeight > height
+          && (root.settingsOpen || root.page !== 2)
         ScrollBar.vertical: ScrollBar {
-          policy: !root.settingsOpen && root.page === 2 ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
+          policy: root.coverExpanded || (!root.settingsOpen && root.page === 2)
+            ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
           topPadding: root.settingsOpen ? Style.space(34) : 0
           bottomPadding: Style.space(4)
         }
 
         Column {
           id: content
-          width: panelScroll.width - (panelScroll.contentHeight > panelScroll.height
-            && (root.settingsOpen || root.page !== 2) ? Style.space(14) : 0)
+          // Never derive layout width from contentHeight: switching pages or
+          // animating the cover may toggle the scrollbar and create a feedback loop.
+          property real stableGutter: root.coverExpanded ? 0 : Style.space(14)
+          x: stableGutter / 2
+          width: panelScroll.width - stableGutter
           spacing: Style.space(12)
 
           Row {
             id: hero
             visible: !root.settingsOpen
             width: parent.width
-            height: Style.space(68)
-            spacing: Style.space(14)
+            height: root.coverExpanded ? width : Style.space(68)
+            spacing: root.coverExpanded ? 0 : Style.space(14)
+            Behavior on height {
+              NumberAnimation { duration: 280; easing.type: Easing.OutCubic }
+            }
+            Behavior on spacing {
+              NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+            }
 
             BorderSurface {
-              width: Style.space(68); height: Style.space(68)
-              radius: Style.spacing.labelGap
+              id: coverSurface
+              width: root.coverExpanded ? hero.width : Style.space(68)
+              height: hero.height
+              radius: root.coverExpanded ? Style.cornerRadius : Style.spacing.labelGap
+              clip: true
+              Behavior on width {
+                NumberAnimation { duration: 280; easing.type: Easing.OutCubic }
+              }
+              Behavior on radius {
+                NumberAnimation { duration: 220; easing.type: Easing.OutCubic }
+              }
               color: Style.normalFillFor(root.foreground, Color.accent)
               borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
               Image {
@@ -602,12 +651,71 @@ Panel {
                 text: "󰝚"; color: root.foreground; font.family: root.fontFamily
                 font.pixelSize: Style.font.displayLarge
               }
+              MouseArea {
+                id: coverMouse
+                anchors.fill: parent
+                enabled: root.hasTrack
+                hoverEnabled: true
+                cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                onClicked: root.setCoverExpanded(!root.coverExpanded)
+              }
+              ToolTip {
+                id: coverTooltip
+                readonly property var tooltipBorderSpec: Border.localOrSurfaceSpec(
+                  "tooltip", "border", Color.tooltip.border, Color.tooltip.border,
+                  Math.max(1, Style.normalBorderWidth))
+                visible: coverMouse.containsMouse && root.hasTrack
+                text: root.coverExpanded ? "Свернуть обложку (F)" : "Развернуть обложку (F)"
+                delay: 400
+                padding: 0
+                background: BorderSurface {
+                  color: Color.tooltip.background
+                  borderSpec: coverTooltip.tooltipBorderSpec
+                  radius: 0
+                }
+                contentItem: Text {
+                  textFormat: Text.PlainText
+                  text: coverTooltip.text
+                  color: Color.tooltip.text
+                  font.family: root.fontFamily
+                  font.pixelSize: Style.font.bodySmall
+                  leftPadding: Border.left(coverTooltip.tooltipBorderSpec)
+                    + Style.spacing.controlPaddingX
+                  rightPadding: Border.right(coverTooltip.tooltipBorderSpec)
+                    + Style.spacing.controlPaddingX
+                  topPadding: Border.top(coverTooltip.tooltipBorderSpec)
+                    + Style.spacing.controlPaddingY
+                  bottomPadding: Border.bottom(coverTooltip.tooltipBorderSpec)
+                    + Style.spacing.controlPaddingY
+                }
+              }
+              Rectangle {
+                visible: coverMouse.containsMouse && root.hasTrack
+                anchors.top: parent.top; anchors.right: parent.right
+                anchors.margins: root.coverExpanded ? Style.space(10) : Style.space(5)
+                width: root.coverExpanded ? Style.space(32) : Style.space(22)
+                height: width; radius: width / 2
+                color: Qt.rgba(0, 0, 0, .58)
+                Text {
+                  anchors.centerIn: parent
+                  text: root.coverExpanded ? "↙" : "↗"
+                  color: "white"; font.pixelSize: root.coverExpanded
+                    ? Style.font.subtitle : Style.font.bodySmall
+                }
+              }
             }
 
             Column {
-              width: parent.width - Style.space(82)
+              id: heroDetails
+              width: Math.max(0, hero.width - coverSurface.width - hero.spacing)
               anchors.verticalCenter: parent.verticalCenter
               spacing: Style.space(3)
+              opacity: root.coverExpanded ? 0 : 1
+              clip: true
+              enabled: !root.coverExpanded
+              Behavior on opacity {
+                NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+              }
 
               Text {
                 width: parent.width
@@ -660,9 +768,135 @@ Panel {
             }
           }
 
+          Column {
+            id: expandedPlayer
+            width: parent.width
+            height: root.coverExpanded ? implicitHeight : 0
+            opacity: root.coverExpanded ? 1 : 0
+            spacing: Style.space(9)
+            clip: true
+            enabled: root.coverExpanded
+            Behavior on height {
+              NumberAnimation { duration: 260; easing.type: Easing.OutCubic }
+            }
+            Behavior on opacity {
+              NumberAnimation { duration: 180; easing.type: Easing.OutCubic }
+            }
+
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: String(root.data.title || "")
+              color: root.foreground; font.family: root.fontFamily
+              font.pixelSize: Style.font.title; font.bold: true; elide: Text.ElideRight
+            }
+            Text {
+              width: parent.width
+              horizontalAlignment: Text.AlignHCenter
+              text: String(root.data.artist || "")
+                + (root.data.album ? "  ·  " + String(root.data.album) : "")
+              color: root.dim; font.family: root.fontFamily
+              font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+            }
+            Item {
+              width: parent.width - Style.space(12)
+              height: Style.space(28)
+              anchors.horizontalCenter: parent.horizontalCenter
+              Rectangle {
+                id: expandedProgressTrack
+                anchors.left: parent.left; anchors.right: parent.right
+                anchors.verticalCenter: parent.verticalCenter
+                height: Style.space(6); radius: height / 2
+                color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
+                Rectangle {
+                  width: parent.width * Math.min(1,
+                    root.displayPosition / Math.max(1, Number(root.data.duration || 1)))
+                  height: parent.height; radius: parent.radius; color: Color.accent
+                }
+                MouseArea {
+                  id: expandedSeekDrag
+                  anchors.fill: parent
+                  anchors.topMargin: -Style.space(8); anchors.bottomMargin: -Style.space(8)
+                  cursorShape: pressed ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                  preventStealing: true
+                  onPressed: function(mouse) {
+                    root.seeking = true
+                    root.previewSeek(mouse, expandedSeekDrag)
+                  }
+                  onPositionChanged: function(mouse) {
+                    if (pressed) root.previewSeek(mouse, expandedSeekDrag)
+                  }
+                  onReleased: function(mouse) {
+                    root.previewSeek(mouse, expandedSeekDrag)
+                    root.commitSeek()
+                  }
+                  onCanceled: root.seeking = false
+                }
+              }
+              Text {
+                anchors.left: parent.left; anchors.top: expandedProgressTrack.bottom
+                anchors.topMargin: Style.space(3)
+                text: root.formatTime(root.data.position)
+                  + (root.seeking && root.pendingSeek >= 0
+                    ? "  (" + root.formatTime(root.pendingSeek) + ")" : "")
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+              Text {
+                anchors.right: parent.right; anchors.top: expandedProgressTrack.bottom
+                anchors.topMargin: Style.space(3)
+                text: root.formatTime(root.data.duration)
+                color: root.dim; font.family: root.fontFamily
+                font.pixelSize: Style.font.caption
+              }
+            }
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: Style.space(10)
+              Button {
+                width: Style.space(42); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
+                onClicked: root.action("previous")
+              }
+              Button {
+                width: Style.space(46); height: Style.space(40)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 24
+                iconText: root.playing ? "󰏤" : "󰐊"
+                tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
+                foreground: root.foreground
+                onClicked: root.action("pause")
+              }
+              Button {
+                width: Style.space(42); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
+                onClicked: root.action("next")
+              }
+              Button {
+                width: Style.space(42); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 21
+                iconText: root.data.liked ? "󰋑" : "󰋕"
+                tooltipText: root.data.liked
+                  ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
+                foreground: root.data.liked ? Color.accent : root.foreground
+                onClicked: root.action("like")
+              }
+              Button {
+                width: Style.space(42); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0; iconSize: 20
+                iconText: "󰅂"
+                tooltipText: root.data.disliked
+                  ? "Снять отметку «Не рекомендовать» (D)" : "Не рекомендовать (D)"
+                foreground: root.data.disliked ? Color.urgent : root.foreground
+                onClicked: root.action("dislike")
+              }
+            }
+          }
+
           BorderSurface {
             id: errorCard
-            visible: root.hasVisibleError
+            visible: root.hasVisibleError && !root.coverExpanded
             width: parent.width
             height: visible ? errorContent.implicitHeight + Style.space(20) : 0
             radius: Style.cornerRadius
@@ -750,7 +984,21 @@ Panel {
           }
 
           Column {
-            visible: root.authenticated; width: parent.width; spacing: Style.space(12)
+            id: authenticatedContent
+            visible: root.authenticated
+            width: parent.width
+            height: root.coverExpanded ? 0 : implicitHeight
+            opacity: root.coverExpanded ? 0 : 1
+            spacing: Style.space(12)
+            clip: true
+            enabled: !root.coverExpanded
+            Behavior on height {
+              enabled: root.coverTransitioning
+              NumberAnimation { duration: 240; easing.type: Easing.OutCubic }
+            }
+            Behavior on opacity {
+              NumberAnimation { duration: 140; easing.type: Easing.OutCubic }
+            }
 
             Row {
               visible: !root.settingsOpen
@@ -1525,7 +1773,7 @@ Panel {
 
     Item {
       id: settingsButton
-      visible: root.authenticated
+      visible: root.authenticated && !root.coverExpanded
       z: 101
       anchors.top: parent.top; anchors.right: parent.right
       anchors.topMargin: Style.space(7); anchors.rightMargin: Style.space(7)

@@ -55,6 +55,7 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Drag the volume slider or click the speaker to mute
 - Like or unlike the current track with the heart button or `L`
 - Toggle “Do not recommend” with the dislike button or `D`; a new dislike immediately skips a track in “My Wave”
+- Click the cover to smoothly expand it across the popup and keep track details, a seekable progress bar, and primary actions; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
 - Change playback mode with the button beside the queue counter
 - Select any queue item directly
 - Click an individual artist to browse their tracks
@@ -134,6 +135,7 @@ Letter shortcuts work only while the popup is open and are not intercepted in th
 - `P` — previous track
 - `L` — like/unlike
 - `D` — toggle “Do not recommend”
+- `F` — expand or collapse cover mode
 - `C` — copy the Device OAuth code while signing in
 - `Escape` — return from settings or close the popup
 
