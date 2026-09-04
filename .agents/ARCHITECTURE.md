@@ -13,6 +13,7 @@
 - `manifest.json` — metadata Omarchy и версия.
 
 `WidgetLogic.qml` запускает `bootstrap.sh`, затем опрашивает CLI:
+
 - каждые 1 с, если попап открыт или идёт воспроизведение;
 - каждые 3 с в остальных случаях.
 
@@ -30,17 +31,30 @@
 - MPRIS реализован внутри backend через `dbus-next`.
 
 Основные команды IPC/CLI:
+
 - `status`, `details`, `network`, `lyrics`, `lyrics_refresh`, `track_info`, `track_info_refresh`;
 - `auth`, `logout`;
 - `likes`, `playlist <kind>`, `load_more_library`, `close_library`;
 - `wave`, `track_radio`;
-- `search <query>`, `play_search <index>`;
-- `artist <id>`, `play_artist_track <index>`, `close_artist`;
+- `search <query>` и `artist <id>` как compatibility redirects в единый каталог;
+- `catalog_search <type> <query>`, `catalog_suggest <generation> <query>`, `catalog_load_more`;
+- `catalog_album <id>`, `catalog_artist <id>`, `catalog_playlist <uuid> <owner> <kind>`, `catalog_back`;
+- `catalog_artist_more <albums|singles>`, `catalog_entity_more`, `play_catalog_track <source> <index>`;
 - `play_queue <index>`, `play_library_track <index>`;
 - `pause`, `next`, `previous`, `seek`, `volume`, `mute`, `mode`, `like`, `dislike`, `stop`;
 - `setting <key> <value>`.
 
-`status` отдаёт компактное состояние. `details` дополнительно формирует queue/library/artist lists. Тексты и credits не входят ни в один из этих ответов: `lyrics` и `track_info` возвращают отдельные snapshots текущего трека и при необходимости запускают фоновую загрузку, а команды с суффиксом `_refresh` сбрасывают соответствующую кэшированную запись для ручного повтора. Не переносить тяжёлые списки в частый bar polling.
+`status` отдаёт компактное состояние. `details` дополнительно формирует queue/library lists и snapshot каталога. Тексты и credits не входят ни в один из этих ответов: `lyrics` и `track_info` возвращают отдельные snapshots текущего трека и при необходимости запускают фоновую загрузку, а команды с суффиксом `_refresh` сбрасывают соответствующую кэшированную запись для ручного повтора. Не переносить тяжёлые списки в частый bar polling.
+
+## 4.1. Единый каталог
+
+- Каталог живёт только во вкладке «Поиск» (`page == 2`); legacy artist browse больше не подменяет очередь «Сейчас».
+- Search state (field text, filter, query, page и четыре секции models) хранится независимо от открытой entity page и не сбрасывается при Back.
+- Suggestions и catalog workers проходят через общий `_api_call()`/`api_lock`, используют generation/client guards и не записывают ошибки в глобальный `state.error`.
+- Поиск поддерживает SDK-типы `all`, `track`, `artist`, `album`, `playlist`; `all` всегда сериализуется четырьмя секциями.
+- Album, artist и playlist loaders не вызывают `_set_queue()`. Только `play_catalog_track` является явной границей запуска воспроизведения.
+- Entity/search models и bounded entity cache хранятся только в памяти и очищаются при logout/restart.
+- `CatalogController.qml` содержит testable debounce/navigation state без зависимостей Quickshell; production rendering остаётся в `Panel.qml` и использует один виртуализированный внутренний `ListView`.
 
 ## 8. OAuth, файлы и безопасность
 

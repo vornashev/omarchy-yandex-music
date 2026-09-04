@@ -30,7 +30,11 @@
 - Тексты загружаются по требованию отдельным IPC snapshot, не входят в `status`/`details`, не меняют общую ошибку плеера и кэшируются только в памяти максимум для восьми треков.
 - Добавлена кнопка `radio_tower` для «Радио по треку»: backend запрашивает `track:<currentTrackId>`, запускает очередь ответа и продолжает её через общий feedback/batch protocol.
 - Завершён этап 2 roadmap: иконка информации открывает on-demand карточку альбома, релиза, жанра, лейблов, позиции трека, версии, описания и credits; данные имеют отдельный in-memory LRU-кэш на восемь треков и локальные partial-error/retry состояния.
-- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск track station и три сценария track info/credits/cache; всего 19 тестов проходят.
+- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск track station, track info/credits/cache и Stage 3 Catalog; всего 32 backend-теста проходят.
+- Реализован Stage 3 Catalog: типизированный и секционный поиск `all`, подсказки через 300 ms, append+dedupe pagination, страницы альбома/исполнителя/плейлиста без автозапуска, независимые Albums/Singles и возврат к сохранённой выдаче.
+- Все artist/album links панели и `WidgetLogic.showArtist()` переведены на вкладку «Поиск» (page 2); legacy artist list удалён из области очереди «Сейчас».
+- Catalog API использует только синхронный pinned SDK через общий `_api_call()`/`api_lock`; responses защищены generation/client guards, entity cache хранится только в памяти и очищается при logout.
+- Добавлен `CatalogController.qml` и 8 проходящих QML interaction checks для debounce, stale suggestions, секций, append/load more, навигации/back-state и explicit playback.
 - Безопасный реальный smoke test `track_info` подтвердил полный ответ без ошибки: присутствуют album/release/genre, два label и пять credit rows; значения полей в диагностический вывод не печатались. UI карточки ожидает ручной визуальной проверки.
 - Владелец подтвердил отображение текста на реальном LRC-треке и заметил запаздывание подсветки. Причина устранена: backend публикует дробную позицию mpv с `positionObservedAt`, Panel интерполирует её каждые 100 ms между секундными обновлениями. Повторная визуальная проверка синхронности ожидается.
 - Новые backend/QML установлены локально; service active, shell ping проходит, QML runtime-ошибок после рестарта нет.
@@ -56,6 +60,7 @@
 - v0.7.3 при открытии большой коллекции делает запрос списка ID и один пакет метаданных для первой страницы из 50 треков; все страницы сразу не загружает.
 - Яндекс может продолжать отдавать 429 несколько минут после нагрузки старой версии.
 - Для диагностики версии у другого пользователя запросить оба значения:
+
   ```bash
   jq -r .version ~/.config/omarchy/plugins/vornashev.yandex-music/manifest.json
   cat ~/.local/share/omarchy-yandex-music/.installed-version
@@ -67,6 +72,7 @@
 - Повторно проверить на реальном LRC-треке точность подсветки после добавления дробной позиции/interpolation; затем проверить ручную прокрутку, seek по строке и fallback `TEXT`, не печатая сам текст в диагностические логи.
 - Вручную запустить «Радио по треку» обычным прослушиванием и проверить старт очереди, её название, переходы Next и ленивое продолжение; не создавать искусственную нагрузку и не дизлайкать треки без необходимости.
 - Открыть карточку «О ТРЕКЕ» и визуально проверить строки, прокрутку, credits, переключение между очередью/текстом/info и обновление при смене трека.
+- Вручную проверить Stage 3 Catalog на реальном аккаунте: suggestions, все пять фильтров, load more, album/artist/playlist pages, Back-state и отсутствие autoplay при открытии сущностей; не печатать пользовательские результаты в логи.
 - После v0.7.4 отслеживать реальные ответы API при 429 и корректность синхронизации больших очередей «Мне нравится».
 - Для проблемного пользователя сначала подтвердить, что и manifest, и marker имеют актуальную версию, затем повторить после истечения старого rate limit.
 - Marketplace submission остаётся отдельной задачей и заблокирован до подтверждения checklist.
@@ -83,4 +89,4 @@
 - v0.7.2: копирование OAuth-кода.
 - v0.7.3: пагинация 50, batch metadata, виртуализация, lazy queue extension, in-memory cache и network diagnostics.
 - v0.7.4: версия в настройках, 429 backoff/serialization/friendly error, coalesced likes, live likes list/queue/cache update, стабильная прокрутка очереди и отдельная прокрутка поиска.
-- v0.8.0 (локально, не опубликовано): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync и завершённый этап 2 — LRC/TEXT, «Радио по треку», сведения о релизе и credits.
+- v0.8.0 (локально, не опубликовано): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync, этап 2 (LRC/TEXT, «Радио по треку», сведения/credits) и Stage 3 Catalog.

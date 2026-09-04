@@ -38,9 +38,12 @@ Item {
   function closeForPopoutSwitch() { if (panelLoader.item) panelLoader.item.closeForPopoutSwitch() }
   function showArtist(artistId) {
     if (!artistId) return
-    if (panelLoader.item) panelLoader.item.page = 0
+    if (panelLoader.item) {
+      if (panelLoader.item.selectPage) panelLoader.item.selectPage(2)
+      else panelLoader.item.page = 2
+    }
     open()
-    action("artist", artistId)
+    action("catalog_artist", artistId)
   }
 
   function refresh() {

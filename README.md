@@ -32,7 +32,7 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 
 - Native mini-player in the Omarchy bar
 - Background playback without an open browser
-- Now Playing, Library, Search, queue, and artist browsing
+- Now Playing, Library, and a unified Search catalog for tracks, artists, albums, and playlists
 - “My Wave” with mood, discovery, language controls, and recommendation feedback
 - Likes, “Do not recommend”, personal playlists, and individual clickable artists
 - Synced lyrics with active-line highlighting, auto-scroll, and click-to-seek
@@ -65,9 +65,9 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 - Open the information view for available album, release date, genre, labels, track number, version, description, and recording credits
 - Change playback mode with the button beside the queue counter
 - Select any queue item directly
-- Click an individual artist to browse their tracks
+- Click an artist or album link to open its page in the Search catalog
 
-Opening an artist, “My Likes”, or a personal playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
+Opening “My Likes” or a personal library playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
 
 ### Library
 
@@ -80,7 +80,9 @@ Opening an artist, “My Likes”, or a personal playlist does **not** interrupt
 
 ### Search
 
-Search for tracks and start playback from any result. Results scroll independently below the fixed tabs and search field. Loading lists use stable skeleton placeholders so the popup does not resize unexpectedly. Hover the corner loader to see the current operation, elapsed wait time, Yandex Music API latency, and regional availability.
+Search across tracks, artists, albums, and playlists, or use the sectioned **All** view. Suggestions appear after 300 ms once at least two characters are entered. Results load page by page with an explicit load-more action.
+
+Artist, album, and playlist pages open inside the same Search tab without changing playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages show biography, popular tracks, similar artists, and independently paginated Albums and Singles; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. Catalog lists use their own virtualized scrolling below the fixed tabs and controls.
 
 ### Settings
 

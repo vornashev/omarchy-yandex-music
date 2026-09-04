@@ -1,0 +1,22 @@
+2026-09-04T13:48:45.457Z run: start phase=refine
+2026-09-04T13:48:45.460Z phase:refine: start
+2026-09-04T13:49:16.815Z phase:refine: done ms=31355
+2026-09-04T13:49:19.785Z phase:research: start
+2026-09-04T13:49:23.816Z orientation: pre-supplied 3 core files
+2026-09-04T13:49:23.816Z phase:research: worker deadline = no-progress, ceiling 1200000ms
+2026-09-04T13:49:23.817Z worker:files: start
+2026-09-04T13:51:27.139Z worker:files: done exit=0 wait=382ms work=122940ms attempts=1 total=123322ms
+2026-09-04T13:51:27.140Z worker:apis: start
+2026-09-04T13:52:03.551Z worker:apis: RESTART (attempt 1 discarded) reason=loop wall=36410ms discarded=0ch wait=584ms work=35826ms — read ×5/20
+2026-09-04T13:53:42.935Z worker:apis: done exit=0 wait=543ms work=98839ms attempts=2 total=135794ms restarts=[loop]
+2026-09-04T13:53:42.935Z worker:context: start
+2026-09-04T13:54:46.085Z worker:context: done exit=0 wait=391ms work=62758ms attempts=1 total=63149ms
+2026-09-04T13:54:46.086Z worker:tooling: start
+2026-09-04T13:55:05.669Z worker:tooling: done exit=0 wait=396ms work=19187ms attempts=1 total=19583ms
+2026-09-04T13:55:28.909Z phase:research: done ms=369124
+2026-09-04T13:55:28.910Z phase:grill: start
+2026-09-04T14:03:33.848Z phase:grill: done ms=484938
+2026-09-04T14:03:33.848Z phase:compose: start
+2026-09-04T14:04:14.517Z phase:compose: done ms=40669
+2026-09-04T14:04:14.518Z phase:critique: start
+2026-09-04T14:06:52.264Z phase:critique: done ms=157746

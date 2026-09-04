@@ -19,7 +19,10 @@ All notable changes to this project are documented here. The format follows [Kee
 - Track Radio with a dedicated action, recommendation queue, and continued radio chain
 - On-demand current-track view for release details and recording credits
 - A separate in-memory LRU detailed-information cache for the eight most recent tracks
-- Fake tests for playback reporting, like/dislike, LRC, track-station startup, credit normalization, and both on-demand caches
+- Unified Search catalog with `All`, Tracks, Artists, Albums, and Playlists filters, 300 ms suggestions, and paginated results
+- Non-autoplay album, artist, and playlist pages with explicit track playback, linked metadata, and preserved search back-navigation
+- Artist biography, popular tracks, similar artists, and independently paginated Albums and Singles sections
+- Fake backend coverage and automated QML interaction tests for catalog search, suggestions, pagination, navigation, caching, and explicit playback
 
 ### Changed
 
@@ -30,6 +33,9 @@ All notable changes to this project are documented here. The format follows [Kee
 - Letter commands follow physical QWERTY key positions and work with English and Russian layouts
 - Lyrics load on demand through a separate background operation, do not inflate regular status/details polling, and never turn failures into global player errors
 - The lyrics toggle uses a dedicated synced-lines icon and changes to a return-to-queue action while lyrics are open
+- Artist and album links from Now Playing, queue rows, and track information now open the unified Search catalog
+- Catalog SDK requests share the serialized API wrapper and 2/5/10-second rate-limit retries; stale session and suggestion responses are discarded
+- The legacy artist list no longer replaces the Now Playing queue
 
 ### Fixed
 

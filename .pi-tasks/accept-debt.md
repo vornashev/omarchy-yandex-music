@@ -1,0 +1,1 @@
+TASK_0001	verify child mutated repo state and its verdict was discarded (state restored: removed child-created file .pi/fusion/01a06cad-cfa1-7199-a8ed-437c673b9405-1957500/validate-fb3fe36c90d36d07dde382ab158b1bea/candidate-1.attempt-1.events.jsonl; removed child-created file .pi/fusion/0)

@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
+# pyright: reportOptionalMemberAccess=false, reportMissingImports=false, reportUndefinedVariable=false, reportFunctionMemberAccess=false, reportRedeclaration=false
 """Local, browser-free Yandex Music player backend for Omarchy."""
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 import os
@@ -67,6 +69,11 @@ RADIO_REPORT_FROM = "mobile-radio-user-default"
 TELEMETRY_QUEUE_SIZE = 100
 LYRICS_CACHE_MAX_ENTRIES = 8
 TRACK_INFO_CACHE_MAX_ENTRIES = 8
+CATALOG_PAGE_SIZE = 20
+CATALOG_TRACK_PAGE_SIZE = 50
+CATALOG_CACHE_MAX_ENTRIES = 12
+CATALOG_TYPES = ("all", "track", "artist", "album", "playlist")
+CATALOG_SECTIONS = ("tracks", "artists", "albums", "playlists")
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -103,10 +110,10 @@ class MprisRoot(ServiceInterface):
     def DesktopEntry(self) -> "s": return ""
 
     @dbus_property(access=PropertyAccess.READ)
-    def SupportedUriSchemes(self) -> "as": return []
+    def SupportedUriSchemes(self) -> "as": return []  # type: ignore
 
     @dbus_property(access=PropertyAccess.READ)
-    def SupportedMimeTypes(self) -> "as": return []
+    def SupportedMimeTypes(self) -> "as": return []  # type: ignore
 
 
 class MprisPlayer(ServiceInterface):
@@ -191,7 +198,7 @@ class MprisPlayer(ServiceInterface):
         self.player.set_preference("playbackMode", "shuffle" if value else "order")
 
     @dbus_property(access=PropertyAccess.READ)
-    def Metadata(self) -> "a{sv}":
+    def Metadata(self) -> "a{sv}":  # type: ignore
         state = self._state()
         metadata = {
             "mpris:trackid": Variant("o", self._track_path()),
@@ -301,6 +308,17 @@ class Player:
         self.index = -1
         self.playlists: list[dict[str, Any]] = []
         self.search_results: list[Any] = []
+        self.catalog_generation = 0
+        self.suggestion_generation = 0
+        self.catalog_revision = 0
+        self.catalog = self._empty_catalog()
+        self.catalog_search_models: dict[str, list[Any]] = {
+            section: [] for section in CATALOG_SECTIONS
+        }
+        self.catalog_entity_tracks: list[Any] = []
+        self.catalog_entity_source: list[Any] = []
+        self.catalog_entity_offset = 0
+        self.catalog_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.lyrics_cache: OrderedDict[str, dict[str, Any]] = OrderedDict()
         self.lyrics_loading: set[str] = set()
         self.lyrics_generation = 0
@@ -414,7 +432,7 @@ class Player:
                 # must not amplify a rate limit or expose a background error in UI.
                 self._api_call(operation, retry_rate_limit=False, update_loading=False)
             except Exception:
-                pass
+                continue
             finally:
                 self.telemetry_queue.task_done()
 
@@ -551,19 +569,20 @@ class Player:
             account = (response.json().get("result") or {}).get("account") or {}
             result.update(available=True, serviceAvailable=account.get("serviceAvailable"),
                           region=account.get("region"))
-        except requests.exceptions.Timeout:
-            result["error"] = "таймаут"
-        except requests.exceptions.SSLError:
-            result["error"] = "ошибка TLS"
-        except requests.exceptions.HTTPError as exc:
-            status = exc.response.status_code if exc.response is not None else ""
-            result["error"] = f"HTTP {status}".strip()
-        except requests.exceptions.ConnectionError:
-            result["error"] = "ошибка соединения"
-        except (ValueError, TypeError, AttributeError):
-            result["error"] = "некорректный ответ"
-        except Exception:
-            result["error"] = "неизвестная ошибка"
+        except Exception as exc:
+            if isinstance(exc, requests.exceptions.Timeout):
+                result["error"] = "таймаут"
+            elif isinstance(exc, requests.exceptions.SSLError):
+                result["error"] = "ошибка TLS"
+            elif isinstance(exc, requests.exceptions.HTTPError):
+                status = exc.response.status_code if exc.response is not None else ""
+                result["error"] = f"HTTP {status}".strip()
+            elif isinstance(exc, requests.exceptions.ConnectionError):
+                result["error"] = "ошибка соединения"
+            elif isinstance(exc, (ValueError, TypeError, AttributeError)):
+                result["error"] = "некорректный ответ"
+            else:
+                result["error"] = "неизвестная ошибка"
         with self.lock:
             self.network.update(result)
 
@@ -573,7 +592,7 @@ class Player:
             saved = json.loads(PREFERENCES_FILE.read_text()) if PREFERENCES_FILE.exists() else {}
             if isinstance(saved, dict): preferences.update(saved)
         except Exception:
-            pass
+            saved = {}
         bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
                      "showControls", "showArtist", "showTitle", "showCover", "showProgress")
         for key in bool_keys: preferences[key] = bool(preferences.get(key, DEFAULT_PREFERENCES[key]))
@@ -619,14 +638,17 @@ class Player:
         if key == "playbackMode": self._publish_mpris()
 
     def _load_token(self) -> dict[str, Any]:
-        return json.loads(TOKEN_FILE.read_text())
+        try:
+            return json.loads(TOKEN_FILE.read_text())
+        except (OSError, json.JSONDecodeError) as exc:
+            raise RuntimeError("Не удалось прочитать сохранённую сессию") from exc
 
     def _save_token(self, token: Any, previous_refresh: str | None = None) -> None:
         atomic_json(TOKEN_FILE, {
             "access_token": token.access_token,
             "refresh_token": token.refresh_token or previous_refresh,
             "expires_in": token.expires_in,
-            "saved_at": int(time.time()),
+            "saved_at": self._int(time.time()),
         })
 
     def _refresh_token(self, saved: dict[str, Any]) -> str:
@@ -642,7 +664,7 @@ class Player:
         saved.update({
             "access_token": data["access_token"],
             "refresh_token": data.get("refresh_token", refresh),
-            "expires_in": data.get("expires_in"), "saved_at": int(time.time()),
+            "expires_in": data.get("expires_in"), "saved_at": self._int(time.time()),
         })
         atomic_json(TOKEN_FILE, saved)
         return saved["access_token"]
@@ -691,6 +713,12 @@ class Player:
         self.stop()
         with self.lock:
             self.client = None; self.playlists = []; self.artist_results = []; self.library_results = []
+            self.search_results = []
+            self.catalog_generation += 1; self.suggestion_generation += 1; self.catalog_revision += 1
+            self.catalog = self._empty_catalog(); self.catalog["revision"] = self.catalog_revision
+            self.catalog_search_models = {section: [] for section in CATALOG_SECTIONS}
+            self.catalog_entity_tracks = []; self.catalog_entity_source = []
+            self.catalog_entity_offset = 0; self.catalog_cache.clear()
             self.lyrics_cache.clear(); self.lyrics_loading.clear(); self.lyrics_generation += 1
             self.track_info_cache.clear(); self.track_info_loading.clear(); self.track_info_generation += 1
             self.library_source = []; self.library_offset = 0
@@ -726,16 +754,33 @@ class Player:
     def _track_from_short(item: Any) -> Any:
         return item.track if getattr(item, "track", None) else item.fetch_track()
 
-    def _tracks_from_short_page(self, rows: list[Any]) -> list[Any]:
+    @staticmethod
+    def _short_track_id(row: Any) -> str:
+        value = getattr(row, "track_id", None)
+        if value is not None and not isinstance(value, (str, int)):
+            value = getattr(value, "track_id", None) or getattr(value, "id", None)
+        return str(value if value is not None else getattr(row, "id", "") or "")
+
+    def _tracks_from_short_page(self, rows: list[Any], client: Client | None = None,
+                                *, update_loading: bool = True) -> list[Any]:
         """Resolve one collection page in one API request while retaining source order."""
-        assert self.client
-        missing = [row for row in rows if not getattr(row, "track", None)]
-        track_ids = [str(getattr(row, "track_id", getattr(row, "id", ""))) for row in missing]
-        fetched = self._api_call(lambda: self.client.tracks(track_ids)) if missing else []
-        by_id = {str(getattr(track, "id", "")): track for track in fetched}
+        client = client or self.client
+        assert client
+        def embedded(row: Any) -> Any:
+            value = getattr(row, "track", None)
+            if value is not None: return value
+            if getattr(row, "title", None) is not None and getattr(row, "artists", None) is not None:
+                return row
+            return None
+
+        missing_ids = [self._short_track_id(row) for row in rows if embedded(row) is None]
+        track_ids = list(dict.fromkeys(track_id for track_id in missing_ids if track_id))
+        fetched = (self._api_call(lambda: client.tracks(track_ids), update_loading=update_loading)
+                   if track_ids else [])
+        by_id = {str(getattr(track, "id", "")): track for track in (fetched or [])}
         tracks = []
         for row in rows:
-            track = getattr(row, "track", None) or by_id.get(str(getattr(row, "id", "")))
+            track = embedded(row) or by_id.get(self._short_track_id(row))
             if track is not None:
                 tracks.append(track)
         return tracks
@@ -772,13 +817,13 @@ class Player:
         cached = self.collection_cache.get(key)
         if not cached: return False
         now = time.monotonic()
-        if now - float(cached.get("storedAt", 0)) > COLLECTION_CACHE_TTL:
+        if now - self._float(cached.get("storedAt", 0)) > COLLECTION_CACHE_TTL:
             self.collection_cache.pop(key, None)
             return False
         self.active_library_cache_key = key
         self.library_source = list(cached["source"])
         self.library_results = list(cached["results"])
-        self.library_offset = min(int(cached["offset"]), len(self.library_source))
+        self.library_offset = min(self._int(cached["offset"]), len(self.library_source))
         cached["accessedAt"] = now
         self.library_revision += 1
         self.state.update(libraryBrowseName=str(cached["title"]),
@@ -830,7 +875,7 @@ class Player:
         cached = self.collection_cache.get("likes")
         if cached:
             source, results, offset = update(
-                list(cached["source"]), list(cached["results"]), int(cached["offset"]))
+                list(cached["source"]), list(cached["results"]), self._int(cached["offset"]))
             if source and results:
                 cached.update(source=source, results=results, offset=offset,
                               storedAt=time.monotonic(), accessedAt=time.monotonic())
@@ -1275,30 +1320,665 @@ class Player:
                 self._set_error(f"Не удалось загрузить следующую страницу: {exc}")
         threading.Thread(target=load, daemon=True).start()
 
-    def search(self, query: str) -> None:
-        query = query.strip()
-        if not query: return
-        def load() -> None:
-            try:
-                assert self.client
-                result = self._api_call(lambda: self.client.search(query, type_="track"))
-                with self.lock:
-                    self.search_results = list(result.tracks.results or [])[:30] if result and result.tracks else []
-                    self.state.update(loading=False, loadingKind="")
-            except Exception as exc: self._set_error(f"Ошибка поиска: {exc}")
-        self._loading(load, "search")
-
-    def play_search(self, index: int) -> None:
-        with self.lock: tracks = list(self.search_results)
-        if 0 <= index < len(tracks): self._set_queue(tracks[index:] + tracks[:index], "Результаты поиска")
+    @staticmethod
+    def _empty_catalog() -> dict[str, Any]:
+        return {
+            "view": "search", "revision": 0,
+            "search": {
+                "fieldText": "", "query": "", "filter": "all", "page": -1,
+                "loading": False, "loadingMore": False, "error": "",
+                "sections": {
+                    name: {"items": [], "total": 0, "hasMore": False}
+                    for name in CATALOG_SECTIONS
+                },
+            },
+            "suggestions": {
+                "query": "", "generation": 0, "loading": False,
+                "items": [], "error": "",
+            },
+            "entity": {},
+        }
 
     @staticmethod
-    def _parse_lrc(content: str) -> list[dict[str, Any]]:
+    def _catalog_error(exc: Any, context: str) -> str:
+        text = str(exc).lower()
+        if Player._is_rate_limit_error(exc): return RATE_LIMIT_MESSAGE
+        if "401" in text or "unauthor" in text:
+            return "Сессия истекла. Войдите в Яндекс Музыку снова."
+        if "404" in text or "not-found" in text or "not found" in text:
+            return f"{context} не найден или недоступен."
+        if "415" in text or "unsupported-media-type" in text:
+            return f"{context} временно недоступен."
+        return f"Не удалось загрузить {context.lower()}. Повторите позже."
+
+    @staticmethod
+    def _text(value: Any) -> str:
+        return str(value if value is not None else "").strip()
+
+    @staticmethod
+    def _cover_url(model: Any, size: str = "400x400") -> str:
+        if model is None: return ""
+        for method_name in ("get_cover_url", "get_og_image_url", "get_op_image_url"):
+            method = getattr(model, method_name, None)
+            if callable(method):
+                try:
+                    value = method(size)
+                    if value: return str(value)
+                except Exception:
+                    continue
+        cover = getattr(model, "cover", None)
+        get_url = getattr(cover, "get_url", None)
+        if callable(get_url):
+            try:
+                value = get_url(size=size)
+                if value: return str(value)
+            except Exception:
+                value = None
+        candidates = [getattr(model, "cover_uri", None), getattr(model, "og_image", None),
+                      getattr(model, "op_image", None), getattr(model, "image", None),
+                      getattr(cover, "uri", None)]
+        items_uri = getattr(cover, "items_uri", None) or []
+        if isinstance(items_uri, (list, tuple)) and items_uri: candidates.append(items_uri[0])
+        for candidate in candidates:
+            if not candidate or not isinstance(candidate, (str, int)): continue
+            value = str(candidate).replace("%%", size)
+            return value if value.startswith(("http://", "https://")) else "https://" + value.lstrip("/")
+        return ""
+
+    @classmethod
+    def _artist_metadata(cls, artist: Any) -> dict[str, Any]:
+        genres = getattr(artist, "genres", None) or []
+        if not isinstance(genres, (list, tuple)): genres = []
+        return {"entityType": "artist", "id": cls._text(getattr(artist, "id", "")),
+                "name": cls._text(getattr(artist, "name", "")),
+                "artUrl": cls._cover_url(artist),
+                "genres": [cls._text(value) for value in genres if cls._text(value)]}
+
+    @classmethod
+    def _album_metadata(cls, album: Any) -> dict[str, Any]:
+        artists = [cls._artist_metadata(artist)
+                   for artist in (getattr(album, "artists", None) or [])
+                   if artist is not None]
+        year = getattr(album, "year", None) or getattr(album, "original_release_year", None) or ""
+        if isinstance(year, (dict, list, tuple)): year = ""
+        return {"entityType": "album", "id": cls._text(getattr(album, "id", "")),
+                "title": cls._text(getattr(album, "title", "")),
+                "artist": ", ".join(row["name"] for row in artists if row["name"]),
+                "artists": artists, "artUrl": cls._cover_url(album), "year": cls._text(year),
+                "releaseDate": cls._text(getattr(album, "release_date", ""))[:10],
+                "genre": cls._text(getattr(album, "genre", "")),
+                "releaseType": cls._text(getattr(album, "type", "")),
+                "trackCount": cls._int(getattr(album, "track_count", 0))}
+
+    @classmethod
+    def _playlist_metadata(cls, playlist: Any) -> dict[str, Any]:
+        owner = getattr(playlist, "owner", None)
+        owner_id = (getattr(owner, "uid", None) or getattr(owner, "login", None)
+                    or getattr(playlist, "uid", None) or "")
+        owner_name = (getattr(owner, "name", None) or getattr(owner, "display_name", None)
+                      or getattr(owner, "login", None) or "")
+        return {"entityType": "playlist",
+                "uuid": cls._text(getattr(playlist, "playlist_uuid", "")),
+                "owner": cls._text(owner_id), "ownerName": cls._text(owner_name),
+                "kind": cls._text(getattr(playlist, "kind", "")),
+                "title": cls._text(getattr(playlist, "title", "")),
+                "artUrl": cls._cover_url(playlist),
+                "trackCount": cls._int(getattr(playlist, "track_count", 0))}
+
+    @staticmethod
+    def _catalog_key(section: str, row: dict[str, Any]) -> str:
+        if section == "tracks": return str(row.get("trackId") or row.get("title") or "")
+        if section == "artists": return str(row.get("id") or row.get("name") or "").lower()
+        if section == "albums": return str(row.get("id") or row.get("title") or "").lower()
+        return str(row.get("uuid") or (str(row.get("owner", "")) + ":" + str(row.get("kind", "")))
+                   or row.get("title") or "").lower()
+
+    @staticmethod
+    def _safe_rows(value: Any) -> list[Any]:
+        try: return list(value or [])
+        except Exception: return []
+
+    @staticmethod
+    def _int(value: Any, fallback: int = 0) -> int:
+        try: return int(value if value is not None else fallback)
+        except (TypeError, ValueError): return fallback
+
+    @staticmethod
+    def _float(value: Any, fallback: float = 0.0) -> float:
+        try: return float(value if value is not None else fallback)
+        except (TypeError, ValueError): return fallback
+
+    @classmethod
+    def _release_is_single(cls, album: Any) -> bool:
+        values = " ".join(cls._text(getattr(album, name, "")).lower()
+                          for name in ("type", "meta_type"))
+        return values.strip() == "ep" or any(
+            token in values for token in ("single", "сингл", " ep", "ep "))
+
+    def _catalog_touch_locked(self) -> None:
+        self.catalog_revision += 1
+        self.catalog["revision"] = self.catalog_revision
+
+    def _catalog_current(self, client: Any, generation: int) -> bool:
+        return generation == self.catalog_generation and self.client is client
+
+    def _search_page(self, result: Any) -> dict[str, dict[str, Any]]:
+        parsed: dict[str, dict[str, Any]] = {}
+        normalizers = {
+            "tracks": self._metadata, "artists": self._artist_metadata,
+            "albums": self._album_metadata, "playlists": self._playlist_metadata,
+        }
+        for section in CATALOG_SECTIONS:
+            container = getattr(result, section, None) if result is not None else None
+            models = self._safe_rows(getattr(container, "results", None))
+            items = []
+            valid_models = []
+            for model in models:
+                try: row = normalizers[section](model)
+                except Exception: continue
+                key = self._catalog_key(section, row)
+                if not key: continue
+                items.append(row); valid_models.append(model)
+            total = max(len(items), self._int(getattr(container, "total", 0)))
+            per_page = self._int(getattr(container, "per_page", 0))
+            parsed[section] = {"items": items, "models": valid_models,
+                               "total": total, "perPage": per_page}
+        return parsed
+
+    def catalog_search(self, query: str, type_: str = "all") -> None:
+        query = self._text(query)
+        type_ = type_ if type_ in CATALOG_TYPES else "all"
+        with self.lock:
+            client = self.client
+            self.catalog_generation += 1; generation = self.catalog_generation
+            self.catalog["view"] = "search"; self.catalog["entity"] = {}
+            search = self.catalog["search"]
+            search.update(fieldText=query, query=query, filter=type_, page=-1,
+                          loading=bool(query and client), loadingMore=False, error="")
+            search["sections"] = {name: {"items": [], "total": 0, "hasMore": False}
+                                  for name in CATALOG_SECTIONS}
+            self.catalog_search_models = {name: [] for name in CATALOG_SECTIONS}
+            self.search_results = []
+            self._catalog_touch_locked()
+        if not query or not client: return
+
+        def load() -> None:
+            try:
+                result = self._api_call(
+                    lambda: client.search(query, type_=type_, page=0), update_loading=False)
+                page = self._search_page(result)
+                with self.lock:
+                    if generation != self.catalog_generation or self.client is not client: return
+                    for section in CATALOG_SECTIONS:
+                        value = page[section]
+                        self.catalog_search_models[section] = list(value["models"])
+                        count = len(value["items"])
+                        has_more = value["total"] > count or (
+                            value["perPage"] > 0 and count >= value["perPage"])
+                        self.catalog["search"]["sections"][section] = {
+                            "items": value["items"], "total": value["total"],
+                            "hasMore": has_more,
+                        }
+                    self.search_results = list(self.catalog_search_models["tracks"])
+                    self.catalog["search"].update(page=0, loading=False, error="")
+                    self._catalog_touch_locked()
+            except Exception as exc:
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                    self.catalog["search"].update(
+                        loading=False, error=self._catalog_error(exc, "Результаты поиска"))
+                    self._catalog_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_load_more(self) -> None:
+        with self.lock:
+            search = self.catalog["search"]
+            if (self.catalog.get("view") != "search" or search.get("loading")
+                    or search.get("loadingMore") or not search.get("query")):
+                return
+            if not any(section.get("hasMore") for section in search["sections"].values()): return
+            client = self.client; generation = self.catalog_generation
+            query = str(search["query"]); type_ = str(search["filter"])
+            next_page = self._int(search.get("page", -1), -1) + 1
+            search.update(loadingMore=True, error=""); self._catalog_touch_locked()
+        if not client: return
+
+        def load() -> None:
+            try:
+                result = self._api_call(
+                    lambda: client.search(query, type_=type_, page=next_page), update_loading=False)
+                page = self._search_page(result)
+                with self.lock:
+                    if generation != self.catalog_generation or self.client is not client: return
+                    for section in CATALOG_SECTIONS:
+                        target = self.catalog["search"]["sections"][section]
+                        seen = {self._catalog_key(section, row) for row in target["items"]}
+                        for model, row in zip(page[section]["models"], page[section]["items"]):
+                            key = self._catalog_key(section, row)
+                            if key in seen: continue
+                            seen.add(key); target["items"].append(row)
+                            self.catalog_search_models[section].append(model)
+                        target["total"] = max(int(target.get("total", 0)), page[section]["total"])
+                        received = len(page[section]["items"])
+                        target["hasMore"] = (target["total"] > len(target["items"])
+                                             and received > 0)
+                    self.search_results = list(self.catalog_search_models["tracks"])
+                    self.catalog["search"].update(page=next_page, loadingMore=False, error="")
+                    self._catalog_touch_locked()
+            except Exception as exc:
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                    self.catalog["search"].update(
+                        loadingMore=False, error=self._catalog_error(exc, "Следующую страницу"))
+                    self._catalog_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def _finish_catalog_suggestions(self, client: Any, generation: int, query: str,
+                                    items: list[str], error: str = "") -> None:
+        with self.lock:
+            current = self.catalog["suggestions"]
+            is_current = generation == self.suggestion_generation
+            if not is_current or self.client is not client: return
+            if current.get("query") != query: return
+            current.update(loading=False, items=items, error=error)
+            self._catalog_touch_locked()
+
+    def catalog_suggest(self, query: str, request_generation: int = 0) -> None:
+        query = self._text(query)
+        with self.lock:
+            client = self.client
+            self.suggestion_generation += 1; generation = self.suggestion_generation
+            suggestions = self.catalog["suggestions"]
+            self.catalog["search"]["fieldText"] = query
+            suggestions.update(query=query, generation=request_generation,
+                               loading=len(query) >= 2 and client is not None,
+                               items=[], error="")
+            self._catalog_touch_locked()
+        if len(query) < 2 or not client: return
+
+        def load() -> None:
+            try:
+                result = self._api_call(lambda: client.search_suggest(query), update_loading=False)
+                values = []
+                for value in self._safe_rows(getattr(result, "suggestions", None)):
+                    text = self._text(value)
+                    if text and text not in values: values.append(text)
+                self._finish_catalog_suggestions(client, generation, query, values)
+            except Exception as exc:
+                self._finish_catalog_suggestions(
+                    client, generation, query, [], self._catalog_error(exc, "Подсказки"))
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_clear_suggestions(self, field_text: str = "") -> None:
+        with self.lock:
+            self.suggestion_generation += 1
+            self.catalog["search"]["fieldText"] = self._text(field_text)
+            self.catalog["suggestions"].update(query="", loading=False, items=[], error="")
+            self._catalog_touch_locked()
+
+    def _store_catalog_entity_locked(self, key: str) -> None:
+        self.catalog_cache[key] = {
+            "entity": copy.deepcopy(self.catalog.get("entity", {})),
+            "tracks": list(self.catalog_entity_tracks),
+            "source": list(self.catalog_entity_source), "offset": self.catalog_entity_offset,
+        }
+        self.catalog_cache.move_to_end(key)
+        while len(self.catalog_cache) > CATALOG_CACHE_MAX_ENTRIES:
+            self.catalog_cache.popitem(last=False)
+
+    def _activate_catalog_entity_locked(self, key: str) -> bool:
+        cached = self.catalog_cache.get(key)
+        if not cached: return False
+        self.catalog_cache.move_to_end(key)
+        self.catalog["entity"] = copy.deepcopy(cached["entity"])
+        self.catalog["entity"]["loading"] = False
+        self.catalog["view"] = str(self.catalog["entity"].get("type", "search"))
+        self.catalog_entity_tracks = list(cached["tracks"])
+        self.catalog_entity_source = list(cached["source"])
+        self.catalog_entity_offset = self._int(cached["offset"])
+        self._catalog_touch_locked(); return True
+
+    def _begin_catalog_entity(self, type_: str, entity_id: str, cache_key: str) -> tuple[Any, int] | None:
+        with self.lock:
+            client = self.client
+            self.catalog_generation += 1; generation = self.catalog_generation
+            self.catalog["view"] = type_
+            self.catalog["entity"] = {"type": type_, "id": entity_id,
+                                      "loading": bool(client), "loadingMore": False,
+                                      "error": "", "warning": "", "tracks": [], "hasMore": False}
+            self.catalog_entity_tracks = []; self.catalog_entity_source = []
+            self.catalog_entity_offset = 0
+            if client and self._activate_catalog_entity_locked(cache_key): return None
+            self._catalog_touch_locked()
+        return (client, generation) if client else None
+
+    def _finish_catalog_entity(self, client: Any, generation: int, cache_key: str,
+                               entity: dict[str, Any], tracks: list[Any],
+                               source: list[Any] | None = None, offset: int | None = None) -> None:
+        with self.lock:
+            if generation != self.catalog_generation or self.client is not client: return
+            self.catalog["entity"] = entity
+            self.catalog["view"] = str(entity.get("type", "search"))
+            self.catalog_entity_tracks = list(tracks)
+            self.catalog_entity_source = list(source or tracks)
+            self.catalog_entity_offset = len(tracks) if offset is None else offset
+            self._catalog_touch_locked(); self._store_catalog_entity_locked(cache_key)
+
+    def _fail_catalog_entity(self, client: Any, generation: int, type_: str,
+                             entity_id: str, exc: Any, context: str) -> None:
+        with self.lock:
+            if generation != self.catalog_generation or self.client is not client: return
+            self.catalog["entity"] = {"type": type_, "id": entity_id, "loading": False,
+                                      "loadingMore": False, "tracks": [], "hasMore": False,
+                                      "error": self._catalog_error(exc, context), "warning": ""}
+            self._catalog_touch_locked()
+
+    def catalog_album(self, album_id: str) -> None:
+        album_id = self._text(album_id)
+        if not album_id: return
+        cache_key = f"album:{album_id}"
+        started = self._begin_catalog_entity("album", album_id, cache_key)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            errors = []
+            summary = detailed = None
+            try:
+                rows = self._api_call(lambda: client.albums(album_id), update_loading=False) or []
+                summary = rows[0] if rows else None
+            except Exception as exc: errors.append(exc)
+            try:
+                detailed = self._api_call(
+                    lambda: client.albums_with_tracks(album_id), update_loading=False)
+            except Exception as exc: errors.append(exc)
+            album = detailed or summary
+            if album is None:
+                self._fail_catalog_entity(client, generation, "album", album_id,
+                                          errors[0] if errors else RuntimeError("empty"), "Альбом")
+                return
+            source = []
+            for volume in self._safe_rows(getattr(detailed, "volumes", None)):
+                source.extend(self._safe_rows(volume))
+            try:
+                tracks = self._tracks_from_short_page(
+                    source[:CATALOG_TRACK_PAGE_SIZE], client, update_loading=False)
+            except Exception as exc: errors.append(exc); tracks = []
+            entity = {**self._album_metadata(album), "type": "album", "loading": False,
+                      "loadingMore": False, "tracks": [
+                          {**self._metadata(track), "index": index}
+                          for index, track in enumerate(tracks)],
+                      "hasMore": len(source) > len(source[:CATALOG_TRACK_PAGE_SIZE]),
+                      "error": "", "warning": ("Часть данных альбома недоступна."
+                                                   if errors and (tracks or summary) else "")}
+            self._finish_catalog_entity(client, generation, cache_key, entity, tracks,
+                                        source, min(len(source), CATALOG_TRACK_PAGE_SIZE))
+        threading.Thread(target=load, daemon=True).start()
+
+    def _artist_release_page(self, client: Any, artist_id: str, page: int) -> tuple[list[Any], bool, list[Any]]:
+        releases = []; errors = []; has_more = False
+        for method_name in ("artists_direct_albums", "artists_discography_albums"):
+            try:
+                method = getattr(client, method_name)
+                result = self._api_call(
+                    lambda method=method: method(artist_id, page=page,
+                                                 page_size=CATALOG_PAGE_SIZE),
+                    update_loading=False)
+                rows = self._safe_rows(getattr(result, "albums", None))
+                releases.extend(rows)
+                pager = getattr(result, "pager", None)
+                total = self._int(getattr(pager, "total", 0))
+                per_page = self._int(getattr(pager, "per_page", CATALOG_PAGE_SIZE), CATALOG_PAGE_SIZE)
+                has_more = has_more or total > (page + 1) * per_page or len(rows) >= per_page
+            except Exception as exc: errors.append(exc)
+        unique = []
+        seen = set()
+        for album in releases:
+            row = self._album_metadata(album)
+            key = self._catalog_key("albums", row)
+            if key and key not in seen: seen.add(key); unique.append(album)
+        return unique, has_more, errors
+
+    @classmethod
+    def _description_text(cls, *values: Any) -> str:
+        for value in values:
+            if value is None: continue
+            text = value if isinstance(value, str) else getattr(value, "text", "")
+            text = cls._text(text)
+            if text: return text
+        return ""
+
+    def catalog_artist(self, artist_id: str) -> None:
+        artist_id = self._text(artist_id)
+        if not artist_id: return
+        cache_key = f"artist:{artist_id}"
+        started = self._begin_catalog_entity("artist", artist_id, cache_key)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            errors = []
+            def call(method_name: str, *args: Any, **kwargs: Any) -> Any:
+                try:
+                    method = getattr(client, method_name)
+                    return self._api_call(lambda: method(*args, **kwargs), update_loading=False)
+                except Exception as exc:
+                    errors.append(exc); return None
+            brief = call("artists_brief_info", artist_id)
+            info = call("artists_info", artist_id)
+            about = call("artists_about", artist_id)
+            track_page = call("artists_tracks", artist_id, page=0, page_size=CATALOG_PAGE_SIZE)
+            releases, releases_more, release_errors = self._artist_release_page(client, artist_id, 0)
+            errors.extend(release_errors)
+            similar_result = call("artists_similar", artist_id)
+            artist = (getattr(brief, "artist", None) or getattr(info, "artist", None)
+                      or getattr(about, "artist", None) or getattr(similar_result, "artist", None))
+            if artist is None and not any((brief, info, about, track_page, releases, similar_result)):
+                self._fail_catalog_entity(client, generation, "artist", artist_id,
+                                          errors[0] if errors else RuntimeError("empty"), "Исполнитель")
+                return
+            popular_source = (self._safe_rows(getattr(track_page, "tracks", None))
+                              or self._safe_rows(getattr(brief, "popular_tracks", None)))
+            try:
+                tracks = self._tracks_from_short_page(
+                    popular_source, client, update_loading=False)
+            except Exception as exc: errors.append(exc); tracks = []
+            similar = (self._safe_rows(getattr(similar_result, "similar_artists", None))
+                       or self._safe_rows(getattr(brief, "similar_artists", None)))
+            albums = []; singles = []
+            for release in releases:
+                try:
+                    (singles if self._release_is_single(release) else albums).append(
+                        self._album_metadata(release))
+                except Exception:
+                    continue
+            identity = self._artist_metadata(artist)
+            covers = (self._safe_rows(getattr(info, "covers", None))
+                      or self._safe_rows(getattr(about, "covers", None))
+                      or self._safe_rows(getattr(brief, "all_covers", None)))
+            if not identity["artUrl"] and covers: identity["artUrl"] = self._cover_url(covers[0])
+            description = self._description_text(
+                getattr(about, "description", None), getattr(info, "description", None),
+                getattr(artist, "hand_made_description", None), getattr(artist, "description", None))
+            entity = {**identity, "type": "artist", "id": artist_id or identity["id"],
+                      "description": description, "loading": False, "loadingMore": False,
+                      "tracks": [{**self._metadata(track), "index": index}
+                                 for index, track in enumerate(tracks)],
+                      "similar": [self._artist_metadata(value) for value in similar if value is not None],
+                      "albums": albums, "singles": singles,
+                      "releasePages": {"albums": 0, "singles": 0},
+                      "releaseHasMore": {"albums": releases_more, "singles": releases_more},
+                      "releaseLoading": {"albums": False, "singles": False},
+                      "releaseErrors": {"albums": "", "singles": ""},
+                      "hasMore": False, "error": "",
+                      "warning": "Часть сведений об исполнителе недоступна." if errors else ""}
+            self._finish_catalog_entity(client, generation, cache_key, entity, tracks)
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_artist_more(self, section: str) -> None:
+        if section not in ("albums", "singles"): return
+        with self.lock:
+            entity = self.catalog.get("entity", {})
+            if (entity.get("type") != "artist" or entity.get("loading")
+                    or entity.get("releaseLoading", {}).get(section)
+                    or not entity.get("releaseHasMore", {}).get(section)): return
+            client = self.client; generation = self.catalog_generation
+            artist_id = str(entity.get("id", ""))
+            page = self._int(entity.get("releasePages", {}).get(section, 0)) + 1
+            entity["releaseLoading"][section] = True
+            entity["releaseErrors"][section] = ""; self._catalog_touch_locked()
+        if not client: return
+
+        def load() -> None:
+            releases, has_more, errors = self._artist_release_page(client, artist_id, page)
+            with self.lock:
+                entity = self.catalog.get("entity", {})
+                if (generation != self.catalog_generation or self.client is not client
+                        or entity.get("type") != "artist" or entity.get("id") != artist_id): return
+                target = entity[section]
+                seen = {self._catalog_key("albums", row) for row in target}
+                for release in releases:
+                    if (section == "singles") != self._release_is_single(release): continue
+                    row = self._album_metadata(release); key = self._catalog_key("albums", row)
+                    if key and key not in seen: seen.add(key); target.append(row)
+                entity["releasePages"][section] = page
+                entity["releaseHasMore"][section] = has_more
+                entity["releaseLoading"][section] = False
+                entity["releaseErrors"][section] = (
+                    "Не удалось загрузить часть дискографии." if errors and not releases else "")
+                self._catalog_touch_locked(); self._store_catalog_entity_locked(f"artist:{artist_id}")
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_playlist(self, uuid_: str = "", owner: str = "", kind: str = "") -> None:
+        uuid_ = self._text(uuid_); owner = self._text(owner); kind = self._text(kind)
+        entity_id = uuid_ or (owner + ":" + kind if owner and kind else "")
+        if not entity_id:
+            with self.lock:
+                self.catalog["view"] = "playlist"
+                self.catalog["entity"] = {"type": "playlist", "loading": False,
+                    "tracks": [], "hasMore": False, "warning": "",
+                    "error": "Не удалось определить идентификатор плейлиста."}
+                self._catalog_touch_locked()
+            return
+        cache_key = f"playlist:{entity_id}"
+        started = self._begin_catalog_entity("playlist", entity_id, cache_key)
+        if not started: return
+        client, generation = started
+
+        def load() -> None:
+            try:
+                if uuid_:
+                    playlist = self._api_call(lambda: client.playlist(uuid_), update_loading=False)
+                else:
+                    playlist = self._api_call(
+                        lambda: client.users_playlists(kind, user_id=owner), update_loading=False)
+                if isinstance(playlist, (list, tuple)): playlist = playlist[0] if playlist else None
+                if playlist is None: raise RuntimeError("404")
+                source = self._safe_rows(getattr(playlist, "tracks", None))
+                if not source and callable(getattr(playlist, "fetch_tracks", None)):
+                    source = self._safe_rows(self._api_call(playlist.fetch_tracks, update_loading=False))
+                tracks = self._tracks_from_short_page(
+                    source[:CATALOG_TRACK_PAGE_SIZE], client, update_loading=False)
+                entity = {**self._playlist_metadata(playlist), "type": "playlist", "id": entity_id,
+                          "loading": False, "loadingMore": False,
+                          "description": self._text(getattr(playlist, "description_formatted", None)
+                                                    or getattr(playlist, "description", None)),
+                          "tracks": [{**self._metadata(track), "index": index}
+                                     for index, track in enumerate(tracks)],
+                          "hasMore": len(source) > CATALOG_TRACK_PAGE_SIZE,
+                          "error": "", "warning": ""}
+                self._finish_catalog_entity(client, generation, cache_key, entity, tracks,
+                                            source, min(len(source), CATALOG_TRACK_PAGE_SIZE))
+            except Exception as exc:
+                self._fail_catalog_entity(client, generation, "playlist", entity_id, exc, "Плейлист")
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                    self.catalog["entity"].update(uuid=uuid_, owner=owner, kind=kind)
+                    self._catalog_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_entity_more(self) -> None:
+        with self.lock:
+            entity = self.catalog.get("entity", {})
+            if (entity.get("type") not in ("album", "playlist") or entity.get("loadingMore")
+                    or not entity.get("hasMore")): return
+            client = self.client; generation = self.catalog_generation
+            start = self.catalog_entity_offset
+            rows = list(self.catalog_entity_source[start:start + CATALOG_TRACK_PAGE_SIZE])
+            entity["loadingMore"] = True; entity["error"] = ""; self._catalog_touch_locked()
+        if not client: return
+
+        def load() -> None:
+            try:
+                tracks = self._tracks_from_short_page(rows, client, update_loading=False)
+                with self.lock:
+                    entity = self.catalog.get("entity", {})
+                    if generation != self.catalog_generation or self.client is not client: return
+                    base = len(self.catalog_entity_tracks)
+                    known = {self._track_id(track) for track in self.catalog_entity_tracks}
+                    for track in tracks:
+                        if self._track_id(track) in known: continue
+                        known.add(self._track_id(track)); self.catalog_entity_tracks.append(track)
+                        entity["tracks"].append({**self._metadata(track), "index": base})
+                        base += 1
+                    self.catalog_entity_offset = start + len(rows)
+                    entity["hasMore"] = self.catalog_entity_offset < len(self.catalog_entity_source)
+                    entity["loadingMore"] = False; self._catalog_touch_locked()
+                    self._store_catalog_entity_locked(f"{entity['type']}:{entity.get('id', '')}")
+            except Exception as exc:
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                    self.catalog["entity"].update(
+                        loadingMore=False, error=self._catalog_error(exc, "Следующую страницу"))
+                    self._catalog_touch_locked()
+        threading.Thread(target=load, daemon=True).start()
+
+    def catalog_back(self) -> None:
+        with self.lock:
+            self.catalog_generation += 1
+            self.catalog["view"] = "search"; self.catalog["entity"] = {}
+            self.catalog_entity_tracks = []; self.catalog_entity_source = []
+            self.catalog_entity_offset = 0; self._catalog_touch_locked()
+
+    def play_catalog_track(self, source: str, index: int) -> None:
+        with self.lock:
+            tracks = list(self.catalog_search_models.get("tracks", [])) if source == "search" \
+                else list(self.catalog_entity_tracks)
+            name = ("Результаты поиска" if source == "search"
+                    else str(self.catalog.get("entity", {}).get("title")
+                             or self.catalog.get("entity", {}).get("name") or "Каталог"))
+            client = self.client; generation = self.catalog_generation
+        if not client or not (0 <= index < len(tracks)): return
+        track = tracks[index]
+
+        def prepare() -> None:
+            try:
+                url = self._url(track, update_loading=False)
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                self._set_queue(tracks, name, start_index=index, prepared_url=url)
+            except Exception as exc:
+                with self.lock:
+                    if not self._catalog_current(client, generation): return
+                    target = (self.catalog["search"] if source == "search"
+                              else self.catalog["entity"])
+                    target["error"] = self._catalog_error(exc, "Трек")
+                    self._catalog_touch_locked()
+        threading.Thread(target=prepare, daemon=True).start()
+
+    def search(self, query: str) -> None:
+        self.catalog_search(query, "all")
+
+    def play_search(self, index: int) -> None:
+        self.play_catalog_track("search", index)
+
+    @classmethod
+    def _parse_lrc(cls, content: str) -> list[dict[str, Any]]:
         """Parse standard LRC timestamps into ordered, seekable lyric lines."""
         timestamp = re.compile(r"\[(\d{1,3}):([0-5]?\d)(?:[\.:](\d{1,3}))?\]")
         enhanced_timestamp = re.compile(r"<\d{1,3}:[0-5]?\d(?:[\.:]\d{1,3})?>")
         offset_match = re.search(r"(?im)^\[offset:([+-]?\d+)\]\s*$", content)
-        offset = int(offset_match.group(1)) / 1000 if offset_match else 0.0
+        offset = cls._int(offset_match.group(1)) / 1000 if offset_match else 0.0
         lines: list[dict[str, Any]] = []
         for source_index, raw_line in enumerate(content.splitlines()):
             matches = list(timestamp.finditer(raw_line))
@@ -1307,8 +1987,8 @@ class Player:
             if not text: continue
             for match in matches:
                 fraction_text = match.group(3) or ""
-                fraction = int(fraction_text) / (10 ** len(fraction_text)) if fraction_text else 0.0
-                seconds = int(match.group(1)) * 60 + int(match.group(2)) + fraction + offset
+                fraction = cls._int(fraction_text) / (10 ** len(fraction_text)) if fraction_text else 0.0
+                seconds = cls._int(match.group(1)) * 60 + cls._int(match.group(2)) + fraction + offset
                 lines.append({"time": round(max(0.0, seconds), 3), "text": text,
                               "sourceIndex": source_index})
         lines.sort(key=lambda line: (line["time"], line["sourceIndex"]))
@@ -1334,6 +2014,19 @@ class Player:
         writers = [str(writer) for writer in (getattr(lyrics, "writers", None) or []) if writer]
         return str(content or ""), writers
 
+    def _lyrics_text_failure(self, lrc_content: str, lrc_writers: list[str],
+                             lrc_error: Exception | None, exc: Exception) -> dict[str, Any]:
+        if lrc_content.strip():
+            plain_lines = self._plain_lyrics_lines(lrc_content)
+            if plain_lines:
+                return {"available": True, "synced": False, "format": "TEXT",
+                        "writers": lrc_writers, "lines": plain_lines, "error": ""}
+        if self._is_not_found_error(exc) and (
+                lrc_error is None or self._is_not_found_error(lrc_error)):
+            return {"available": False, "synced": False, "format": "",
+                    "writers": [], "lines": [], "error": ""}
+        raise exc
+
     def _lyrics_entry(self, client: Client, track_id: str) -> dict[str, Any]:
         lrc_content = ""
         lrc_writers: list[str] = []
@@ -1352,15 +2045,7 @@ class Player:
         try:
             text_content, text_writers = self._fetch_lyrics_format(client, track_id, "TEXT")
         except Exception as exc:
-            if lrc_content.strip():
-                plain_lines = self._plain_lyrics_lines(lrc_content)
-                if plain_lines:
-                    return {"available": True, "synced": False, "format": "TEXT",
-                            "writers": lrc_writers, "lines": plain_lines, "error": ""}
-            if self._is_not_found_error(exc) and (lrc_error is None or self._is_not_found_error(lrc_error)):
-                return {"available": False, "synced": False, "format": "",
-                        "writers": [], "lines": [], "error": ""}
-            raise
+            return self._lyrics_text_failure(lrc_content, lrc_writers, lrc_error, exc)
 
         plain_lines = self._plain_lyrics_lines(text_content)
         if plain_lines:
@@ -1470,9 +2155,9 @@ class Player:
             "year": str(year), "releaseDate": release_date,
             "genre": str(getattr(album, "genre", "") or ""),
             "labels": labels,
-            "trackNumber": int(getattr(track_position, "index", 0) or 0),
-            "discNumber": int(getattr(track_position, "volume", 0) or 0),
-            "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+            "trackNumber": self._int(getattr(track_position, "index", 0)),
+            "discNumber": self._int(getattr(track_position, "volume", 0)),
+            "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
             "version": str(getattr(track, "version", "") or ""),
             "explicit": bool(getattr(track, "explicit", False)
                              or getattr(track, "content_warning", "") == "explicit"),
@@ -1482,8 +2167,8 @@ class Player:
         }
         return entry
 
-    @staticmethod
-    def _track_info_response(track_id: str, entry: dict[str, Any] | None = None,
+    @classmethod
+    def _track_info_response(cls, track_id: str, entry: dict[str, Any] | None = None,
                              *, loading: bool = False) -> dict[str, Any]:
         value = entry or {}
         return {"trackId": track_id, "loading": loading,
@@ -1496,9 +2181,9 @@ class Player:
                 "releaseDate": str(value.get("releaseDate", "")),
                 "genre": str(value.get("genre", "")),
                 "labels": list(value.get("labels", [])),
-                "trackNumber": int(value.get("trackNumber", 0)),
-                "discNumber": int(value.get("discNumber", 0)),
-                "duration": int(value.get("duration", 0)),
+                "trackNumber": cls._int(value.get("trackNumber", 0)),
+                "discNumber": cls._int(value.get("discNumber", 0)),
+                "duration": cls._int(value.get("duration", 0)),
                 "version": str(value.get("version", "")),
                 "explicit": bool(value.get("explicit", False)),
                 "aliases": list(value.get("aliases", [])),
@@ -1571,41 +2256,18 @@ class Player:
             self._reset_library_locked()
 
     def play_artist(self, artist_id: str) -> None:
-        if not artist_id: return
-        with self.lock:
-            self.artist_results = []
-            self._reset_library_locked()
-            self.state["artistBrowseName"] = ""
-        def load() -> None:
-            try:
-                assert self.client
-                result = self._api_call(
-                    lambda: self.client.artists_tracks(artist_id, page=0, page_size=100))
-                tracks = list(result.tracks or []) if result else []
-                if not tracks: raise RuntimeError("У исполнителя нет доступных треков")
-                artists = self._api_call(lambda: self.client.artists(artist_id)) or []
-                name = artists[0].name if artists else "Треки исполнителя"
-                with self.lock:
-                    self.artist_results = tracks
-                    self.state.update(artistBrowseName=name, loading=False, loadingKind="", error="")
-            except Exception as exc:
-                self._set_error(f"Не удалось загрузить треки исполнителя: {exc}")
-        self._loading(load, "artist")
+        """Compatibility entry point: artist browsing now lives in Search."""
+        self.catalog_artist(artist_id)
 
     def play_artist_track(self, index: int) -> None:
-        with self.lock:
-            tracks = list(self.artist_results)
-            name = str(self.state.get("artistBrowseName", "Треки исполнителя"))
-        if 0 <= index < len(tracks): self._set_queue(tracks, name, start_index=index)
+        self.play_catalog_track("entity", index)
 
     def close_artist(self) -> None:
-        with self.lock:
-            self.artist_results = []
-            self.state["artistBrowseName"] = ""
+        self.catalog_back()
 
     def _set_queue(self, tracks: list[Any], name: str, station: str = "", batch_id: str = "",
                    start_index: int = 0, remaining_rows: list[Any] | None = None,
-                   collection_key: str = "") -> None:
+                   collection_key: str = "", prepared_url: str = "") -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         self._finish_playback_reporting(finished=False)
         with self.lock:
@@ -1623,30 +2285,35 @@ class Player:
             self.radio_extending = False; self.radio_advance_pending = False
             self.state.update(queueName=name, loading=False, loadingKind="")
         if station: self._report_radio_started(station, batch_id)
-        self._save_state(True); self._play_current()
+        self._save_state(True); self._play_current(initial_url=prepared_url)
 
-    def _metadata(self, track: Any) -> dict[str, str]:
-        track_artists = list(track.artists or [])
-        artists = ", ".join(a.name for a in track_artists)
-        artist_id = str(track_artists[0].id) if track_artists else ""
-        album = track.albums[0].title if getattr(track, "albums", None) else ""
-        try: cover = track.get_cover_url("400x400") or ""
-        except Exception:
-            uri = getattr(track, "cover_uri", "") or ""
-            cover = "https://" + uri.replace("%%", "400x400") if uri else ""
-        artist_rows = [{"id": str(a.id), "name": a.name} for a in track_artists]
-        return {"title": track.title or "", "trackId": self._track_id(track),
-                "artist": artists, "artistId": artist_id,
-                "artists": artist_rows, "album": album, "artUrl": cover}
+    def _metadata(self, track: Any) -> dict[str, Any]:
+        track_artists = self._safe_rows(getattr(track, "artists", None))
+        artist_rows = [self._artist_metadata(artist) for artist in track_artists if artist is not None]
+        artist_rows = [row for row in artist_rows if row["id"] or row["name"]]
+        albums = self._safe_rows(getattr(track, "albums", None))
+        album = albums[0] if albums else None
+        return {"entityType": "track", "title": self._text(getattr(track, "title", "")),
+                "trackId": self._track_id(track),
+                "artist": ", ".join(row["name"] for row in artist_rows if row["name"]),
+                "artistId": artist_rows[0]["id"] if artist_rows else "",
+                "artists": artist_rows,
+                "album": self._text(getattr(album, "title", "")),
+                "albumId": self._text(getattr(album, "id", "")),
+                "artUrl": self._cover_url(track),
+                "duration": self._int(getattr(track, "duration_ms", 0)) // 1000}
 
-    def _url(self, track: Any) -> str:
-        infos = self._api_call(lambda: track.get_download_info(get_direct_links=True)) or []
+    def _url(self, track: Any, *, update_loading: bool = True) -> str:
+        infos = self._api_call(
+            lambda: track.get_download_info(get_direct_links=True),
+            update_loading=update_loading) or []
         if not infos: raise RuntimeError("Яндекс не вернул ссылку на аудио")
         if self.preferences["audioQuality"] == "economy":
             infos.sort(key=lambda x: (x.bitrate_in_kbps or 10_000, x.codec not in ("aac", "mp3")))
         else:
             infos.sort(key=lambda x: (x.codec in ("mp3", "aac"), x.bitrate_in_kbps or 0), reverse=True)
-        return infos[0].direct_link or self._api_call(infos[0].get_direct_link)
+        return infos[0].direct_link or self._api_call(
+            infos[0].get_direct_link, update_loading=update_loading)
 
     def _ensure_mpv(self) -> None:
         if self.mpv and self.mpv.poll() is None and MPV_SOCKET.exists(): return
@@ -1668,7 +2335,10 @@ class Player:
             sock.sendall((json.dumps({"command": command}) + "\n").encode())
             data = b""
             while b"\n" not in data: data += sock.recv(65536)
-        response = json.loads(data.splitlines()[0])
+        try:
+            response = json.loads(data.splitlines()[0])
+        except (IndexError, json.JSONDecodeError) as exc:
+            raise RuntimeError("mpv вернул некорректный ответ") from exc
         if response.get("error") != "success": raise RuntimeError(response.get("error", "mpv error"))
         return response.get("data")
 
@@ -1680,11 +2350,13 @@ class Player:
                 duration = float(self._mpv_command(["get_property", "duration"], False) or 0)
                 if not idle and duration > 0: return
             except Exception:
-                pass
+                idle = True
+                duration = 0.0
             time.sleep(.15)
         raise RuntimeError("mpv не успел открыть аудиопоток")
 
-    def _play_current(self, resume_position: int = 0, start_paused: bool = False) -> None:
+    def _play_current(self, resume_position: int = 0, start_paused: bool = False,
+                      initial_url: str = "") -> None:
         with self.lock:
             self.detached_track = None
             self.play_generation += 1; generation = self.play_generation
@@ -1698,7 +2370,7 @@ class Player:
                         self.state.update(loading=True, loadingKind="track", error="")
                     meta = self._metadata(track)
                     with self.lock: self.state["loadingStage"] = "downloadInfo"
-                    url = self._url(track)
+                    url = initial_url if attempt == 0 and initial_url else self._url(track)
                     with self.lock: self.state["loadingStage"] = "audioStream"
                     self._mpv_command(["loadfile", url, "replace"])
                     self._wait_mpv_ready()
@@ -1715,7 +2387,7 @@ class Player:
                         self.state.update(meta); self.state.update(playing=not start_paused,
                             stopped=False, loading=False, loadingKind="", loadingStage="",
                             position=position, positionObservedAt=position_observed_at,
-                            duration=int(getattr(track, "duration_ms", 0) or 0)//1000,
+                            duration=self._int(getattr(track, "duration_ms", 0)) // 1000,
                             liked=track_id in self.liked_ids, disliked=track_id in self.disliked_ids,
                             error="")
                         # The monitor marks the file active only after mpv has
@@ -1760,7 +2432,7 @@ class Player:
                 f"--icon={icon}", str(metadata.get("title", "Яндекс Музыка")),
                 str(metadata.get("artist", ""))], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         except Exception:
-            pass
+            return
 
     def cycle_mode(self) -> None:
         modes = ["order", "shuffle", "repeatQueue", "repeatTrack"]
@@ -1797,7 +2469,7 @@ class Player:
         except Exception as exc: self._set_error(exc)
 
     def set_volume(self, value: int) -> None:
-        self.volume = max(0, min(100, int(value)))
+        self.volume = max(0, min(100, self._int(value)))
         self.muted = False
         try:
             self._mpv_command(["set_property", "volume", self.volume])
@@ -1852,7 +2524,8 @@ class Player:
         try:
             if float(self._mpv_command(["get_property", "time-pos"], False) or 0) > 5:
                 self.seek(0); return
-        except Exception: pass
+        except Exception:
+            position = 0.0
         with self.lock:
             if not self.queue: return
         self._finish_playback_reporting(finished=False)
@@ -1867,7 +2540,8 @@ class Player:
     def stop(self) -> None:
         self._finish_playback_reporting(finished=False)
         try: self._mpv_command(["stop"], False)
-        except Exception: pass
+        except Exception:
+            stopped = False
         with self.lock:
             self.had_file = False
             self.active_ticks = 0
@@ -1878,7 +2552,8 @@ class Player:
     def shutdown(self) -> None:
         self._save_state(True)
         try: self._mpv_command(["quit"], False)
-        except Exception: pass
+        except Exception:
+            return
 
     def _monitor(self) -> None:
         while True:
@@ -1891,8 +2566,8 @@ class Player:
                 if idle:
                     with self.lock:
                         was_active = self.had_file
-                        position = int(self.state["position"] or 0)
-                        duration = int(self.state["duration"] or 0)
+                        position = self._int(self.state["position"])
+                        duration = self._int(self.state["duration"])
                         should_play = bool(self.state["playing"])
                         self.had_file = False; self.active_ticks = 0
                         self._update_playback_clock_locked(False)
@@ -1907,10 +2582,11 @@ class Player:
                     continue
 
                 paused = bool(self._mpv_command(["get_property", "pause"], False))
-                position = float(self._mpv_command(["get_property", "time-pos"], False) or 0)
+                position = self._float(self._mpv_command(["get_property", "time-pos"], False))
                 position_observed_at = time.time()
-                duration = int(float(self._mpv_command(["get_property", "duration"], False) or 0))
-                volume = int(float(self._mpv_command(["get_property", "volume"], False) or self.volume))
+                duration = self._int(self._float(self._mpv_command(["get_property", "duration"], False)))
+                volume = self._int(self._float(
+                    self._mpv_command(["get_property", "volume"], False) or self.volume))
                 muted = bool(self._mpv_command(["get_property", "mute"], False))
                 with self.lock:
                     self.active_ticks += 1
@@ -1921,7 +2597,8 @@ class Player:
                                       positionObservedAt=position_observed_at,
                                       duration=duration, volume=volume, muted=muted)
                 self._publish_mpris(); self._save_state()
-            except Exception: pass
+            except Exception:
+                continue
 
     def status(self, include_queue: bool = False) -> dict[str, Any]:
         with self.lock:
@@ -1929,26 +2606,23 @@ class Player:
             data["network"] = dict(self.network)
             data["queueRevision"] = self.queue_revision
             data["libraryRevision"] = self.library_revision
+            data["catalogRevision"] = self.catalog_revision
             data["searchResults"] = [{**self._metadata(t), "index": i} for i,t in enumerate(self.search_results)]
             data["queueIndex"] = (self.index + 1
                                   if self.detached_track is None and self.index >= 0 else 0)
             data["queueCount"] = len(self.queue)
             if include_queue:
-                data["artistTracks"] = [
-                    {**self._metadata(track), "index": i,
-                     "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
-                     "current": False}
-                    for i, track in enumerate(self.artist_results)]
+                data["catalog"] = copy.deepcopy(self.catalog)
                 data["libraryTracks"] = [
                     {**self._metadata(track), "index": i,
-                     "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+                     "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
                      "current": False}
                     for i, track in enumerate(self.library_results)]
                 rows = []
                 for i, track in enumerate(self.queue):
                     meta = self._metadata(track)
                     rows.append({**meta, "index": i,
-                                 "duration": int(getattr(track, "duration_ms", 0) or 0) // 1000,
+                                 "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
                                  "current": self.detached_track is None and i == self.index})
                 data["queueTracks"] = rows
             return data
@@ -1972,18 +2646,36 @@ class Player:
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
         elif cmd == "load_more_library": self.load_more_library()
         elif cmd == "search": self.search(str(req.get("query", "")))
-        elif cmd == "play_search": self.play_search(int(req.get("index", -1)))
-        elif cmd == "play_queue": self.play_queue(int(req.get("index", -1)))
-        elif cmd == "play_library_track": self.play_library_track(int(req.get("index", -1)))
+        elif cmd == "catalog_search": self.catalog_search(
+            str(req.get("query", "")), str(req.get("type", "all")))
+        elif cmd == "catalog_load_more": self.catalog_load_more()
+        elif cmd == "catalog_suggest": self.catalog_suggest(
+            str(req.get("query", "")), self._int(req.get("generation", 0)))
+        elif cmd == "catalog_clear_suggestions": self.catalog_clear_suggestions(
+            str(req.get("fieldText", "")))
+        elif cmd == "catalog_album": self.catalog_album(str(req.get("albumId", "")))
+        elif cmd == "catalog_artist": self.catalog_artist(str(req.get("artistId", "")))
+        elif cmd == "catalog_artist_more": self.catalog_artist_more(str(req.get("section", "")))
+        elif cmd == "catalog_playlist": self.catalog_playlist(
+            str(req.get("uuid", "")), str(req.get("owner", "")), str(req.get("kind", "")))
+        elif cmd == "catalog_entity_more": self.catalog_entity_more()
+        elif cmd == "catalog_back": self.catalog_back()
+        elif cmd == "play_catalog_track": self.play_catalog_track(
+            str(req.get("source", "")), self._int(req.get("index", -1), -1))
+        elif cmd == "play_search": self.play_search(self._int(req.get("index", -1), -1))
+        elif cmd == "play_queue": self.play_queue(self._int(req.get("index", -1), -1))
+        elif cmd == "play_library_track": self.play_library_track(
+            self._int(req.get("index", -1), -1))
         elif cmd == "close_library": self.close_library()
         elif cmd == "artist": self.play_artist(str(req.get("artistId", "")))
-        elif cmd == "play_artist_track": self.play_artist_track(int(req.get("index", -1)))
+        elif cmd == "play_artist_track": self.play_artist_track(
+            self._int(req.get("index", -1), -1))
         elif cmd == "close_artist": self.close_artist()
         elif cmd == "pause": self.pause()
         elif cmd == "next": self.next()
         elif cmd == "previous": self.previous()
-        elif cmd == "seek": self.seek(int(req.get("value", 0)))
-        elif cmd == "volume": self.set_volume(int(req.get("value", self.volume)))
+        elif cmd == "seek": self.seek(self._int(req.get("value", 0)))
+        elif cmd == "volume": self.set_volume(self._int(req.get("value", self.volume)))
         elif cmd == "mute": self.toggle_mute()
         elif cmd == "mode": self.cycle_mode()
         elif cmd == "setting": self.set_preference(str(req.get("key", "")), req.get("value"))

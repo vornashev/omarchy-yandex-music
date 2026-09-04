@@ -31,6 +31,18 @@ Panel {
   property string copiedAuthCode: ""
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
   property var data: ({ authenticated: false, playlists: [], searchResults: [] })
+  property var catalogDisplay: ({ view: "search", revision: 0,
+    search: { fieldText: "", query: "", filter: "all", loading: false,
+      loadingMore: false, error: "", sections: {
+        tracks: { items: [], total: 0, hasMore: false },
+        artists: { items: [], total: 0, hasMore: false },
+        albums: { items: [], total: 0, hasMore: false },
+        playlists: { items: [], total: 0, hasMore: false } } },
+    suggestions: { query: "", generation: 0, loading: false, items: [], error: "" },
+    entity: {} })
+  property bool catalogInitialized: false
+  property real catalogSearchContentY: 0
+  property var pendingSuggestionCommand: []
   property string lastError: ""
   property string dismissedError: ""
   property string errorSource: ""
@@ -73,13 +85,11 @@ Panel {
   // Keep the queue model independent from frequently replaced status objects.
   // Rebinding ListView to an equivalent JS array resets its internal viewport.
   property var queueDisplay: []
-  readonly property var artistDisplay: data.artistTracks || []
   readonly property var libraryDisplay: data.libraryTracks || []
-  readonly property bool browsingArtist: artistDisplay.length > 0
   readonly property bool browsingLibrary: libraryDisplay.length > 0
-  readonly property bool browsingCollection: browsingArtist || browsingLibrary
-  readonly property var trackListDisplay: browsingArtist ? artistDisplay
-    : (browsingLibrary ? libraryDisplay : queueDisplay)
+  readonly property bool browsingCollection: browsingLibrary
+  readonly property var trackListDisplay: browsingLibrary ? libraryDisplay : queueDisplay
+  readonly property var catalogRows: buildCatalogRows()
   readonly property string playbackMode: String(preference("playbackMode", "repeatQueue"))
   readonly property string playbackModeIcon: playbackMode === "shuffle" ? "󰒟"
     : (playbackMode === "repeatTrack" ? "󰑘" : (playbackMode === "repeatQueue" ? "󰑖" : "󰐕"))
@@ -93,9 +103,9 @@ Panel {
   readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
   readonly property bool queueListLoading: data.loading === true
-    && ["artist", "likes", "playlist", "wave", "radio"].indexOf(String(data.loadingKind || "")) >= 0
-  readonly property bool searchListLoading: data.loading === true
-    && String(data.loadingKind || "") === "search"
+    && ["likes", "playlist", "wave", "radio"].indexOf(String(data.loadingKind || "")) >= 0
+  readonly property bool searchListLoading: catalogDisplay.search.loading === true
+    || catalogDisplay.entity.loading === true
   readonly property string errorTitle: errorSource === "status"
     ? "Нет связи с музыкальным сервисом"
     : (errorSource === "backend" ? "Ошибка Яндекс Музыки" : "Не удалось выполнить действие")
@@ -278,7 +288,9 @@ Panel {
       var text = String(value === undefined || value === null ? "" : value).trim()
       if (text !== "") rows.push({ kind: "detail", label: label, value: text })
     }
-    add("Альбом", trackInfoData.album)
+    var albumTitle = String(trackInfoData.album || "").trim()
+    if (albumTitle !== "") rows.push({ kind: "detail", label: "Альбом",
+      value: albumTitle, entityType: "album", entityId: String(trackInfoData.albumId || "") })
     add("Дата релиза", trackInfoData.releaseDate || trackInfoData.year)
     add("Жанр", trackInfoData.genre)
     add("Лейбл", (trackInfoData.labels || []).join(", "))
@@ -365,6 +377,109 @@ Panel {
     else return false
     return true
   }
+  function openCatalogArtist(artistId) {
+    if (!artistId) return
+    selectPage(2)
+    searchField.focus = false
+    keyCatcher.forceActiveFocus()
+    catalogController.openEntity("artist", artistId, "", "", "")
+  }
+  function openCatalogAlbum(albumId) {
+    if (!albumId) return
+    selectPage(2)
+    searchField.focus = false
+    keyCatcher.forceActiveFocus()
+    catalogController.openEntity("album", albumId, "", "", "")
+  }
+  function openCatalogPlaylist(row) {
+    var value = row || {}
+    selectPage(2)
+    searchField.focus = false
+    keyCatcher.forceActiveFocus()
+    catalogController.openEntity("playlist", "", value.uuid, value.owner, value.kind)
+  }
+  function startSuggestionRequest() {
+    if (suggestionProcess.running || pendingSuggestionCommand.length === 0) return
+    suggestionProcess.command = pendingSuggestionCommand
+    pendingSuggestionCommand = []
+    suggestionProcess.running = true
+  }
+  function requestSuggestions(query, generation) {
+    pendingSuggestionCommand = [cli, "catalog_suggest", String(generation), String(query)]
+    startSuggestionRequest()
+  }
+  function buildCatalogRows() {
+    var rows = []
+    var snapshot = catalogDisplay || {}
+    var view = String(snapshot.view || "search")
+    var search = snapshot.search || {}
+    var sections = search.sections || {}
+    var labels = { tracks: "ТРЕКИ", artists: "ИСПОЛНИТЕЛИ",
+      albums: "АЛЬБОМЫ", playlists: "ПЛЕЙЛИСТЫ" }
+    if (view === "search") {
+      if (String(search.query || "") === "" && search.loading !== true) {
+        rows.push({ kind: "empty", title: "Введите запрос для поиска по каталогу" })
+        return rows
+      }
+      var names = ["tracks", "artists", "albums", "playlists"]
+      var selected = String(search.filter || catalogController.filter || "all")
+      for (var i = 0; i < names.length; i++) {
+        var name = names[i]
+        if (selected !== "all" && selected + "s" !== name) continue
+        var section = sections[name] || { items: [], total: 0, hasMore: false }
+        rows.push({ kind: "section", title: labels[name], count: Number(section.total || 0) })
+        var items = section.items || []
+        for (var j = 0; j < items.length; j++)
+          rows.push({ kind: name.slice(0, -1), value: items[j], source: "search" })
+        if (items.length === 0 && search.loading !== true)
+          rows.push({ kind: "empty", title: "Ничего не найдено" })
+      }
+      if (String(search.error || "") !== "") {
+        rows.push({ kind: "error", title: search.error })
+        rows.push({ kind: "retrySearch", title: "Повторить поиск" })
+      }
+      var hasMore = false
+      for (var n = 0; n < names.length; n++)
+        if ((sections[names[n]] || {}).hasMore === true) hasMore = true
+      if (hasMore || search.loadingMore === true)
+        rows.push({ kind: "loadSearch", title: search.loadingMore ? "Загружаем…" : "Загрузить ещё" })
+      return rows
+    }
+    var entity = snapshot.entity || {}
+    rows.push({ kind: "entityHeader", value: entity })
+    if (String(entity.description || "") !== "")
+      rows.push({ kind: "description", title: entity.description })
+    if (String(entity.error || "") !== "") {
+      rows.push({ kind: "error", title: entity.error })
+      rows.push({ kind: "retryEntity", title: "Повторить загрузку" })
+    }
+    if (String(entity.warning || "") !== "") rows.push({ kind: "warning", title: entity.warning })
+    var tracks = entity.tracks || []
+    if (tracks.length > 0) rows.push({ kind: "section", title: view === "artist" ? "ПОПУЛЯРНЫЕ ТРЕКИ" : "ТРЕКИ", count: tracks.length })
+    for (var k = 0; k < tracks.length; k++)
+      rows.push({ kind: "track", value: tracks[k], source: "entity" })
+    if ((view === "album" || view === "playlist") && (entity.hasMore === true || entity.loadingMore === true))
+      rows.push({ kind: "loadEntity", title: entity.loadingMore ? "Загружаем…" : "Загрузить ещё треки" })
+    if (view === "artist") {
+      var similar = entity.similar || []
+      if (similar.length > 0) rows.push({ kind: "section", title: "ПОХОЖИЕ ИСПОЛНИТЕЛИ", count: similar.length })
+      for (var s = 0; s < similar.length; s++) rows.push({ kind: "artist", value: similar[s] })
+      var releaseSections = [{ key: "albums", title: "АЛЬБОМЫ" }, { key: "singles", title: "СИНГЛЫ" }]
+      for (var r = 0; r < releaseSections.length; r++) {
+        var releaseSection = releaseSections[r]
+        var releases = entity[releaseSection.key] || []
+        rows.push({ kind: "section", title: releaseSection.title, count: releases.length })
+        for (var a = 0; a < releases.length; a++) rows.push({ kind: "album", value: releases[a] })
+        if ((entity.releaseErrors || {})[releaseSection.key])
+          rows.push({ kind: "error", title: entity.releaseErrors[releaseSection.key] })
+        if ((entity.releaseHasMore || {})[releaseSection.key] === true
+            || (entity.releaseLoading || {})[releaseSection.key] === true)
+          rows.push({ kind: "loadRelease", section: releaseSection.key,
+            title: (entity.releaseLoading || {})[releaseSection.key] ? "Загружаем…" : "Загрузить ещё" })
+      }
+    }
+    return rows
+  }
   function action(command, argument) {
     if (actionProcess.running) return
     lastActionCommand = command
@@ -386,9 +501,11 @@ Panel {
       data = optimistic
     }
     var args = [cli, command]
-    if (argument !== undefined && argument !== null) args.push(String(argument))
+    if (Array.isArray(argument)) {
+      for (var i = 0; i < argument.length; i++) args.push(String(argument[i]))
+    } else if (argument !== undefined && argument !== null) args.push(String(argument))
     actionProcess.command = args; actionProcess.running = true
-    if (command === "search") searchResultsList.positionViewAtBeginning()
+    if (command === "catalog_search" && catalogResultsList) catalogResultsList.positionViewAtBeginning()
   }
   function retryLastOperation() {
     dismissedError = ""
@@ -422,8 +539,7 @@ Panel {
     try {
       var parsed = JSON.parse(String(text || "{}"))
       var queueChanged = Number(parsed.queueIndex || 0) !== previousQueueIndex
-      var browseChanged = String(parsed.artistBrowseName || "") !== String(data.artistBrowseName || "")
-        || String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
+      var browseChanged = String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
       var previousContentY = queueList.contentY
       var libraryExpanded = (parsed.libraryTracks || []).length > (data.libraryTracks || []).length
       if (Number(parsed.libraryRevision || 0) === Number(data.libraryRevision || 0))
@@ -432,6 +548,20 @@ Panel {
         parsed.queueTracks = queueDisplay
       } else {
         queueDisplay = parsed.queueTracks || []
+      }
+      if (parsed.catalog && Number(parsed.catalogRevision || 0) !== Number(data.catalogRevision || 0)) {
+        var oldView = String(catalogDisplay.view || "search")
+        if (oldView === "search" && catalogResultsList) catalogSearchContentY = catalogResultsList.contentY
+        catalogDisplay = parsed.catalog
+        if (!catalogInitialized) {
+          catalogInitialized = true
+          catalogController.filter = String((parsed.catalog.search || {}).filter || "all")
+          catalogController.fieldText = String((parsed.catalog.search || {}).fieldText || "")
+          searchField.text = catalogController.fieldText
+        }
+        catalogController.applySuggestions(parsed.catalog.suggestions || {})
+        if (oldView !== "search" && String(parsed.catalog.view || "search") === "search")
+          Qt.callLater(function() { catalogResultsList.contentY = root.catalogSearchContentY })
       }
       if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
@@ -446,8 +576,7 @@ Panel {
       errorSource = lastError === "" ? "" : "backend"
       previousQueueIndex = Number(parsed.queueIndex || 0)
       if (queueChanged && page === 0) queueScrollTimer.restart()
-      if (browseChanged && (String(parsed.artistBrowseName || "") !== ""
-          || String(parsed.libraryBrowseName || "") !== ""))
+      if (browseChanged && String(parsed.libraryBrowseName || "") !== "")
         Qt.callLater(function() { queueList.contentY = 0 })
       else if (libraryExpanded)
         Qt.callLater(function() {
@@ -502,6 +631,37 @@ Panel {
     }
   }
 
+  CatalogController {
+    id: catalogController
+    onSuggestRequested: function(query, generation) { root.requestSuggestions(query, generation) }
+    onSuggestionsClearRequested: function(fieldText) {
+      root.pendingSuggestionCommand = [root.cli, "catalog_clear_suggestions", String(fieldText)]
+      root.startSuggestionRequest()
+    }
+    onSearchRequested: function(query, filter) {
+      root.action("catalog_search", [filter, query])
+    }
+    onEntityRequested: function(type, id, uuid, owner, kind) {
+      if (type === "artist") root.action("catalog_artist", id)
+      else if (type === "album") root.action("catalog_album", id)
+      else if (type === "playlist") root.action("catalog_playlist", [uuid, owner, kind])
+    }
+    onBackRequested: root.action("catalog_back")
+    onLoadMoreRequested: root.action("catalog_load_more")
+    onReleaseMoreRequested: function(section) { root.action("catalog_artist_more", section) }
+    onTrackPlaybackRequested: function(source, index) {
+      root.action("play_catalog_track", [source, index])
+    }
+  }
+
+  onCatalogDisplayChanged: if (page === 2) {
+    if (String(catalogDisplay.view || "search") === "search")
+      Qt.callLater(function() { if (root.page === 2) searchField.forceActiveFocus() })
+    else {
+      searchField.focus = false
+      keyCatcher.forceActiveFocus()
+    }
+  }
   onBusyChanged: if (busy) busySeconds = 0
   onHasTrackChanged: if (!hasTrack) {
     setCoverExpanded(false)
@@ -584,6 +744,13 @@ Panel {
         failed.error = String(trackInfoErr.text || "Не удалось получить сведения о треке")
         root.trackInfoData = failed
       }
+    }
+  }
+  Process {
+    id: suggestionProcess; command: []
+    onExited: {
+      if (root.pendingSuggestionCommand.length > 0) root.startSuggestionRequest()
+      else settleTimer.restart()
     }
   }
   Process {
@@ -997,7 +1164,7 @@ Panel {
                       MouseArea {
                         id: heroArtistMouse; anchors.fill: parent
                         hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onClicked: root.action("artist", heroArtistLink.modelData.id)
+                        onClicked: root.openCatalogArtist(heroArtistLink.modelData.id)
                       }
                     }
                   }
@@ -1005,12 +1172,22 @@ Panel {
               }
 
               Text {
+                id: heroAlbumLink
                 width: parent.width
                 text: root.hasTrack
                   ? String(root.data.album || root.data.queueName || "")
                   : (root.authenticated ? "Выберите музыку" : "Автономный плеер")
-                color: root.dim; font.family: root.fontFamily
+                color: heroAlbumMouse.containsMouse && String(root.data.albumId || "") !== ""
+                  ? Color.accent : root.dim
+                font.family: root.fontFamily
                 font.pixelSize: Style.font.caption; elide: Text.ElideRight
+                MouseArea {
+                  id: heroAlbumMouse; anchors.fill: parent
+                  enabled: String(root.data.albumId || "") !== ""
+                  hoverEnabled: enabled
+                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.openCatalogAlbum(root.data.albumId)
+                }
               }
             }
           }
@@ -1041,13 +1218,41 @@ Panel {
               color: root.foreground; font.family: root.fontFamily
               font.pixelSize: Style.font.title; font.bold: true; elide: Text.ElideRight
             }
-            Text {
-              width: parent.width
-              horizontalAlignment: Text.AlignHCenter
-              text: String(root.data.artist || "")
-                + (root.data.album ? "  ·  " + String(root.data.album) : "")
-              color: root.dim; font.family: root.fontFamily
-              font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+            Row {
+              anchors.horizontalCenter: parent.horizontalCenter
+              spacing: 0
+              Repeater {
+                model: root.data.artists || []
+                Text {
+                  id: expandedArtistLink
+                  required property var modelData
+                  required property int index
+                  text: modelData.name + (index < (root.data.artists || []).length - 1 ? ", " : "")
+                  color: expandedArtistMouse.containsMouse ? Color.accent : root.dim
+                  font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                  MouseArea {
+                    id: expandedArtistMouse; anchors.fill: parent; hoverEnabled: true
+                    cursorShape: Qt.PointingHandCursor
+                    onClicked: root.openCatalogArtist(expandedArtistLink.modelData.id)
+                  }
+                }
+              }
+              Text {
+                id: expandedAlbumLink
+                visible: String(root.data.album || "") !== ""
+                text: (root.data.artists || []).length > 0
+                  ? "  ·  " + String(root.data.album) : String(root.data.album)
+                color: expandedAlbumMouse.containsMouse && String(root.data.albumId || "") !== ""
+                  ? Color.accent : root.dim
+                font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                MouseArea {
+                  id: expandedAlbumMouse; anchors.fill: parent
+                  enabled: String(root.data.albumId || "") !== ""
+                  hoverEnabled: enabled
+                  cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                  onClicked: root.openCatalogAlbum(root.data.albumId)
+                }
+              }
             }
             Item {
               width: parent.width - Style.space(12)
@@ -1477,11 +1682,9 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.trackInfoOpen ? "О ТРЕКЕ"
                     : (root.lyricsOpen ? "ТЕКСТ ПЕСНИ"
-                    : (root.browsingArtist
-                      ? "ТРЕКИ ИСПОЛНИТЕЛЯ · " + String(root.data.artistBrowseName || "")
-                      : (root.browsingLibrary
-                        ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
-                        : "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : ""))))
+                    : (root.browsingLibrary
+                      ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
+                      : "ОЧЕРЕДЬ" + (root.data.queueName ? " · " + root.data.queueName : "")))
                   elide: Text.ElideRight
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.letterSpacing: 1
@@ -1528,8 +1731,7 @@ Panel {
                     : root.playbackModeLabel + " · нажмите для смены"
                   foreground: root.browsingCollection || root.playbackMode !== "order" ? Color.accent : root.dim
                   onClicked: {
-                    if (root.browsingArtist) root.action("close_artist")
-                    else if (root.browsingLibrary) root.action("close_library")
+                    if (root.browsingLibrary) root.action("close_library")
                     else root.action("mode")
                   }
                 }
@@ -1657,8 +1859,24 @@ Panel {
                               MouseArea {
                                 id: queueArtistMouse; anchors.fill: parent
                                 hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                                onClicked: root.action("artist", queueArtistLink.modelData.id)
+                                onClicked: root.openCatalogArtist(queueArtistLink.modelData.id)
                               }
+                            }
+                          }
+                          Text {
+                            id: queueAlbumLink
+                            visible: String(queueRow.modelData.album || "") !== ""
+                            text: (queueRow.modelData.artists || []).length > 0
+                              ? " · " + String(queueRow.modelData.album) : String(queueRow.modelData.album)
+                            color: queueAlbumMouse.containsMouse && String(queueRow.modelData.albumId || "") !== ""
+                              ? Color.accent : root.dim
+                            font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                            MouseArea {
+                              id: queueAlbumMouse; anchors.fill: parent
+                              enabled: String(queueRow.modelData.albumId || "") !== ""
+                              hoverEnabled: enabled
+                              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                              onClicked: root.openCatalogAlbum(queueRow.modelData.albumId)
                             }
                           }
                         }
@@ -1674,8 +1892,7 @@ Panel {
                     id: queueMouse; anchors.fill: parent; hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      if (root.browsingArtist) root.action("play_artist_track", modelData.index)
-                      else if (root.browsingLibrary) root.action("play_library_track", modelData.index)
+                      if (root.browsingLibrary) root.action("play_library_track", modelData.index)
                       else if (!queueRow.isCurrent) root.action("play_queue", modelData.index)
                     }
                   }
@@ -1866,8 +2083,21 @@ Panel {
                     : Math.max(Style.space(44), trackInfoRowContent.implicitHeight + Style.space(14))
                   radius: Style.cornerRadius
                   color: isSection ? "transparent"
-                    : Style.normalFillFor(root.foreground, Color.accent)
+                    : (trackInfoLink.containsMouse && String(modelData.entityId || "") !== ""
+                      ? Style.hoverFillFor(root.foreground, Color.accent)
+                      : Style.normalFillFor(root.foreground, Color.accent))
                   borderSpec: Border.none()
+
+                  MouseArea {
+                    id: trackInfoLink
+                    z: 2
+                    anchors.fill: parent
+                    enabled: String(trackInfoRow.modelData.entityId || "") !== ""
+                    hoverEnabled: enabled
+                    cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                    onClicked: if (trackInfoRow.modelData.entityType === "album")
+                      root.openCatalogAlbum(trackInfoRow.modelData.entityId)
+                  }
 
                   Column {
                     id: trackInfoRowContent
@@ -2037,17 +2267,73 @@ Panel {
             }
 
             Column {
-              visible: !root.settingsOpen && root.page === 2; width: parent.width; spacing: Style.space(6)
+              visible: !root.settingsOpen && root.page === 2
+              width: parent.width
+              spacing: Style.space(6)
+
               Row {
-                width: parent.width; spacing: Style.space(8)
+                visible: String(root.catalogDisplay.view || "search") === "search"
+                width: parent.width
+                height: visible ? Style.space(36) : 0
+                spacing: Style.space(8)
                 TextField {
-                  id: searchField; width: parent.width - searchButton.width - parent.spacing
-                  placeholderText: "Трек или исполнитель"; foreground: root.foreground; font.family: root.fontFamily
-                  Keys.onReturnPressed: root.action("search", text)
+                  id: searchField
+                  width: parent.width - searchButton.width - parent.spacing
+                  placeholderText: "Трек, исполнитель, альбом или плейлист"
+                  foreground: root.foreground
+                  font.family: root.fontFamily
+                  onTextEdited: catalogController.updateInput(text)
+                  Keys.onReturnPressed: catalogController.submit()
                   Keys.onEscapePressed: { focus = false; keyCatcher.forceActiveFocus() }
                 }
-                Button { id: searchButton; iconText: "󰍉"; tooltipText: "Найти"; foreground: root.foreground; onClicked: root.action("search", searchField.text) }
+                Button {
+                  id: searchButton
+                  iconText: "󰍉"; tooltipText: "Найти"; foreground: root.foreground
+                  onClicked: catalogController.submit()
+                }
               }
+
+              Row {
+                visible: String(root.catalogDisplay.view || "search") === "search"
+                width: parent.width
+                height: visible ? Style.space(34) : 0
+                spacing: Style.space(4)
+                Repeater {
+                  model: [
+                    { value: "all", label: "Все" }, { value: "track", label: "Треки" },
+                    { value: "artist", label: "Артисты" }, { value: "album", label: "Альбомы" },
+                    { value: "playlist", label: "Плейлисты" }
+                  ]
+                  Button {
+                    required property var modelData
+                    width: (parent.width - Style.space(16)) / 5
+                    height: Style.space(32)
+                    text: modelData.label
+                    foreground: catalogController.filter === modelData.value ? Color.accent : root.dim
+                    bordered: catalogController.filter === modelData.value
+                    onClicked: {
+                      catalogController.filter = modelData.value
+                      if (catalogController.trimmedText() !== "") catalogController.submit()
+                    }
+                  }
+                }
+              }
+
+              Item {
+                visible: String(root.catalogDisplay.view || "search") !== "search"
+                width: parent.width
+                height: visible ? Style.space(34) : 0
+                Button {
+                  anchors.left: parent.left
+                  height: parent.height
+                  text: "Назад к поиску"
+                  iconText: "󰁍"
+                  foreground: root.foreground
+                  bordered: true
+                  onClicked: catalogController.back()
+                }
+              }
+
               Item {
                 id: searchResultsViewport
                 width: parent.width
@@ -2058,40 +2344,247 @@ Panel {
                 SkeletonList {
                   visible: root.searchListLoading
                   anchors.fill: parent
-                  rowCount: 9
+                  rowCount: 8
                   foreground: root.foreground
                 }
 
                 ListView {
-                  id: searchResultsList
+                  id: catalogResultsList
                   visible: !root.searchListLoading
                   anchors.fill: parent
                   clip: true
                   boundsBehavior: Flickable.StopAtBounds
                   interactive: contentHeight > height
-                  cacheBuffer: height
-                  model: root.data.searchResults || []
+                  cacheBuffer: height * 2
+                  model: root.catalogRows
+                  spacing: Style.space(2)
                   ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
 
                   delegate: BorderSurface {
+                    id: catalogRow
                     required property var modelData
-                    width: searchResultsList.width
-                      - (searchResultsList.contentHeight > searchResultsList.height ? Style.space(8) : 0)
-                    height: Style.space(48); radius: Style.cornerRadius
-                    color: resultMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"; borderSpec: Border.none()
-                    Column {
-                      anchors.left: parent.left; anchors.right: parent.right; anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter; spacing: 1
-                      Text { width: parent.width; text: modelData.title; elide: Text.ElideRight; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall }
-                      Text { width: parent.width; text: modelData.artist; elide: Text.ElideRight; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption }
+                    readonly property string rowKind: String(modelData.kind || "")
+                    readonly property var value: modelData.value || ({})
+                    readonly property bool actionable: ["track", "artist", "album", "playlist",
+                      "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(rowKind) >= 0
+                    width: catalogResultsList.width
+                      - (catalogResultsList.contentHeight > catalogResultsList.height ? Style.space(8) : 0)
+                    height: rowKind === "entityHeader" ? Style.space(112)
+                      : (rowKind === "description" ? Math.max(Style.space(52), catalogText.implicitHeight + Style.space(18))
+                      : (rowKind === "section" ? Style.space(30)
+                      : (rowKind === "track" || rowKind === "artist" || rowKind === "album" || rowKind === "playlist"
+                        ? Style.space(58) : Style.space(42))))
+                    radius: Style.cornerRadius
+                    color: actionable && catalogMouse.containsMouse
+                      ? Style.hoverFillFor(root.foreground, Color.accent)
+                      : (rowKind === "entityHeader" ? Style.normalFillFor(root.foreground, Color.accent) : "transparent")
+                    borderSpec: rowKind === "entityHeader"
+                      ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
+
+                    Row {
+                      visible: catalogRow.rowKind === "entityHeader"
+                      anchors.fill: parent
+                      anchors.margins: Style.space(10)
+                      spacing: Style.space(10)
+                      Image {
+                        width: Style.space(88); height: width
+                        source: String(catalogRow.value.artUrl || "")
+                        fillMode: Image.PreserveAspectCrop
+                        asynchronous: true
+                      }
+                      Column {
+                        width: parent.width - Style.space(98)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: Style.space(4)
+                        Text {
+                          width: parent.width
+                          text: String(catalogRow.value.title || catalogRow.value.name || "Каталог")
+                          color: root.foreground; font.family: root.fontFamily
+                          font.pixelSize: Style.font.subtitle; font.bold: true; elide: Text.ElideRight
+                        }
+                        Row {
+                          width: parent.width; spacing: 0
+                          Repeater {
+                            model: catalogRow.value.artists || []
+                            Text {
+                              id: entityArtistLink
+                              required property var modelData
+                              required property int index
+                              text: modelData.name + (index < (catalogRow.value.artists || []).length - 1 ? ", " : "")
+                              color: entityArtistMouse.containsMouse ? Color.accent : root.dim
+                              font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                              MouseArea {
+                                id: entityArtistMouse; anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openCatalogArtist(entityArtistLink.modelData.id)
+                              }
+                            }
+                          }
+                        }
+                        Text {
+                          width: parent.width
+                          text: [catalogRow.value.year || catalogRow.value.releaseDate,
+                            catalogRow.value.genre, catalogRow.value.ownerName].filter(function(value) {
+                              return String(value || "") !== ""
+                            }).join(" · ")
+                          color: root.dim; font.family: root.fontFamily
+                          font.pixelSize: Style.font.caption; elide: Text.ElideRight
+                        }
+                      }
                     }
-                    MouseArea { id: resultMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor; onClicked: { root.action("play_search", modelData.index); root.selectPage(0) } }
+
+                    Text {
+                      id: catalogText
+                      visible: ["section", "description", "error", "warning", "empty",
+                        "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(catalogRow.rowKind) >= 0
+                      anchors.left: parent.left; anchors.right: parent.right
+                      anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
+                      text: catalogRow.rowKind === "section"
+                        ? String(modelData.title || "") + (Number(modelData.count || 0) > 0 ? " · " + modelData.count : "")
+                        : String(modelData.title || "")
+                      wrapMode: catalogRow.rowKind === "description" ? Text.WordWrap : Text.NoWrap
+                      elide: catalogRow.rowKind === "description" ? Text.ElideNone : Text.ElideRight
+                      horizontalAlignment: catalogRow.rowKind.indexOf("load") === 0
+                        || catalogRow.rowKind.indexOf("retry") === 0 ? Text.AlignHCenter : Text.AlignLeft
+                      color: catalogRow.rowKind === "error" ? Color.urgent
+                        : (catalogRow.rowKind.indexOf("load") === 0
+                          || catalogRow.rowKind.indexOf("retry") === 0 ? Color.accent : root.dim)
+                      font.family: root.fontFamily
+                      font.pixelSize: catalogRow.rowKind === "section" ? Style.font.caption : Style.font.bodySmall
+                      font.bold: catalogRow.rowKind === "section"
+                        || catalogRow.rowKind.indexOf("load") === 0
+                        || catalogRow.rowKind.indexOf("retry") === 0
+                      font.letterSpacing: catalogRow.rowKind === "section" ? .8 : 0
+                    }
+
+                    Row {
+                      z: 2
+                      visible: ["track", "artist", "album", "playlist"].indexOf(catalogRow.rowKind) >= 0
+                      anchors.left: parent.left; anchors.right: parent.right
+                      anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
+                      spacing: Style.space(9)
+                      Image {
+                        width: Style.space(40); height: width
+                        source: String(catalogRow.value.artUrl || "")
+                        fillMode: Image.PreserveAspectCrop; asynchronous: true
+                      }
+                      Column {
+                        width: parent.width - Style.space(49)
+                        anchors.verticalCenter: parent.verticalCenter
+                        spacing: 1
+                        Text {
+                          width: parent.width
+                          text: String(catalogRow.value.title || catalogRow.value.name || "Без названия")
+                          color: root.foreground; font.family: root.fontFamily
+                          font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
+                        }
+                        Row {
+                          width: parent.width; spacing: 0
+                          Repeater {
+                            model: catalogRow.value.artists || []
+                            Text {
+                              id: catalogArtistLink
+                              required property var modelData
+                              required property int index
+                              text: modelData.name + (index < (catalogRow.value.artists || []).length - 1 ? ", " : "")
+                              color: catalogArtistMouse.containsMouse ? Color.accent : root.dim
+                              font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                              MouseArea {
+                                id: catalogArtistMouse; anchors.fill: parent; hoverEnabled: true
+                                cursorShape: Qt.PointingHandCursor
+                                onClicked: root.openCatalogArtist(catalogArtistLink.modelData.id)
+                              }
+                            }
+                          }
+                          Text {
+                            id: catalogAlbumLink
+                            visible: catalogRow.rowKind === "track" && String(catalogRow.value.album || "") !== ""
+                            text: (catalogRow.value.artists || []).length > 0
+                              ? " · " + String(catalogRow.value.album || "") : String(catalogRow.value.album || "")
+                            color: catalogAlbumMouse.containsMouse && String(catalogRow.value.albumId || "") !== ""
+                              ? Color.accent : root.dim
+                            font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                            MouseArea {
+                              id: catalogAlbumMouse; anchors.fill: parent
+                              enabled: String(catalogRow.value.albumId || "") !== ""
+                              hoverEnabled: enabled
+                              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                              onClicked: root.openCatalogAlbum(catalogRow.value.albumId)
+                            }
+                          }
+                          Text {
+                            visible: catalogRow.rowKind !== "track"
+                            text: String(catalogRow.value.artist || catalogRow.value.ownerName
+                              || (catalogRow.value.genres || []).join(", ") || "")
+                            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                          }
+                        }
+                      }
+                    }
+
+                    MouseArea {
+                      id: catalogMouse
+                      anchors.fill: parent
+                      enabled: catalogRow.actionable
+                      hoverEnabled: enabled
+                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
+                      onClicked: {
+                        if (catalogRow.rowKind === "track")
+                          catalogController.trackPlaybackRequested(String(modelData.source || "search"), Number(catalogRow.value.index || 0))
+                        else if (catalogRow.rowKind === "artist") root.openCatalogArtist(catalogRow.value.id)
+                        else if (catalogRow.rowKind === "album") root.openCatalogAlbum(catalogRow.value.id)
+                        else if (catalogRow.rowKind === "playlist") root.openCatalogPlaylist(catalogRow.value)
+                        else if (catalogRow.rowKind === "loadSearch") catalogController.loadMoreRequested()
+                        else if (catalogRow.rowKind === "loadEntity") root.action("catalog_entity_more")
+                        else if (catalogRow.rowKind === "loadRelease")
+                          catalogController.releaseMoreRequested(String(modelData.section || ""))
+                        else if (catalogRow.rowKind === "retrySearch") catalogController.submit()
+                        else if (catalogRow.rowKind === "retryEntity") {
+                          var entity = root.catalogDisplay.entity || {}
+                          if (entity.type === "artist") root.action("catalog_artist", entity.id)
+                          else if (entity.type === "album") root.action("catalog_album", entity.id)
+                          else if (entity.type === "playlist")
+                            root.action("catalog_playlist", [entity.uuid, entity.owner, entity.kind])
+                        }
+                      }
+                    }
+                  }
+                }
+
+                BorderSurface {
+                  z: 20
+                  visible: String(root.catalogDisplay.view || "search") === "search"
+                    && catalogController.suggestionsVisible
+                  anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+                  height: visible ? Math.min(Style.space(152), suggestionList.contentHeight + Style.space(4)) : 0
+                  radius: Style.cornerRadius
+                  color: Style.normalFillFor(root.foreground, Color.accent)
+                  borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+                  ListView {
+                    id: suggestionList
+                    anchors.fill: parent; anchors.margins: Style.space(2)
+                    clip: true; model: catalogController.suggestions
+                    delegate: Item {
+                      required property var modelData
+                      width: suggestionList.width; height: Style.space(36)
+                      Text {
+                        anchors.left: parent.left; anchors.right: parent.right
+                        anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
+                        text: String(modelData); elide: Text.ElideRight
+                        color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
+                      }
+                      MouseArea {
+                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                        onClicked: {
+                          searchField.text = String(modelData)
+                          catalogController.selectSuggestion(modelData)
+                        }
+                      }
+                    }
                   }
                 }
               }
-              Item {
-                width: 1
-                height: Style.space(8)
-              }
+              Item { width: 1; height: Style.space(8) }
             }
 
             Column {

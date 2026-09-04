@@ -69,11 +69,14 @@ omarchy-yandex-music status | jq -r .version
 
 ```bash
 cd ~/Projects/omarchy-yandex-music
-python -m py_compile backend/backend.py tests/test_backend_priority_one.py tests/test_backend_lyrics.py tests/test_backend_track_info.py
+python -m compileall -q backend tests
 ~/.local/share/omarchy-yandex-music/venv/bin/python -m unittest discover -s tests -v
 bash -n bootstrap.sh install.sh uninstall.sh bin/omarchy-yandex-music
-git diff --check
 omarchy plugin validate .
+QMLTESTRUNNER="$(command -v qmltestrunner || command -v qmltestrunner6 || { test -x /usr/lib/qt6/bin/qmltestrunner && printf '%s\n' /usr/lib/qt6/bin/qmltestrunner; })"
+QML_TEST_DIR="$(find tests -type f -name 'tst_*.qml' -printf '%h\n' | sort -u | head -n 1)"
+QT_QPA_PLATFORM=offscreen "$QMLTESTRUNNER" -input "$QML_TEST_DIR" -import .
+git diff --check
 systemctl --user is-active omarchy-yandex-music.service
 omarchy-shell shell ping
 omarchy-yandex-music status | jq
@@ -96,4 +99,6 @@ omarchy-yandex-music status | jq
 8. Проверять, что открытие likes/playlist/artist не меняет воспроизведение до выбора трека.
 9. Для текстов fake-тестами проверить LRC timestamps/offset, fallback на `TEXT`, отсутствие общей ошибки плеера и ограничение in-memory LRU-кэша; реальный smoke test не должен печатать содержимое текста в отчёт или лог.
 10. Для `track_info` проверить нормализацию album/release/labels/position/credits, сохранение частичного ответа без общей ошибки и отдельный LRU-кэш; реальный smoke test выводит только наличие полей и количество credits, не значения.
-11. Проверять, что service active и QuickShell отвечает после installer/shell restart.
+11. Для Stage 3 Catalog fake-тестами проверять typed/all search, stale suggestions/client generation, append+dedupe pagination, batch metadata, entity cache/logout, partial models, playlist UUID/owner+kind и non-autoplay navigation.
+12. QML interaction-тестами проверять 300 ms debounce/минимум 2 символа, stale suggestions, четыре секции, load more, back-state и explicit-playback-only.
+13. Проверять, что service active и QuickShell отвечает после installer/shell restart.
