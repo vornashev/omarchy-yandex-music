@@ -27,7 +27,7 @@
   - category: `Widgets`;
   - tags: `Bar`, `Media`, `Quickshell`.
 - Plugin ID `vornashev.yandex-music` ранее не был найден среди опубликованных записей и открытых заявок.
-- Использовать `preview.webp` и WebP-галерею из `docs/screenshots/`.
+- Использовать `preview.webp` и WebP-галерею из `docs/screenshots/`; для v0.8.0 preview, Library, Search и Settings пересняты на синтетических demo-данных без доступа к пользовательской коллекции.
 - Перед отправкой заново открыть актуальную форму и проверить требования; Marketplace может измениться.
 - Submission заблокирован до отдельного явного подтверждения владельцем всех пяти официальных пунктов checklist, включая права на код и изображения.
 

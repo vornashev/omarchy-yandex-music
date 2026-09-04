@@ -13,8 +13,8 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 </p>
 
 <p align="center">
-  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="My Wave controls in the Yandex Music library" width="49%"></a>
-  <a href="docs/screenshots/search.webp"><img src="docs/screenshots/search.webp" alt="Yandex Music track search" width="49%"></a>
+  <a href="docs/screenshots/library.webp"><img src="docs/screenshots/library.webp" alt="Personalized Yandex Music library sections" width="49%"></a>
+  <a href="docs/screenshots/search.webp"><img src="docs/screenshots/search.webp" alt="Unified Yandex Music catalog search" width="49%"></a>
 </p>
 <p align="center"><em>Library and search</em></p>
 
@@ -55,16 +55,15 @@ Long artist/title text can be truncated or scrolled as one continuous line. The 
 
 ### Now Playing
 
-- Drag the seek slider; the real position remains visible and the target time is shown in parentheses
-- Drag the volume slider or click the speaker to mute
-- Like or unlike the current track with the heart button or `L`
-- Toggle “Do not recommend” with the dislike button or `D`; a new dislike immediately skips a track in “My Wave”
-- Click the cover to smoothly expand it across the popup and keep track details, a seekable progress bar, and primary actions; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
-- Use the synced-lyrics button to replace the queue with song lyrics; LRC lines highlight and scroll with playback, and clicking a line seeks to it
-- If synced LRC is unavailable, plain lyrics are shown instead; missing lyrics or loading errors never interrupt playback
-- Start Track Radio from the current song with the radio-tower button
-- Open the information view for available album, release date, genre, labels, track number, version, description, and recording credits
-- Change playback mode with the button beside the queue counter
+- Drag the seek slider and release to apply it; the real position remains visible while the target time is shown in parentheses
+- Previous, Play/Pause, and Next form a larger centered transport group, with Play/Pause emphasized and Like/Actions symmetrically framing it at the outer edges
+- Mute, the volume slider, and its percentage live at the top of the Actions sheet, keeping the main view shorter and infrequent controls away from playback
+- Like or unlike with the heart button or `L`; use Actions or `D` to toggle “Do not recommend”, which immediately skips a new dislike in “My Wave”
+- Actions also provides Add current track to playlist, Track Radio, queue mode, and Settings
+- Click the cover to smoothly expand it across the popup while retaining track details, a seekable progress bar, and the same control hierarchy; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
+- Explicit List, Lyrics, and Track Info tabs replace the former cluster of ambiguous queue-header icons
+- In Lyrics, synced LRC lines highlight and scroll with playback and clicking a line seeks to it; plain lyrics are used as a fallback, while missing lyrics or loading errors never interrupt playback
+- Track Info shows available album, release date, genre, labels, track number, version, description, and recording credits
 - Select any queue item directly
 - Hover a track row to reveal its playlist action; in the queue it replaces the duration, opens an owned-playlist picker or creates a new private playlist without activating the row, and playlists that already contain the track are marked and cannot receive a duplicate
 - Click an artist or album link to open its page in the Search catalog
@@ -93,7 +92,7 @@ Artist, album, and playlist pages open inside the same Search tab without changi
 
 ### Settings
 
-Open settings with the gear in the top-right corner of the popup.
+Open Settings from the labeled Actions menu; the Settings page has its own Back control in the top-left corner.
 
 Available options:
 
@@ -153,7 +152,7 @@ Letter shortcuts follow physical QWERTY key positions, so they work with both En
 - `D` — toggle “Do not recommend”
 - `F` — expand or collapse cover mode
 - `C` — copy the Device OAuth code while signing in
-- `Escape` — return from settings or close the popup
+- `Escape` — close Actions, collapse cover mode, return from Settings, or close the popup
 
 Hardware media keys are handled through MPRIS.
 

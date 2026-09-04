@@ -12,31 +12,35 @@
 
 ### Локальная разработка v0.8.0
 
-- В рабочем дереве продолжена, но не опубликована версия `0.8.0`; базовый Stage 1–4 commit — `20f2e1a`.
+- К выпуску подготовлена, но ещё не опубликована версия `0.8.0`; Stage 5 и refinements медиатеки зафиксированы в `1d3b886`, поверх него подготовлены финальная компоновка UI и release-документация.
 - Текущая версия `0.8.0` установлена локально после Stage 5 и исправления доступности «Тайника»; marker, plugin manifest и backend совпадают, service active и shell ping проходит.
 - Выполнен безопасный startup smoke test без изменения лайков/дизлайков: аккаунт восстановлен, `disliked` имеет boolean-тип, ошибок backend/QML нет; реальная отправка playback/radio feedback ещё не проверялась.
 - Добавлены best-effort `play_audio` start/end и feedback Волны `radioStarted`/`trackStarted`/`trackFinished`/`skip`.
 - Телеметрия идёт через отдельную упорядоченную очередь, общий `api_lock`, без повторов 429 и без ошибок в UI; продолжение radio sequence ждёт feedback предыдущего трека.
-- Добавлены кнопка и горячая клавиша `D` для «Не рекомендовать»; новый дизлайк в Волне переключает трек.
+- Добавлены действие в action sheet и горячая клавиша `D` для «Не рекомендовать»; новый дизлайк в Волне переключает трек.
 - Исправлен конфликт `L` со встроенной навигацией `PanelKeyCatcher`: shortcut interceptor через `Keys.forwardTo` обрабатывает лайк до преобразования `h/j/k/l` в перемещение между панелями.
 - Добавлены popup-only shortcuts `N` (Next) и `P` (Previous); буквенные команды нормализуются по физическим позициям QWERTY и работают в английской и русской раскладках, а в поиске и настройках отключены. Shortcut `S` удалён после UX-проверки: Pause покрывает обычный пользовательский сценарий без потери позиции.
 - Внешний Stop сохраняет текущий трек и очередь, выгружает поток, сбрасывает позицию и выставляет отдельное состояние `stopped`; последующий Play запускает текущий трек с начала.
 - Исправлено сохранение active focus у скрытого search input: выход со страницы 3 возвращает фокус `PanelKeyCatcher`, поэтому команды страниц 1/2 и плеера снова работают, а скрытый запрос не изменяется.
-- В tooltip кнопок Previous, Play/Pause, Next, Like и Dislike добавлены подсказки `P`, `Space`, `N`, `L`, `D`.
+- Первый status refresh во время reload панели теперь безопасно обрабатывает ещё не созданный `queueList`; transient startup race больше не маскируется сообщением о некорректном ответе сервиса, а тип будущей ошибки применения snapshot пишется в журнал без payload.
+- Текущий режим воспроизведения доступен подписанным пунктом action sheet, а в заголовке открытой коллекции отдельная компактная кнопка возвращает к playback queue.
+- В tooltip кнопок Previous, Play/Pause, Next и Like добавлены подсказки `P`, `Space`, `N`, `L`; `D` остаётся горячей клавишей «Не рекомендовать».
+- Экран «Сейчас» визуально упрощён: Like и Actions обрамляют увеличенный transport Previous/Play-Pause/Next, громкость перенесена наверх action sheet, редкие команды и настройки собраны в том же подписанном меню, а список/текст/сведения переключаются явными вкладками. Правый верхний угол hero оставлен для loader; у страницы настроек теперь собственная Back-кнопка вместо плавающей шестерёнки.
+- `preview.webp` и галерея Library/Search/Settings обновлены для v0.8.0 через локальный synthetic fixture; реальный токен, история и коллекции при съёмке не использовались.
 - Добавлен анимированный `coverExpanded`, переключаемый кликом или клавишей `F`: клик по обложке разворачивает её на ширину попапа и оставляет сведения о треке, полосу перемотки и основные действия; повторный клик или `Escape` возвращает обычную компоновку; закрытие и повторное открытие попапа сохраняет выбранный режим. Scrollbar в этом режиме отключён, ширина зафиксирована независимо от `contentHeight`, а анимация высоты нижнего контейнера ограничена переходом обложки; длительности всех вертикальных переходов синхронизированы, разница естественной высоты компенсируется внутри активного блока без дополнительного `Column.spacing`, высота панели фиксируется до конца перехода, а временный второй отступ компенсируется `Translate`, чтобы интерфейс не менял размер и строка вкладок не дёргалась в последнем кадре. Стабильный scrollbar gutter одинаков во всех режимах, включая `coverExpanded`, и распределён симметрично слева и справа, чтобы квадратная обложка не меняла оба размера на 14 px.
 - Обновлённые QML и backend-файлы установлены локально; backend и shell перезапущены, новая семантика Stop/Play активна.
 - Лайки и дизлайки взаимоисключающие и согласованно обновляют текущий state, likes list, очередь и in-memory cache.
 - Реализован первый блок приоритета 2: отдельная область текста текущей песни с LRC-подсветкой, автопрокруткой, seek по строке и fallback на обычный `TEXT`.
 - Тексты загружаются по требованию отдельным IPC snapshot, не входят в `status`/`details`, не меняют общую ошибку плеера и кэшируются только в памяти максимум для восьми треков.
-- Добавлена кнопка `radio_tower` для «Радио по треку»: backend запрашивает `track:<currentTrackId>`, запускает очередь ответа и продолжает её через общий feedback/batch protocol.
-- Завершён этап 2 roadmap: иконка информации открывает on-demand карточку альбома, релиза, жанра, лейблов, позиции трека, версии, описания и credits; данные имеют отдельный in-memory LRU-кэш на восемь треков и локальные partial-error/retry состояния.
-- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск radio stations, track info/credits/cache, Stage 3 Catalog и Stage 4 Library; всего 43 backend-теста проходят.
+- Действие «Радио по треку» в action sheet запрашивает `track:<currentTrackId>`, запускает очередь ответа и продолжает её через общий feedback/batch protocol.
+- Завершён этап 2 roadmap: явная вкладка «О треке» открывает on-demand карточку альбома, релиза, жанра, лейблов, позиции трека, версии, описания и credits; данные имеют отдельный in-memory LRU-кэш на восемь треков и локальные partial-error/retry состояния.
+- Добавлены fake unit-тесты без запросов к реальному аккаунту: playback/like/dislike, LRC/fallback/cache, запуск radio stations, track info/credits/cache, Stage 3 Catalog и Stage 4 Library.
 - Реализован Stage 3 Catalog: типизированный и секционный поиск `all`, подсказки через 300 ms, append+dedupe pagination, страницы альбома/исполнителя/плейлиста без автозапуска, независимые Albums/Singles и возврат к сохранённой выдаче.
 - Все artist/album links панели и `WidgetLogic.showArtist()` переведены на вкладку «Поиск» (page 2); legacy artist list удалён из области очереди «Сейчас».
 - Catalog API использует только синхронный pinned SDK через общий `_api_call()`/`api_lock`; responses защищены generation/client guards, entity cache хранится только в памяти и очищается при logout.
 - Очередь популярных треков исполнителя хранит artist/page/hasMore, заранее догружает следующие страницы по 20 элементов и после 20-го трека переходит к 21-му вместо повтора первой страницы.
 - Artist page показывает секции в порядке popular → albums → singles → similar, ограничивает similar десятью строками, не предлагает лишнюю страницу при известном total и сохраняет прокрутку при догрузке.
-- Добавлены `CatalogController.qml`, `CatalogImage.qml`, `LibraryController.qml` и 23 проходящих QML checks для debounce/loading, stale suggestions, клавиатурной навигации, catalog/library sections, append/load more, back-state, explicit playback и image retry.
+- Добавлены `CatalogController.qml`, `CatalogImage.qml`, `LibraryController.qml` и QML checks для debounce/loading, stale suggestions, клавиатурной навигации, catalog/library sections, append/load more, back-state, explicit playback и image retry.
 - Реализован Stage 4 Library: ленивые разделы Плейлиста дня/Тайника/Премьеры/Дежавю, истории, любимых альбомов/исполнителей, сохранённых плейлистов и доступных радиостанций. В каталоге всех радиостанций есть локальный поиск по названию/подзаголовку и автоматическое раскрытие страниц по 50 элементов при скролле без дополнительных API-запросов. Персональная подборка с `ready=false` не кэшируется как готовая, отображается с пониженной opacity и не активируется.
 - Stage 4 API проходит через `_api_call()`/`api_lock`, защищён от stale client/generation, хранит section snapshots только в ограниченном десятиминутном in-memory cache и не добавляет тяжёлые rows в частый `status`.
 - История запрашивает лёгкий индекс без full models и дополняет модели `music_history_items()` страницами `50 + 50 + остаток`; entity navigation не запускает звук, а history tracks/generated playlists/stations требуют явного выбора. Back из любимой сущности возвращает в медиатеку.
@@ -49,7 +53,7 @@
 - Playlist mutations используют fresh `revision`, общий `_api_call()`/`api_lock`, source/index/id validation и client/generation guards. Insert один раз повторяется после conflict; destructive delete только обновляет список и требует повторного выбора/подтверждения.
 - Mutation UX не меняет playback queue, не использует optimistic rows и хранит target/recommendations только в памяти. `status` содержит только `collectionRevision`, полный snapshot передаётся через `details`.
 - Pins/presaves сознательно отложены: для них нужен отдельный понятный экран быстрых контекстов и будущих релизов, а не перегруженное меню трека.
-- Добавлены backend- и QML-тесты Stage 5; текущий полный набор содержит 61 backend-тест и 36 QML checks, включая поиск, локальную пагинацию и сброс состояния каталога радиостанций, а также блокировку персональной подборки при `ready=false`.
+- Полная автоматизированная релизная проверка 2026-09-05 прошла: 61 backend-тест и 36 QML checks, Python compileall, shell syntax, plugin validation, QML parse и `git diff --check`; установленный Panel синхронизирован с исходником, OAuth сохранён, service active, shell ping/status валидны, а свежий QML journal не содержит runtime-ошибок.
 
 ### Состав v0.7.4
 
@@ -104,4 +108,4 @@
 - v0.7.2: копирование OAuth-кода.
 - v0.7.3: пагинация 50, batch metadata, виртуализация, lazy queue extension, in-memory cache и network diagnostics.
 - v0.7.4: версия в настройках, 429 backoff/serialization/friendly error, coalesced likes, live likes list/queue/cache update, стабильная прокрутка очереди и отдельная прокрутка поиска.
-- v0.8.0 (локально, не опубликовано): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync, этап 2 (LRC/TEXT, «Радио по треку», сведения/credits), Stage 3 Catalog и Stage 4 Library/Personalization.
+- v0.8.0 (подготовлена локально, не опубликована): playback reporting, feedback Волны, «Не рекомендовать», like/dislike sync, этап 2 (LRC/TEXT, «Радио по треку», сведения/credits), Stage 3 Catalog, Stage 4 Library/Personalization, Stage 5 collection management и новая иерархия Now Playing.

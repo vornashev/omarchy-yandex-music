@@ -4,11 +4,11 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
-## [0.8.0] - Unreleased
+## [0.8.0] - 2026-09-05
 
 ### Added
 
-- Dislike button and `D` keyboard shortcut for toggling “Do not recommend” on the current track
+- “Do not recommend” action and `D` keyboard shortcut for toggling the feedback on the current track
 - `N` and `P` shortcuts for next and previous, plus `F` for cover mode, while the popup is open
 - Animated full-width cover mode with track details, a seekable progress bar, and primary playback actions
 - Standard listening start and finish reports through `play_audio`
@@ -34,12 +34,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 - Background reporting is ordered, serialized with other API calls, and never blocks player controls
 - Disliking a track in “My Wave” immediately advances to the next track
-- Previous, Play/Pause, Next, Like, and Dislike button tooltips now show their keyboard shortcuts
+- Previous, Play/Pause, Next, and Like button tooltips now show their keyboard shortcuts
+- Now Playing has an explicit visual hierarchy: Like and Actions symmetrically frame the larger transport, volume sits at the top of the action sheet, List/Lyrics/Track Info are labeled tabs, and infrequent commands, queue mode, and Settings share one menu
+- The public preview and Library, Search, and Settings screenshots now show the v0.8.0 interface using privacy-safe demo data
 - Track playlist actions now appear on row hover and replace the queue duration without taking additional horizontal space
 - Full-width cover mode remains active when the popup is closed and reopened
 - Letter commands follow physical QWERTY key positions and work with English and Russian layouts
 - Lyrics load on demand through a separate background operation, do not inflate regular status/details polling, and never turn failures into global player errors
-- The lyrics toggle uses a dedicated synced-lines icon and changes to a return-to-queue action while lyrics are open
+- Explicit List, Lyrics, and Track Info tabs replace the former queue-header icon toggles
 - Artist and album links from Now Playing, queue rows, and track information now open the unified Search catalog
 - Catalog SDK requests share the serialized API wrapper and 2/5/10-second rate-limit retries; stale session and suggestion responses are discarded
 - Artist popular-track queues prefetch subsequent 20-track pages and preserve their continuation context across backend restarts
@@ -48,6 +50,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Expanded Library sections load only when opened, use generation/client guards, and retain data in a bounded ten-minute memory-only cache; Recently Played resolves metadata in 50-item pages instead of eagerly loading the full history
 - History tracks, generated playlists, and stations replace the queue only after an explicit selection; favorite entity pages return to the Library
 - Personal playlists returned with `ready=false` are shown dimmed and cannot be activated until Yandex has formed them
+- Status refresh during a panel/plugin reload no longer reports a malformed service response before the queue view has initialized
+- Playback mode moved into the labeled Actions sheet, while open collections retain a compact back-to-queue control in their heading
 - Every playlist mutation refetches the current `revision`; safe inserts retry once after conflict, while deletion refreshes the list and requires a new confirmation
 - Mutation results use client/generation guards, share `_api_call()`/`api_lock`, refresh the open playlist, invalidate related memory caches, and never replace or start the queue
 - Frequent `status` responses expose only `collectionRevision`; membership results, recommendation rows, and local operation results are included only in `details`
@@ -74,6 +78,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - The collection dialog now sizes itself from the visible `KeyboardPanel` viewport instead of the zero-sized controller root, so the pressed add button opens a visible dialog
 - Playlist rows are re-fetched from a complete server snapshot after a confirmed mutation because SDK mutation responses may omit `tracks`; deleting one row no longer makes a non-empty playlist look empty
 - The empty-playlist hint is hidden while lyrics or track information are open instead of overlapping that content
+- The lyrics-writer footer height no longer creates a QML binding loop when the panel opens
 
 ## [0.7.4] - 2026-09-03
 
@@ -198,7 +203,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
-[0.8.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.4...HEAD
+[0.8.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.2...v0.7.3
 [0.7.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.1...v0.7.2

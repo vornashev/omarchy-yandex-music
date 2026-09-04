@@ -17,6 +17,7 @@ Panel {
   property bool settingsOpen: false
   property bool confirmLogout: false
   property bool waveOptionsOpen: false
+  property bool playerActionsOpen: false
   property bool lyricsOpen: false
   property bool lyricsAutoScroll: true
   property var lyricsData: ({ trackId: "", loading: false, available: false,
@@ -91,6 +92,12 @@ Panel {
   // Keep the queue model independent from frequently replaced status objects.
   // Rebinding ListView to an equivalent JS array resets its internal viewport.
   property var queueDisplay: []
+  readonly property int activeQueueIndex: Number(data.queueIndex || 0) - 1
+  readonly property var activeQueueRow: activeQueueIndex >= 0
+      && activeQueueIndex < queueDisplay.length
+    ? queueDisplay[activeQueueIndex] : null
+  readonly property bool activeQueueTargetValid: activeQueueRow !== null
+    && String(activeQueueRow.trackId || "") === currentTrackId
   readonly property var libraryDisplay: data.libraryTracks || []
   readonly property bool browsingLibrary: String(data.libraryBrowseName || "") !== ""
   readonly property bool browsingCollection: browsingLibrary
@@ -205,7 +212,10 @@ Panel {
   function setCoverExpanded(value) {
     var next = value === true && authenticated && hasTrack && !settingsOpen
     if (coverExpanded === next) return
-    if (next) coverStablePanelHeight = panel.contentHeight
+    if (next) {
+      playerActionsOpen = false
+      coverStablePanelHeight = panel.contentHeight
+    }
     coverTransitioning = true
     coverTransitionTimer.restart()
     coverExpanded = next
@@ -220,6 +230,7 @@ Panel {
     }
   }
   function openSettings() {
+    playerActionsOpen = false
     setCoverExpanded(false)
     pageBeforeSettings = page
     confirmLogout = false
@@ -233,8 +244,49 @@ Panel {
     Qt.callLater(function() { keyCatcher.forceActiveFocus() })
   }
   function openCollectionTrack(source, index, row, canDelete, playlistKind, playlistTitle) {
+    playerActionsOpen = false
     collectionController.openTrack(source, index, row, canDelete, playlistKind, playlistTitle)
     collectionPopup.open()
+  }
+  function openPlayerActions() {
+    if (!authenticated || coverTransitioning) return
+    playerActionsOpen = true
+    Qt.callLater(function() {
+      if (!root.playerActionsOpen) return
+      if (root.hasTrack) playerActionsFirstButton.forceActiveFocus()
+      else playerActionsSettingsButton.forceActiveFocus()
+    })
+  }
+  function closePlayerActions(restoreFocus) {
+    if (!playerActionsOpen) return
+    playerActionsOpen = false
+    if (restoreFocus !== false)
+      Qt.callLater(function() { keyCatcher.forceActiveFocus() })
+  }
+  function openCurrentTrackCollection() {
+    if (!hasTrack || !activeQueueTargetValid) return
+    var row = activeQueueRow
+    var index = activeQueueIndex
+    closePlayerActions(false)
+    openCollectionTrack("queue", index, row, false, "", "")
+  }
+  function runPlayerMenuAction(command) {
+    closePlayerActions(false)
+    if (command === "settings") openSettings()
+    else if (command === "recommendations") {
+      if (collectionController.openRecommendations(
+          String(data.libraryPlaylistKind || ""), String(data.libraryBrowseName || "")))
+        collectionPopup.open()
+    } else if (command === "queue") action("close_library")
+    else action(command)
+  }
+  function selectCurrentTrackPane(index) {
+    if (index === 1) setLyricsOpen(true)
+    else if (index === 2) setTrackInfoOpen(true)
+    else {
+      setLyricsOpen(false)
+      setTrackInfoOpen(false)
+    }
   }
   function formatTime(value) {
     var seconds = Math.max(0, Math.round(Number(value || 0)))
@@ -578,7 +630,7 @@ Panel {
       var parsed = JSON.parse(String(text || "{}"))
       var queueChanged = Number(parsed.queueIndex || 0) !== previousQueueIndex
       var browseChanged = String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
-      var previousContentY = queueList.contentY
+      var previousContentY = queueList ? queueList.contentY : 0
       var libraryExpanded = (parsed.libraryTracks || []).length > (data.libraryTracks || []).length
       if (Number(parsed.libraryRevision || 0) === Number(data.libraryRevision || 0))
         parsed.libraryTracks = data.libraryTracks || []
@@ -644,7 +696,8 @@ Panel {
           })
         }
       }
-      if (pendingVolume >= 0 && (volumeDrag.pressed || volumeProcess.running || volumeDebounce.running)) {
+      if (pendingVolume >= 0 && (actionsVolumeDrag.pressed
+          || volumeProcess.running || volumeDebounce.running)) {
         parsed.volume = pendingVolume
         parsed.muted = false
       }
@@ -658,13 +711,14 @@ Panel {
       previousQueueIndex = Number(parsed.queueIndex || 0)
       if (queueChanged && page === 0) queueScrollTimer.restart()
       if (browseChanged && String(parsed.libraryBrowseName || "") !== "")
-        Qt.callLater(function() { queueList.contentY = 0 })
+        Qt.callLater(function() { if (queueList) queueList.contentY = 0 })
       else if (libraryExpanded)
         Qt.callLater(function() {
-          queueList.contentY = Math.min(previousContentY,
+          if (queueList) queueList.contentY = Math.min(previousContentY,
             Math.max(0, queueList.contentHeight - queueList.height))
         })
     } catch (e) {
+      console.warn("Yandex Music status update failed:", String(e))
       errorSource = "status"
       lastError = "Музыкальный сервис вернул некорректный ответ"
     }
@@ -689,6 +743,7 @@ Panel {
     queueList.contentY = Math.max(minimumY, Math.min(targetY, maximumY))
   }
   function selectPage(index) {
+    playerActionsOpen = false
     setCoverExpanded(false)
     settingsOpen = false
     confirmLogout = false
@@ -810,6 +865,7 @@ Panel {
   }
   onBusyChanged: if (busy) busySeconds = 0
   onHasTrackChanged: if (!hasTrack) {
+    playerActionsOpen = false
     setCoverExpanded(false)
     setLyricsOpen(false)
     setTrackInfoOpen(false)
@@ -834,6 +890,7 @@ Panel {
       Qt.callLater(function() { keyCatcher.forceActiveFocus() })
       queueScrollTimer.restart()
     } else {
+      playerActionsOpen = false
       settingsOpen = false
       confirmLogout = false
       if (collectionPopup.opened) {
@@ -1121,7 +1178,7 @@ Panel {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
         if (event.modifiers & ~Qt.KeypadModifier) return
-        if (root.settingsOpen || searchField.activeFocus
+        if (root.settingsOpen || root.playerActionsOpen || searchField.activeFocus
             || stationSearchField.activeFocus || !root.hasTrack) return
         var t = event.text ? String(event.text).toLowerCase() : ""
         if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z)
@@ -1135,15 +1192,22 @@ Panel {
       anchors.fill: parent
       Keys.forwardTo: [shortcutInterceptor]
       blocked: searchField.activeFocus || stationSearchField.activeFocus
+        || root.playerActionsOpen
       onCloseRequested: {
-        if (root.coverExpanded) root.setCoverExpanded(false)
+        if (root.playerActionsOpen) root.closePlayerActions()
+        else if (root.coverExpanded) root.setCoverExpanded(false)
         else if (root.settingsOpen) root.closeSettings()
         else root.close()
       }
-      onTabRequested: function(direction) { if (!root.settingsOpen) root.switchPanel(direction) }
-      onMoveRequested: function(dx, dy) { if (dx !== 0 && !root.settingsOpen) root.selectPage(root.page + dx) }
+      onTabRequested: function(direction) {
+        if (!root.settingsOpen && !root.playerActionsOpen) root.switchPanel(direction)
+      }
+      onMoveRequested: function(dx, dy) {
+        if (dx !== 0 && !root.settingsOpen && !root.playerActionsOpen)
+          root.selectPage(root.page + dx)
+      }
       onTextKey: function(t) {
-        if (root.settingsOpen) return
+        if (root.settingsOpen || root.playerActionsOpen) return
         var shortcut = root.normalizeShortcutKey(t)
         if (shortcut === "1") root.selectPage(0)
         else if (shortcut === "2") root.selectPage(1)
@@ -1294,8 +1358,7 @@ Panel {
 
               Text {
                 width: parent.width
-                rightPadding: (root.authenticated ? Style.space(32) : 0)
-                  + (root.busy ? Style.space(28) : 0)
+                rightPadding: root.busy ? Style.space(28) : 0
                 text: root.hasTrack ? String(root.data.title) : "Яндекс Музыка"
                 color: root.foreground; font.family: root.fontFamily
                 font.pixelSize: Style.font.subtitle; font.bold: true; elide: Text.ElideRight
@@ -1467,52 +1530,61 @@ Panel {
                 font.pixelSize: Style.font.caption
               }
             }
-            Row {
-              anchors.horizontalCenter: parent.horizontalCenter
-              spacing: Style.space(10)
+            Item {
+              width: parent.width
+              height: Style.space(44)
+
               Button {
-                width: Style.space(42); height: Style.space(38)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 22
-                iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
-                onClicked: root.action("previous")
-              }
-              Button {
-                width: Style.space(46); height: Style.space(40)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 24
-                iconText: root.playing ? "󰏤" : "󰐊"
-                tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
-                foreground: root.foreground
-                onClicked: root.action("pause")
-              }
-              Button {
-                width: Style.space(42); height: Style.space(38)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 22
-                iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
-                onClicked: root.action("next")
-              }
-              Button {
-                width: Style.space(42); height: Style.space(38)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                iconText: "󰐻"; tooltipText: "Радио по треку"; foreground: root.foreground
-                onClicked: root.action("track_radio")
-              }
-              Button {
-                width: Style.space(42); height: Style.space(38)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 21
+                id: expandedLikeButton
+                anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(40); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0
+                iconSize: Style.space(20)
                 iconText: root.data.liked ? "󰋑" : "󰋕"
                 tooltipText: root.data.liked
                   ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
                 foreground: root.data.liked ? Color.accent : root.foreground
                 onClicked: root.action("like")
               }
+              Row {
+                anchors.centerIn: parent
+                spacing: Style.space(14)
+                Button {
+                  width: Style.space(42); height: Style.space(40)
+                  horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                  iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
+                  onClicked: root.action("previous")
+                }
+                Button {
+                  width: Style.space(46); height: Style.space(44); radius: height / 2
+                  horizontalPadding: 0; verticalPadding: 0; iconSize: 26
+                  tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
+                  foreground: Color.accent; bordered: true
+                  onClicked: root.action("pause")
+                  Text {
+                    z: 2; anchors.centerIn: parent
+                    anchors.horizontalCenterOffset: root.playing ? 0 : Style.space(2)
+                    text: root.playing ? "󰏤" : "󰐊"
+                    color: parent.foreground; font.family: root.fontFamily
+                    font.pixelSize: parent.iconSize
+                  }
+                }
+                Button {
+                  width: Style.space(42); height: Style.space(40)
+                  horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                  iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
+                  onClicked: root.action("next")
+                }
+              }
               Button {
-                width: Style.space(42); height: Style.space(38)
-                horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                iconText: "󰅂"
-                tooltipText: root.data.disliked
-                  ? "Снять отметку «Не рекомендовать» (D)" : "Не рекомендовать (D)"
-                foreground: root.data.disliked ? Color.urgent : root.foreground
-                onClicked: root.action("dislike")
+                id: expandedMoreButton
+                anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                width: Style.space(40); height: Style.space(38)
+                horizontalPadding: 0; verticalPadding: 0
+                iconText: "󰇙"; iconSize: Style.space(20)
+                tooltipText: "Действия и настройки"
+                foreground: root.foreground
+                onClicked: root.openPlayerActions()
               }
             }
           }
@@ -1706,45 +1778,21 @@ Panel {
                 }
               }
 
-              Row {
+              Column {
+                id: playerControls
                 width: parent.width
-                height: Math.max(playbackControls.implicitHeight, muteButton.implicitHeight)
-                spacing: Style.space(8)
+                spacing: Style.space(7)
 
-                Row {
-                  id: playbackControls
-                  anchors.verticalCenter: parent.verticalCenter
-                  spacing: Style.space(6)
+                Item {
+                  width: parent.width
+                  height: Style.space(44)
+
                   Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
-                    onClicked: root.action("previous")
-                  }
-                  Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: root.playing ? "󰏤" : "󰐊"
-                    tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
-                    foreground: root.foreground; enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                    onClicked: root.action("pause")
-                  }
-                  Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 20
-                    iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
-                    onClicked: root.action("next")
-                  }
-                  Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 18
-                    iconText: "󰐻"; tooltipText: "Радио по треку"; foreground: root.foreground
-                    enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                    onClicked: root.action("track_radio")
-                  }
-                  Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 19
+                    id: likeButton
+                    anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(40); height: Style.space(38)
+                    horizontalPadding: 0; verticalPadding: 0
+                    iconSize: Style.space(20)
                     iconText: root.data.liked ? "󰋑" : "󰋕"
                     tooltipText: root.data.liked
                       ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
@@ -1752,69 +1800,49 @@ Panel {
                     enabled: root.hasTrack; opacity: enabled ? 1 : .4
                     onClicked: root.action("like")
                   }
+                  Row {
+                    anchors.centerIn: parent
+                    spacing: Style.space(14)
+                    Button {
+                      width: Style.space(42); height: Style.space(40)
+                      horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                      iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
+                      enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                      onClicked: root.action("previous")
+                    }
+                    Button {
+                      width: Style.space(46); height: Style.space(44); radius: height / 2
+                      horizontalPadding: 0; verticalPadding: 0; iconSize: 26
+                      tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
+                      foreground: Color.accent; bordered: true
+                      enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                      onClicked: root.action("pause")
+                      Text {
+                        z: 2; anchors.centerIn: parent
+                        anchors.horizontalCenterOffset: root.playing ? 0 : Style.space(2)
+                        text: root.playing ? "󰏤" : "󰐊"
+                        color: parent.foreground; font.family: root.fontFamily
+                        font.pixelSize: parent.iconSize
+                      }
+                    }
+                    Button {
+                      width: Style.space(42); height: Style.space(40)
+                      horizontalPadding: 0; verticalPadding: 0; iconSize: 22
+                      iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
+                      enabled: root.hasTrack; opacity: enabled ? 1 : .4
+                      onClicked: root.action("next")
+                    }
+                  }
                   Button {
-                    width: Style.space(34); height: Style.space(30)
-                    horizontalPadding: 0; verticalPadding: 0; iconSize: 18
-                    iconText: "󰅂"
-                    tooltipText: root.data.disliked
-                      ? "Снять отметку «Не рекомендовать» (D)" : "Не рекомендовать (D)"
-                    foreground: root.data.disliked ? Color.urgent : root.foreground
-                    enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                    onClicked: root.action("dislike")
+                    id: moreActionsButton
+                    anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
+                    width: Style.space(40); height: Style.space(38)
+                    horizontalPadding: 0; verticalPadding: 0
+                    iconText: "󰇙"; iconSize: Style.space(20)
+                    tooltipText: "Действия и настройки"
+                    foreground: root.foreground
+                    onClicked: root.openPlayerActions()
                   }
-                }
-
-                Rectangle {
-                  width: Style.spacing.hairline; height: Style.space(20)
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: root.foreground; opacity: .16
-                }
-
-                Button {
-                  id: muteButton
-                  anchors.verticalCenter: parent.verticalCenter
-                  iconText: root.data.muted ? "󰖁" : "󰕾"
-                  tooltipText: root.data.muted ? "Включить звук" : "Выключить звук"
-                  foreground: root.foreground
-                  onClicked: root.action("mute")
-                }
-
-                Rectangle {
-                  id: volumeTrack
-                  width: Math.max(Style.space(70), parent.width - playbackControls.width
-                    - muteButton.width - volumePercent.width - Style.space(42))
-                  height: Style.space(6); radius: height / 2
-                  anchors.verticalCenter: parent.verticalCenter
-                  color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
-                  Rectangle {
-                    width: parent.width * Number(root.data.volume || 0) / 100
-                    height: parent.height; radius: parent.radius
-                    color: root.data.muted ? root.dim : root.foreground
-                  }
-                  MouseArea {
-                    id: volumeDrag
-                    anchors.fill: parent
-                    anchors.topMargin: -Style.space(9); anchors.bottomMargin: -Style.space(9)
-                    cursorShape: pressed ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-                    preventStealing: true
-                    onPressed: function(mouse) { root.volumeFromPointer(mouse, volumeDrag) }
-                    onPositionChanged: function(mouse) {
-                      if (pressed) root.volumeFromPointer(mouse, volumeDrag)
-                    }
-                    onReleased: function(mouse) {
-                      root.volumeFromPointer(mouse, volumeDrag)
-                      volumeDebounce.restart()
-                    }
-                  }
-                }
-
-                Text {
-                  id: volumePercent
-                  width: Style.space(34)
-                  anchors.verticalCenter: parent.verticalCenter
-                  horizontalAlignment: Text.AlignRight
-                  text: root.data.muted ? "MUTE" : Math.round(Number(root.data.volume || 0)) + "%"
-                  color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
                 }
               }
 
@@ -1831,6 +1859,52 @@ Panel {
                 foreground: root.foreground
               }
 
+              Row {
+                id: currentTrackPaneTabs
+                visible: root.hasTrack
+                width: parent.width
+                height: visible ? Style.space(30) : 0
+                spacing: Style.space(8)
+
+                Repeater {
+                  model: [
+                    { label: "СПИСОК", pane: 0 },
+                    { label: "ТЕКСТ", pane: 1 },
+                    { label: "О ТРЕКЕ", pane: 2 }
+                  ]
+                  Item {
+                    required property var modelData
+                    readonly property bool selected: (modelData.pane === 0
+                        && !root.currentTrackPaneOpen)
+                      || (modelData.pane === 1 && root.lyricsOpen)
+                      || (modelData.pane === 2 && root.trackInfoOpen)
+                    width: (currentTrackPaneTabs.width - currentTrackPaneTabs.spacing * 2) / 3
+                    height: currentTrackPaneTabs.height
+
+                    Text {
+                      anchors.centerIn: parent
+                      text: modelData.label
+                      color: parent.selected ? Color.accent : root.dim
+                      font.family: root.fontFamily; font.pixelSize: Style.font.caption
+                      font.bold: parent.selected; font.letterSpacing: .6
+                    }
+                    Rectangle {
+                      anchors.left: parent.left; anchors.right: parent.right
+                      anchors.bottom: parent.bottom
+                      height: Style.space(2); radius: height / 2
+                      color: Color.accent
+                      opacity: parent.selected ? 1 : 0
+                      Behavior on opacity { NumberAnimation { duration: 120 } }
+                    }
+                    MouseArea {
+                      anchors.fill: parent
+                      hoverEnabled: true; cursorShape: Qt.PointingHandCursor
+                      onClicked: root.selectCurrentTrackPane(modelData.pane)
+                    }
+                  }
+                }
+              }
+
               Item {
                 visible: root.hasTrack || root.browsingLibrary
                   || root.queueListLoading || root.trackListDisplay.length > 0
@@ -1838,15 +1912,30 @@ Panel {
                 height: visible ? Style.space(24) : 0
                 clip: true
 
+                Button {
+                  id: returnToQueueButton
+                  visible: root.browsingCollection && !root.currentTrackPaneOpen
+                  anchors.left: parent.left
+                  anchors.verticalCenter: parent.verticalCenter
+                  width: visible ? Style.space(24) : 0
+                  height: Style.space(24)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: "󰁍"; iconSize: Style.font.icon
+                  tooltipText: "Вернуться к очереди"
+                  foreground: Color.accent
+                  enabled: !root.busy
+                  onClicked: root.action("close_library")
+                }
+
                 Text {
                   id: queueHeading
                   visible: !root.queueListLoading || root.currentTrackPaneOpen
-                  anchors.left: parent.left
-                  anchors.right: playlistRecommendationsButton.visible
-                    ? playlistRecommendationsButton.left : lyricsToggleButton.left
-                  anchors.rightMargin: Style.space(6)
+                  anchors.left: returnToQueueButton.visible ? returnToQueueButton.right : parent.left
+                  anchors.leftMargin: returnToQueueButton.visible ? Style.space(6) : 0
+                  anchors.right: queuePosition.left
+                  anchors.rightMargin: Style.space(8)
                   anchors.verticalCenter: parent.verticalCenter
-                  text: root.trackInfoOpen ? "О ТРЕКЕ"
+                  text: root.trackInfoOpen ? "СВЕДЕНИЯ И УЧАСТНИКИ"
                     : (root.lyricsOpen ? "ТЕКСТ ПЕСНИ"
                     : (root.browsingLibrary
                       ? "МЕДИАТЕКА · " + String(root.data.libraryBrowseName || "")
@@ -1854,71 +1943,6 @@ Panel {
                   elide: Text.ElideRight
                   color: root.dim; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.letterSpacing: 1
-                }
-
-                Button {
-                  id: playlistRecommendationsButton
-                  visible: root.browsingLibrary && root.data.libraryEditable === true
-                    && !root.currentTrackPaneOpen
-                  anchors.right: lyricsToggleButton.left; anchors.rightMargin: Style.space(6)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: visible ? Style.space(28) : 0; height: Style.space(24)
-                  horizontalPadding: 0; verticalPadding: 0
-                  iconText: "󰎈"
-                  iconSize: Style.font.icon
-                  tooltipText: "Рекомендации для дополнения"
-                  foreground: root.dim
-                  onClicked: {
-                    if (collectionController.openRecommendations(
-                        String(root.data.libraryPlaylistKind || ""),
-                        String(root.data.libraryBrowseName || ""))) collectionPopup.open()
-                  }
-                }
-
-                Button {
-                  id: lyricsToggleButton
-                  visible: root.hasTrack
-                  anchors.right: trackInfoToggleButton.left; anchors.rightMargin: Style.space(6)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(28); height: Style.space(24)
-                  horizontalPadding: 0; verticalPadding: 0
-                  iconText: root.lyricsOpen ? "󰐑" : "󰨖"
-                  iconSize: Style.font.icon
-                  tooltipText: root.lyricsOpen ? "Вернуться к очереди" : "Открыть текст песни"
-                  foreground: root.lyricsOpen ? Color.accent : root.dim
-                  onClicked: root.setLyricsOpen(!root.lyricsOpen)
-                }
-
-                Button {
-                  id: trackInfoToggleButton
-                  visible: root.hasTrack
-                  anchors.right: queueModeButton.left; anchors.rightMargin: Style.space(6)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: Style.space(28); height: Style.space(24)
-                  horizontalPadding: 0; verticalPadding: 0
-                  iconText: root.trackInfoOpen ? "󰐑" : "󰋽"
-                  iconSize: Style.font.icon
-                  tooltipText: root.trackInfoOpen ? "Вернуться к очереди" : "Сведения и участники"
-                  foreground: root.trackInfoOpen ? Color.accent : root.dim
-                  onClicked: root.setTrackInfoOpen(!root.trackInfoOpen)
-                }
-
-                Button {
-                  id: queueModeButton
-                  visible: !root.queueListLoading && !root.currentTrackPaneOpen
-                  anchors.right: queuePosition.left; anchors.rightMargin: Style.space(6)
-                  anchors.verticalCenter: parent.verticalCenter
-                  width: root.currentTrackPaneOpen ? 0 : Style.space(26); height: Style.space(24)
-                  horizontalPadding: 0; verticalPadding: 0
-                  iconText: root.browsingCollection ? "󰁍" : root.playbackModeIcon
-                  iconSize: Style.font.icon
-                  tooltipText: root.browsingCollection ? "Вернуться к очереди"
-                    : root.playbackModeLabel + " · нажмите для смены"
-                  foreground: root.browsingCollection || root.playbackMode !== "order" ? Color.accent : root.dim
-                  onClicked: {
-                    if (root.browsingLibrary) root.action("close_library")
-                    else root.action("mode")
-                  }
                 }
 
                 Text {
@@ -2098,7 +2122,7 @@ Panel {
                         width: Style.space(26); height: Style.space(26)
                         anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                         horizontalPadding: 0; verticalPadding: 0
-                        iconText: "󰍝"; iconSize: Style.font.icon
+                        iconText: "󰐒"; iconSize: Style.font.icon
                         tooltipText: root.browsingLibrary && root.data.libraryEditable === true
                           ? "Добавить или удалить из плейлиста" : "Добавить в плейлист"
                         foreground: root.dim
@@ -2234,7 +2258,7 @@ Panel {
 
                 footer: Text {
                   width: lyricsList.width
-                  height: visible ? implicitHeight + Style.space(20) : 0
+                  height: visible ? contentHeight + Style.space(20) : 0
                   visible: (root.lyricsData.writers || []).length > 0
                   topPadding: Style.space(10)
                   horizontalAlignment: Text.AlignHCenter
@@ -2652,7 +2676,7 @@ Panel {
                         height: Style.space(26)
                         anchors.verticalCenter: parent.verticalCenter
                         horizontalPadding: 0; verticalPadding: 0
-                        iconText: "󰍝"; iconSize: Style.font.icon
+                        iconText: "󰐒"; iconSize: Style.font.icon
                         tooltipText: "Добавить в плейлист"
                         foreground: root.dim
                         onClicked: root.openCollectionTrack(
@@ -2984,7 +3008,7 @@ Panel {
                         height: Style.space(26)
                         anchors.verticalCenter: parent.verticalCenter
                         horizontalPadding: 0; verticalPadding: 0
-                        iconText: "󰍝"; iconSize: Style.font.icon
+                        iconText: "󰐒"; iconSize: Style.font.icon
                         tooltipText: "Добавить в плейлист"
                         foreground: root.dim
                         onClicked: root.openCollectionTrack(
@@ -3075,10 +3099,22 @@ Panel {
 
               Item {
                 width: parent.width
-                height: Style.space(18)
+                height: Style.space(30)
 
-                Text {
+                Button {
+                  id: settingsBackButton
                   anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
+                  width: Style.space(30); height: Style.space(28)
+                  horizontalPadding: 0; verticalPadding: 0
+                  iconText: "󰁍"; iconSize: Style.font.icon
+                  tooltipText: "Вернуться"
+                  foreground: root.foreground
+                  onClicked: root.closeSettings()
+                }
+                Text {
+                  anchors.left: settingsBackButton.right
+                  anchors.leftMargin: Style.space(8)
+                  anchors.verticalCenter: parent.verticalCenter
                   text: "НАСТРОЙКИ"
                   color: root.foreground; font.family: root.fontFamily
                   font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1
@@ -3285,6 +3321,171 @@ Panel {
                 }
               }
             }
+          }
+        }
+      }
+    }
+
+    Item {
+      anchors.fill: parent
+      z: 190
+      visible: root.playerActionsOpen
+      enabled: visible
+
+      Rectangle {
+        anchors.fill: parent
+        color: Qt.rgba(0, 0, 0, .22)
+      }
+      MouseArea {
+        anchors.fill: parent
+        onClicked: root.closePlayerActions()
+      }
+
+      Pane {
+        id: playerActionsSheet
+        x: Math.max(Style.space(10), parent.width - width - Style.space(10))
+        y: Math.max(Style.space(48), parent.height - height - Style.space(16))
+        width: Math.min(parent.width - Style.space(20), Style.space(326))
+        height: playerActionsContent.implicitHeight + topPadding + bottomPadding
+        padding: Style.space(10)
+        focus: true
+        Keys.onEscapePressed: root.closePlayerActions()
+        background: BorderSurface {
+          color: Color.background
+          borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
+          radius: Style.cornerRadius
+        }
+
+        contentItem: Column {
+          id: playerActionsContent
+          spacing: Style.space(4)
+
+          Row {
+            width: parent.width
+            height: Style.space(36)
+            spacing: Style.space(7)
+
+            Button {
+              id: actionsMuteButton
+              width: Style.space(30); height: parent.height
+              horizontalPadding: 0; verticalPadding: 0
+              iconText: root.data.muted ? "󰖁" : "󰕾"
+              tooltipText: root.data.muted ? "Включить звук" : "Выключить звук"
+              foreground: root.data.muted ? root.dim : root.foreground
+              onClicked: root.action("mute")
+            }
+            Rectangle {
+              id: actionsVolumeTrack
+              width: Math.max(Style.space(150), parent.width - actionsMuteButton.width
+                - actionsVolumePercent.width - parent.spacing * 2)
+              height: Style.space(6); radius: height / 2
+              anchors.verticalCenter: parent.verticalCenter
+              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
+              Rectangle {
+                width: parent.width * Number(root.data.volume || 0) / 100
+                height: parent.height; radius: parent.radius
+                color: root.data.muted ? root.dim : root.foreground
+              }
+              MouseArea {
+                id: actionsVolumeDrag
+                anchors.fill: parent
+                anchors.topMargin: -Style.space(10); anchors.bottomMargin: -Style.space(10)
+                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.PointingHandCursor
+                preventStealing: true
+                onPressed: function(mouse) { root.volumeFromPointer(mouse, actionsVolumeDrag) }
+                onPositionChanged: function(mouse) {
+                  if (pressed) root.volumeFromPointer(mouse, actionsVolumeDrag)
+                }
+                onReleased: function(mouse) {
+                  root.volumeFromPointer(mouse, actionsVolumeDrag)
+                  volumeDebounce.restart()
+                }
+              }
+            }
+            Text {
+              id: actionsVolumePercent
+              width: Style.space(34)
+              anchors.verticalCenter: parent.verticalCenter
+              horizontalAlignment: Text.AlignRight
+              text: root.data.muted ? "MUTE" : Math.round(Number(root.data.volume || 0)) + "%"
+              color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
+            }
+          }
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.foreground
+          }
+
+          Text {
+            width: parent.width
+            text: "ДЕЙСТВИЯ"
+            color: root.dim; font.family: root.fontFamily
+            font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .8
+            bottomPadding: Style.space(4)
+          }
+
+          Button {
+            id: playerActionsFirstButton
+            visible: root.hasTrack
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: "󰐒"; text: "Добавить в плейлист"
+            foreground: root.foreground
+            enabled: root.activeQueueTargetValid && !root.busy
+            onClicked: root.openCurrentTrackCollection()
+          }
+          Button {
+            visible: root.hasTrack
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: "󰐻"; text: "Радио по треку"
+            foreground: root.foreground
+            enabled: !root.busy
+            onClicked: root.runPlayerMenuAction("track_radio")
+          }
+          Button {
+            visible: root.hasTrack
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: "󱐴"
+            text: root.data.disliked
+              ? "Снять «Не рекомендовать»" : "Не рекомендовать"
+            foreground: root.data.disliked ? Color.urgent : root.foreground
+            enabled: !root.busy
+            onClicked: root.runPlayerMenuAction("dislike")
+          }
+          Button {
+            visible: root.browsingLibrary && root.data.libraryEditable === true
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: "󰎈"; text: "Подобрать рекомендации"
+            foreground: root.foreground
+            enabled: !root.busy
+            onClicked: root.runPlayerMenuAction("recommendations")
+          }
+          Button {
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: root.playbackModeIcon
+            text: "Режим: " + root.playbackModeLabel
+            foreground: root.playbackMode !== "order" ? Color.accent : root.foreground
+            enabled: !root.busy
+            onClicked: root.runPlayerMenuAction("mode")
+          }
+
+          PanelSeparator {
+            width: parent.width
+            foreground: root.foreground
+          }
+
+          Button {
+            id: playerActionsSettingsButton
+            width: parent.width; height: Style.space(36)
+            leftAlign: true; focusable: true
+            iconText: "󰒓"; text: "Настройки"
+            foreground: root.foreground
+            onClicked: root.runPlayerMenuAction("settings")
           }
         }
       }
@@ -3579,43 +3780,12 @@ Panel {
     }
 
     Item {
-      id: settingsButton
-      visible: root.authenticated && !root.coverExpanded
-      z: 101
-      anchors.top: parent.top; anchors.right: parent.right
-      anchors.topMargin: Style.space(7); anchors.rightMargin: Style.space(7)
-      width: Style.space(28); height: Style.space(28)
-
-      Rectangle {
-        anchors.fill: parent
-        radius: width / 2
-        color: settingsButtonMouse.containsMouse || root.settingsOpen
-          ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-      }
-      Text {
-        anchors.centerIn: parent
-        text: root.settingsOpen ? "󰁍" : "󰒓"
-        color: root.settingsOpen ? Color.accent : root.dim
-        font.family: root.fontFamily; font.pixelSize: Style.font.icon
-      }
-      MouseArea {
-        id: settingsButtonMouse
-        anchors.fill: parent
-        hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-        onClicked: root.settingsOpen ? root.closeSettings() : root.openSettings()
-        onEntered: if (root.bar) root.bar.showTooltip(settingsButton,
-          root.settingsOpen ? "Вернуться" : "Настройки")
-        onExited: if (root.bar) root.bar.hideTooltip(settingsButton)
-      }
-    }
-
-    Item {
       id: cornerLoader
       property real savedAngle: 0
       visible: root.busy
       z: 100
       anchors.top: parent.top; anchors.right: parent.right
-      anchors.topMargin: Style.space(9); anchors.rightMargin: root.authenticated ? Style.space(40) : Style.space(10)
+      anchors.topMargin: Style.space(9); anchors.rightMargin: Style.space(10)
       width: Style.space(24); height: Style.space(24)
 
       Rectangle {
