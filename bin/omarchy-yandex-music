@@ -8,6 +8,8 @@ import sys
 import time
 from pathlib import Path
 
+IPC_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+NETWORK_CHUNK_BYTES = 64 * 1024
 sock_path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "omarchy-yandex-music.sock"
 args = sys.argv[1:]
 request = {"command": args[0] if args else "status"}
@@ -71,6 +73,23 @@ elif request["command"] == "setting" and len(args) > 2:
     request["value"] = args[2]
 
 
+def recv_line(conn):
+    data = bytearray()
+    while True:
+        chunk = conn.recv(min(NETWORK_CHUNK_BYTES, IPC_RESPONSE_MAX_BYTES - len(data) + 1))
+        if not chunk:
+            raise RuntimeError("Сервис закрыл соединение до конца ответа")
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            if len(data) + newline > IPC_RESPONSE_MAX_BYTES:
+                raise RuntimeError("Ответ сервиса превышает допустимый размер")
+            data.extend(chunk[:newline])
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > IPC_RESPONSE_MAX_BYTES:
+            raise RuntimeError("Ответ сервиса превышает допустимый размер")
+
+
 def connect():
     client = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
     client.settimeout(8)
@@ -93,12 +112,11 @@ except OSError:
         print(json.dumps({"error": "Сервис Яндекс Музыки не запущен"}, ensure_ascii=False))
         raise SystemExit(1)
 
-with conn:
-    conn.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode())
-    data = b""
-    while b"\n" not in data:
-        chunk = conn.recv(65536)
-        if not chunk:
-            break
-        data += chunk
+try:
+    with conn:
+        conn.sendall((json.dumps(request, ensure_ascii=False) + "\n").encode())
+        data = recv_line(conn)
+except (OSError, RuntimeError) as exc:
+    print(json.dumps({"error": str(exc)}, ensure_ascii=False))
+    raise SystemExit(1)
 print(data.decode().strip() or "{}")

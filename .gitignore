@@ -13,3 +13,7 @@ venv/
 *.swp
 *.tmp
 .DS_Store
+
+# Local agent artifacts
+.pi/
+.pi-tasks/

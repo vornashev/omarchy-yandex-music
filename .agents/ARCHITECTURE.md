@@ -24,7 +24,7 @@
 
 - Источник: `backend/backend.py`.
 - Установленная копия: `~/.local/share/omarchy-yandex-music/backend.py`.
-- Python venv: `~/.local/share/omarchy-yandex-music/venv/`.
+- Python venv: `~/.local/share/omarchy-yandex-music/venv/`; installer не обновляет `pip` и ставит только полный hash-pinned binary lock из `requirements.txt`, включая vendored wheel `yandex-music`.
 - systemd user service: `omarchy-yandex-music.service`.
 - CLI: `bin/omarchy-yandex-music`, установлен в `~/.local/bin/omarchy-yandex-music`.
 - IPC: newline-delimited JSON через Unix socket `$XDG_RUNTIME_DIR/omarchy-yandex-music.sock`.
@@ -92,7 +92,8 @@
   - `~/.config/omarchy-yandex-music/token.json`;
   - `~/.config/omarchy-yandex-music/state.json`;
   - `~/.config/omarchy-yandex-music/preferences.json`.
-- Runtime-кэш обложек уведомлений: `$XDG_RUNTIME_DIR/omarchy-yandex-music-covers/`, максимум 30 файлов.
+- Прямые HTTP JSON-ответы читаются потоково с пределом 1 МиБ; runtime-кэш обложек уведомлений: `$XDG_RUNTIME_DIR/omarchy-yandex-music-covers/`, максимум 30 файлов, body пишется потоково и ограничен 5 МБ.
+- Входящий service IPC ограничен 64 КиБ, ответы CLI — 8 МиБ, ответы `mpv` IPC — 1 МиБ; все сообщения обязаны завершаться `\n`.
 - MPRIS публикует метаданные и обложку, но никогда временный URL аудиопотока.
 - systemd unit использует `NoNewPrivileges`, `PrivateTmp`, `ProtectSystem=strict`, `ProtectHome=read-only` и точечные `ReadWritePaths`.
 

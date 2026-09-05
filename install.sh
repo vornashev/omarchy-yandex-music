@@ -7,6 +7,7 @@ PLUGIN_DIR="$HOME/.config/omarchy/plugins/$PLUGIN_ID"
 APP_DIR="$HOME/.local/share/omarchy-yandex-music"
 UNIT_DIR="$HOME/.config/systemd/user"
 MARKER="$APP_DIR/.installed-version"
+DEPENDENCY_MARKER="$APP_DIR/.installed-dependencies"
 BACKEND_ONLY=0
 
 case "${1:-}" in
@@ -18,15 +19,17 @@ case "${1:-}" in
   ;;
 esac
 
-for command in python git mpv systemctl jq flock; do
+for command in python mpv systemctl jq flock sha256sum; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing dependency: $command" >&2
-    echo "On Omarchy, install missing packages with: omarchy pkg add python git mpv jq util-linux" >&2
+    echo "On Omarchy, install missing packages with: omarchy pkg add python mpv jq util-linux coreutils" >&2
     exit 1
   fi
 done
 
 VERSION="$(jq -er '.version' "$ROOT/manifest.json")"
+DEPENDENCY_DIGEST="$(sha256sum "$ROOT/requirements.txt" \
+  "$ROOT/vendor/yandex_music-3.1.0b2-py3-none-any.whl" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 mkdir -p "$RUNTIME_DIR"
 exec 9>"$RUNTIME_DIR/omarchy-yandex-music-install.lock"
@@ -40,12 +43,15 @@ chmod 700 "$HOME/.config/omarchy-yandex-music"
 # Keep legacy `git clone && ./install.sh` installations compatible by copying
 # everything required for future automatic backend updates into that location.
 if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
-  mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd"
+  mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd" "$PLUGIN_DIR/vendor"
   install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
     "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
     "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/LibraryController.qml" \
     "$ROOT/CollectionController.qml" \
-    "$ROOT/requirements.txt" "$PLUGIN_DIR/"
+    "$ROOT/requirements.in" "$ROOT/requirements.txt" "$PLUGIN_DIR/"
+  install -m 644 "$ROOT/vendor/README.md" \
+    "$ROOT/vendor/yandex_music-3.1.0b2.origin.json" \
+    "$ROOT/vendor/yandex_music-3.1.0b2-py3-none-any.whl" "$PLUGIN_DIR/vendor/"
   install -m 755 "$ROOT/install.sh" "$ROOT/bootstrap.sh" "$ROOT/uninstall.sh" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/backend/backend.py" "$PLUGIN_DIR/backend/backend.py"
   install -m 755 "$ROOT/bin/omarchy-yandex-music" "$PLUGIN_DIR/bin/omarchy-yandex-music"
@@ -57,6 +63,7 @@ fi
 # installed but inactive service without reinstalling Python dependencies.
 if ((BACKEND_ONLY)) &&
   [[ -r "$MARKER" && "$(<"$MARKER")" == "$VERSION" ]] &&
+  [[ -r "$DEPENDENCY_MARKER" && "$(<"$DEPENDENCY_MARKER")" == "$DEPENDENCY_DIGEST" ]] &&
   [[ -x "$APP_DIR/venv/bin/python" && -f "$APP_DIR/backend.py" ]] &&
   [[ -x "$HOME/.local/bin/omarchy-yandex-music" && -f "$UNIT_DIR/omarchy-yandex-music.service" ]]; then
   systemctl --user daemon-reload
@@ -70,11 +77,24 @@ install -m 755 "$ROOT/bin/omarchy-yandex-music" "$HOME/.local/bin/omarchy-yandex
 install -m 644 "$ROOT/systemd/omarchy-yandex-music.service" \
   "$UNIT_DIR/omarchy-yandex-music.service"
 
-if [[ ! -x "$APP_DIR/venv/bin/python" ]]; then
+if [[ ! -x "$APP_DIR/venv/bin/python" ]] ||
+  [[ ! -r "$DEPENDENCY_MARKER" || "$(<"$DEPENDENCY_MARKER")" != "$DEPENDENCY_DIGEST" ]]; then
+  rm -rf "$APP_DIR/venv"
   python -m venv "$APP_DIR/venv"
 fi
-"$APP_DIR/venv/bin/python" -m pip install --disable-pip-version-check --quiet --upgrade pip
-"$APP_DIR/venv/bin/pip" install --disable-pip-version-check --quiet --upgrade -r "$ROOT/requirements.txt"
+(
+  cd "$ROOT"
+  "$APP_DIR/venv/bin/python" -m pip install \
+    --disable-pip-version-check \
+    --no-input \
+    --quiet \
+    --require-hashes \
+    --only-binary=:all: \
+    --no-deps \
+    -r requirements.txt
+)
+printf '%s\n' "$DEPENDENCY_DIGEST" >"$DEPENDENCY_MARKER"
+chmod 644 "$DEPENDENCY_MARKER"
 
 systemctl --user daemon-reload
 systemctl --user enable omarchy-yandex-music.service >/dev/null

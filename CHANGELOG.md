@@ -4,6 +4,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [0.8.1] - 2026-09-05
+
+### Security
+
+- Backend bootstrap no longer upgrades `pip` or resolves a live VCS dependency: every runtime package and transitive dependency is version-locked with SHA-256 hashes, source distributions are refused, and the `yandex-music` wheel is vendored from commit `0fa54f2d32084a9e461bce41890d1c9ab70d91aa`
+- Unix-socket requests, CLI responses, and `mpv` IPC responses now have explicit size and newline-termination limits; direct HTTP JSON responses are streamed with a 1 MB cap, while notification artwork uses an atomic temporary file and a 5 MB hard cap instead of buffering unbounded bodies
+
 ## [0.8.0] - 2026-09-05
 
 ### Added
@@ -203,6 +210,7 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[0.8.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.4...v0.8.0
 [0.7.4]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.3...v0.7.4
 [0.7.3]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.7.2...v0.7.3

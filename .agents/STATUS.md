@@ -6,9 +6,16 @@
 
 ### Публичная версия
 
-- Последний опубликованный релиз: **v0.8.0**.
-- Release URL: `https://github.com/vornashev/omarchy-yandex-music/releases/tag/v0.8.0`.
-- Тег `v0.8.0` и GitHub Release опубликованы из `d926b1a`; `manifest.json` и `backend/backend.py::APP_VERSION` синхронизированы на `0.8.0`.
+- Последний опубликованный релиз: **v0.8.1**.
+- Release URL: `https://github.com/vornashev/omarchy-yandex-music/releases/tag/v0.8.1`.
+- `manifest.json` и `backend/backend.py::APP_VERSION` синхронизированы на `0.8.1`.
+
+### Состав v0.8.1
+
+- После отказа Marketplace в issue `omacom-io/omarchy#4629` удалены обновление `pip`, `--upgrade` и runtime VCS-resolution.
+- Полный runtime dependency graph зафиксирован по версиям и SHA-256 в `requirements.txt`; installer требует hashes, принимает только wheels и не разрешает транзитивные зависимости. Wheel `yandex-music 3.1.0b2` сохранён в `vendor/` из commit `0fa54f2d32084a9e461bce41890d1c9ab70d91aa` с отдельной provenance-записью.
+- Unix IPC и `mpv` IPC получили жёсткие пределы размера и обязательный newline terminator; CLI ограничивает ответ 8 МиБ. Прямые HTTP JSON-ответы читаются с пределом 1 МиБ, а обложка уведомления загружается потоково, ограничена 5 МБ и публикуется только atomic rename.
+- Полная проверка v0.8.1 прошла: 75 backend-тестов, 36 QML checks, Python compileall, shell syntax, plugin validation, LSP/lens diagnostics и `git diff --check`; локально активны backend и Omarchy Shell версии `0.8.1`.
 
 ### Состав v0.8.0
 
@@ -88,7 +95,7 @@
 - Спроектировать отдельный UX для pins/presaves прежде чем включать их в collection action sheet или медиатеку.
 - После v0.7.4 отслеживать реальные ответы API при 429 и корректность синхронизации больших очередей «Мне нравится».
 - Для проблемного пользователя сначала подтвердить, что и manifest, и marker имеют актуальную версию, затем повторить после истечения старого rate limit.
-- Marketplace submission остаётся отдельной задачей и заблокирован до подтверждения checklist.
+- После публикации v0.8.1 повторить Marketplace submission и приложить краткое описание исправлений security review.
 - Не считать API Яндекс Музыки стабильным: библиотека неофициальная, внимательно обрабатывать 401/415/429, неполные объекты и изменившиеся поля.
 - Не добавлять eager loading всех треков и не возвращаться к `Repeater` для больших динамических списков.
 

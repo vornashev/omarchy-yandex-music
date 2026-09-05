@@ -117,8 +117,9 @@ Backend регистрирует безопасный MPRIS-плеер с наз
 - Omarchy 4.x
 - Python 3
 - `mpv`
-- `git`
 - `jq`
+- `util-linux` (`flock`)
+- `coreutils` (`sha256sum`)
 - Подключение к интернету
 
 ## Установка
@@ -129,7 +130,7 @@ Backend регистрирует безопасный MPRIS-плеер с наз
 omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enable
 ```
 
-Вручную выполнять `git clone`, `cd` или использовать `sudo` не нужно. При первой загрузке плагин автоматически установит Python-окружение, CLI и пользовательский systemd-сервис. Первичная настройка может занять некоторое время. Будут созданы:
+Вручную выполнять `git clone`, `cd` или использовать `sudo` не нужно. При первой загрузке плагин автоматически установит Python-окружение, CLI и пользовательский systemd-сервис. Python-пакеты устанавливаются только из полного набора wheels, зафиксированного по версиям и SHA-256 в `requirements.txt`; installer не обновляет `pip` и не исполняет VCS-зависимость из сети. Первичная настройка может занять некоторое время. Будут созданы:
 
 - `~/.config/omarchy/plugins/vornashev.yandex-music/`
 - `~/.local/share/omarchy-yandex-music/`

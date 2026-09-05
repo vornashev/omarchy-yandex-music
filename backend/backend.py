@@ -29,7 +29,7 @@ from dbus_next.service import ServiceInterface, dbus_property, method, signal as
 from yandex_music import Client
 from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET, _OAUTH_BASE_URL
 
-APP_VERSION = "0.8.0"
+APP_VERSION = "0.8.1"
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"
@@ -84,6 +84,52 @@ PERSONAL_PLAYLISTS = (
 LIBRARY_HUB_CACHE_TTL = 10 * 60
 LIBRARY_HUB_CACHE_MAX_ENTRIES = len(LIBRARY_HUB_SECTIONS)
 COLLECTION_SOURCES = ("queue", "library", "libraryHub", "catalogSearch", "catalogEntity", "recommendation")
+IPC_REQUEST_MAX_BYTES = 64 * 1024
+IPC_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
+MPV_RESPONSE_MAX_BYTES = 1024 * 1024
+HTTP_JSON_MAX_BYTES = 1024 * 1024
+NOTIFICATION_COVER_MAX_BYTES = 5_000_000
+NETWORK_CHUNK_BYTES = 64 * 1024
+
+
+def recv_line(sock: socket.socket, max_bytes: int, source: str) -> bytes:
+    """Read one newline-terminated message without unbounded accumulation."""
+    data = bytearray()
+    while True:
+        chunk = sock.recv(min(NETWORK_CHUNK_BYTES, max_bytes - len(data) + 1))
+        if not chunk:
+            raise RuntimeError(f"{source}: соединение закрыто до конца ответа")
+        newline = chunk.find(b"\n")
+        if newline >= 0:
+            if len(data) + newline > max_bytes:
+                raise RuntimeError(f"{source}: ответ превышает допустимый размер")
+            data.extend(chunk[:newline])
+            return bytes(data)
+        data.extend(chunk)
+        if len(data) > max_bytes:
+            raise RuntimeError(f"{source}: ответ превышает допустимый размер")
+
+
+def read_http_json(response: Any, max_bytes: int, source: str) -> Any:
+    """Decode a streamed JSON response after enforcing compressed and decoded limits."""
+    content_length = response.headers.get("content-length", "")
+    try:
+        declared_size = int(content_length) if content_length else 0
+    except (TypeError, ValueError) as exc:
+        raise ValueError(f"{source}: invalid Content-Length") from exc
+    if declared_size > max_bytes:
+        raise ValueError(f"{source}: HTTP response exceeds size limit")
+    body = bytearray()
+    for chunk in response.iter_content(chunk_size=NETWORK_CHUNK_BYTES):
+        if not chunk:
+            continue
+        body.extend(chunk)
+        if len(body) > max_bytes:
+            raise ValueError(f"{source}: HTTP response exceeds size limit")
+    try:
+        return json.loads(body)
+    except (json.JSONDecodeError, UnicodeDecodeError) as exc:
+        raise ValueError(f"{source}: invalid JSON response") from exc
 
 
 def atomic_json(path: Path, value: Any) -> None:
@@ -602,11 +648,13 @@ class Player:
             "serviceAvailable": None, "region": None,
             "checkedAt": self._int(time.time()), "error": "",
         }
+        response = None
         try:
-            response = requests.get(API_STATUS_URL, timeout=(3, 5))
+            response = requests.get(API_STATUS_URL, timeout=(3, 5), stream=True)
             result["latencyMs"] = max(1, round((time.monotonic() - started) * 1000))
             response.raise_for_status()
-            account = (response.json().get("result") or {}).get("account") or {}
+            payload = read_http_json(response, HTTP_JSON_MAX_BYTES, "network probe")
+            account = (payload.get("result") or {}).get("account") or {}
             result.update(available=True, serviceAvailable=account.get("serviceAvailable"),
                           region=account.get("region"))
         except Exception as exc:
@@ -623,6 +671,9 @@ class Player:
                 result["error"] = "некорректный ответ"
             else:
                 result["error"] = "неизвестная ошибка"
+        finally:
+            if response is not None:
+                response.close()
         with self.lock:
             self.network.update(result)
 
@@ -698,9 +749,12 @@ class Player:
         response = requests.post(f"{_OAUTH_BASE_URL}/token", data={
             "grant_type": "refresh_token", "refresh_token": refresh,
             "client_id": _DEFAULT_CLIENT_ID, "client_secret": _DEFAULT_CLIENT_SECRET,
-        }, timeout=20)
-        response.raise_for_status()
-        data = response.json()
+        }, timeout=20, stream=True)
+        try:
+            response.raise_for_status()
+            data = read_http_json(response, HTTP_JSON_MAX_BYTES, "OAuth token refresh")
+        finally:
+            response.close()
         saved.update({
             "access_token": data["access_token"],
             "refresh_token": data.get("refresh_token", refresh),
@@ -1203,7 +1257,7 @@ class Player:
                 station = "user:onyourwave"
                 # The current settings2 endpoint requires JSON, while the
                 # unofficial client's helper still submits form data.
-                def update_settings() -> requests.Response:
+                def update_settings() -> dict[str, Any]:
                     response = requests.post(
                         f"{self.client.base_url}/rotor/station/{station}/settings2",
                         headers=dict(self.client._request.headers),
@@ -1211,11 +1265,14 @@ class Player:
                         json={"moodEnergy": str(self.preferences["waveMood"]),
                               "diversity": str(self.preferences["waveDiversity"]),
                               "language": str(self.preferences["waveLanguage"]), "type": "rotor"},
-                        timeout=20)
-                    response.raise_for_status()
-                    return response
+                        timeout=20, stream=True)
+                    try:
+                        response.raise_for_status()
+                        return read_http_json(response, HTTP_JSON_MAX_BYTES, "wave settings")
+                    finally:
+                        response.close()
                 settings_response = self._api_call(update_settings)
-                if settings_response.json().get("result") != "ok":
+                if settings_response.get("result") != "ok":
                     raise RuntimeError("Яндекс не подтвердил настройки волны")
                 result = self._api_call(lambda: self.client.rotor_station_tracks(station))
                 tracks = [row.track for row in (result.sequence if result else [])
@@ -3482,10 +3539,9 @@ class Player:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
             sock.settimeout(3); sock.connect(str(MPV_SOCKET))
             sock.sendall((json.dumps({"command": command}) + "\n").encode())
-            data = b""
-            while b"\n" not in data: data += sock.recv(65536)
+            data = recv_line(sock, MPV_RESPONSE_MAX_BYTES, "mpv IPC")
         try:
-            response = json.loads(data.splitlines()[0])
+            response = json.loads(data)
         except (IndexError, json.JSONDecodeError) as exc:
             raise RuntimeError("mpv вернул некорректный ответ") from exc
         if response.get("error") != "success": raise RuntimeError(response.get("error", "mpv error"))
@@ -3555,23 +3611,46 @@ class Player:
 
     def _notification_cover(self, url: str) -> str:
         if not url: return "audio-x-generic"
+        response = None
+        temporary: Path | None = None
         try:
             cover_dir = RUNTIME / "omarchy-yandex-music-covers"
             cover_dir.mkdir(mode=0o700, exist_ok=True)
             cover = cover_dir / f"{hashlib.sha256(url.encode()).hexdigest()[:24]}.jpg"
+            if cover.exists() and cover.stat().st_size > NOTIFICATION_COVER_MAX_BYTES:
+                cover.unlink()
             if not cover.exists():
-                response = requests.get(url, timeout=10)
+                response = requests.get(url, timeout=10, stream=True)
                 response.raise_for_status()
                 content_type = response.headers.get("content-type", "")
-                if not content_type.startswith("image/") or len(response.content) > 5_000_000:
+                content_length = response.headers.get("content-length", "")
+                if not content_type.startswith("image/"):
                     return "audio-x-generic"
-                cover.write_bytes(response.content)
-                cover.chmod(0o600)
+                if content_length and int(content_length) > NOTIFICATION_COVER_MAX_BYTES:
+                    return "audio-x-generic"
+                temporary = cover.with_suffix(".tmp")
+                size = 0
+                with temporary.open("wb") as output:
+                    for chunk in response.iter_content(chunk_size=NETWORK_CHUNK_BYTES):
+                        if not chunk:
+                            continue
+                        size += len(chunk)
+                        if size > NOTIFICATION_COVER_MAX_BYTES:
+                            raise ValueError("notification cover exceeds size limit")
+                        output.write(chunk)
+                temporary.chmod(0o600)
+                temporary.replace(cover)
+                temporary = None
                 cached = sorted(cover_dir.glob("*.jpg"), key=lambda item: item.stat().st_mtime, reverse=True)
                 for old_cover in cached[30:]: old_cover.unlink(missing_ok=True)
             return str(cover)
         except Exception:
             return "audio-x-generic"
+        finally:
+            if temporary is not None:
+                temporary.unlink(missing_ok=True)
+            if response is not None:
+                response.close()
 
     def _notify_track(self, metadata: dict[str, Any]) -> None:
         if self.preferences.get("notifications") != "all": return
@@ -3888,12 +3967,8 @@ def serve() -> None:
         conn, _ = server.accept()
         with conn:
             try:
-                raw = b""
-                while b"\n" not in raw:
-                    chunk = conn.recv(65536)
-                    if not chunk: break
-                    raw += chunk
-                response = player.handle(json.loads(raw.splitlines()[0] or b"{}"))
+                raw = recv_line(conn, IPC_REQUEST_MAX_BYTES, "service IPC")
+                response = player.handle(json.loads(raw or b"{}"))
             except Exception as exc: response = {"error": str(exc)}
             conn.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode())
 

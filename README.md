@@ -117,8 +117,9 @@ The backend exposes a sanitized MPRIS player named **Yandex Music**. Omarchy and
 - Omarchy 4.x
 - Python 3
 - `mpv`
-- `git`
 - `jq`
+- `util-linux` (`flock`)
+- `coreutils` (`sha256sum`)
 - Network access
 
 ## Installation
@@ -129,7 +130,7 @@ Install and enable the plugin with the standard Omarchy command:
 omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enable
 ```
 
-No manual `git clone`, `cd`, or `sudo` is required. On its first load, the plugin automatically installs its Python environment, CLI, and systemd user service. This initial setup may take a moment. It creates:
+No manual `git clone`, `cd`, or `sudo` is required. On its first load, the plugin automatically installs its Python environment, CLI, and systemd user service. Python packages are installed only from the complete version- and SHA-256-locked wheel set in `requirements.txt`; the installer neither upgrades `pip` nor executes a live VCS dependency. This initial setup may take a moment. It creates:
 
 - `~/.config/omarchy/plugins/vornashev.yandex-music/`
 - `~/.local/share/omarchy-yandex-music/`
