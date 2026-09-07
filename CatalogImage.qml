@@ -34,11 +34,11 @@ Image {
   }
 
   Text {
+    textFormat: Text.PlainText
     anchors.centerIn: parent
     visible: root.requestedSource !== "" && root.status === Image.Error
       && !root.retrying && root.retryAttempt >= root.maxRetryAttempts
     text: "󰋦"
-    textFormat: Text.PlainText
     color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .45)
     font.family: root.fontFamily
     font.pixelSize: Math.min(root.width, root.height) * .38

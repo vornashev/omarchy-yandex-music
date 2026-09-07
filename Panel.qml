@@ -1286,6 +1286,7 @@ Panel {
                 asynchronous: true; visible: source !== ""
               }
               Text {
+                textFormat: Text.PlainText
                 anchors.centerIn: parent; visible: !root.data.artUrl
                 text: "󰝚"; color: root.foreground; font.family: root.fontFamily
                 font.pixelSize: Style.font.displayLarge
@@ -1336,6 +1337,7 @@ Panel {
                 height: width; radius: width / 2
                 color: Qt.rgba(0, 0, 0, .58)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: root.coverExpanded ? "↙" : "↗"
                   color: "white"; font.pixelSize: root.coverExpanded
@@ -1357,6 +1359,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 rightPadding: root.busy ? Style.space(28) : 0
                 text: root.hasTrack ? String(root.data.title) : "Яндекс Музыка"
@@ -1378,6 +1381,7 @@ Panel {
                   Repeater {
                     model: root.data.artists || []
                     Text {
+                      textFormat: Text.PlainText
                       id: heroArtistLink
                       required property var modelData
                       required property int index
@@ -1396,6 +1400,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 id: heroAlbumLink
                 width: parent.width
                 text: root.hasTrack
@@ -1436,6 +1441,7 @@ Panel {
             }
 
             Text {
+              textFormat: Text.PlainText
               width: parent.width
               horizontalAlignment: Text.AlignHCenter
               text: String(root.data.title || "")
@@ -1448,6 +1454,7 @@ Panel {
               Repeater {
                 model: root.data.artists || []
                 Text {
+                  textFormat: Text.PlainText
                   id: expandedArtistLink
                   required property var modelData
                   required property int index
@@ -1462,6 +1469,7 @@ Panel {
                 }
               }
               Text {
+                textFormat: Text.PlainText
                 id: expandedAlbumLink
                 visible: String(root.data.album || "") !== ""
                 text: (root.data.artists || []).length > 0
@@ -1514,6 +1522,7 @@ Panel {
                 }
               }
               Text {
+                textFormat: Text.PlainText
                 anchors.left: parent.left; anchors.top: expandedProgressTrack.bottom
                 anchors.topMargin: Style.space(3)
                 text: root.formatTime(root.playbackPosition)
@@ -1523,6 +1532,7 @@ Panel {
                 font.pixelSize: Style.font.caption
               }
               Text {
+                textFormat: Text.PlainText
                 anchors.right: parent.right; anchors.top: expandedProgressTrack.bottom
                 anchors.topMargin: Style.space(3)
                 text: root.formatTime(root.data.duration)
@@ -1562,6 +1572,7 @@ Panel {
                   foreground: Color.accent; bordered: true
                   onClicked: root.action("pause")
                   Text {
+                    textFormat: Text.PlainText
                     z: 2; anchors.centerIn: parent
                     anchors.horizontalCenterOffset: root.playing ? 0 : Style.space(2)
                     text: root.playing ? "󰏤" : "󰐊"
@@ -1609,6 +1620,7 @@ Panel {
                 width: parent.width
                 spacing: Style.space(5)
                 Text {
+                  textFormat: Text.PlainText
                   width: parent.width - retryErrorButton.width - dismissErrorButton.width - Style.space(10)
                   anchors.verticalCenter: parent.verticalCenter
                   text: root.errorTitle
@@ -1631,6 +1643,7 @@ Panel {
                 }
               }
               Text {
+                textFormat: Text.PlainText
                 width: parent.width
                 text: root.lastError; wrapMode: Text.WordWrap
                 color: root.foreground; font.family: root.fontFamily
@@ -1647,6 +1660,7 @@ Panel {
               spacing: Style.space(8)
 
               Text {
+                textFormat: Text.PlainText
                 anchors.verticalCenter: parent.verticalCenter
                 text: "Код: " + root.data.authCode; color: root.foreground
                 font.family: root.fontFamily; font.pixelSize: Style.font.title; font.bold: true
@@ -1667,6 +1681,7 @@ Panel {
               color: authMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : Style.normalFillFor(root.foreground, Color.accent)
               borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
               Text {
+                textFormat: Text.PlainText
                 anchors.centerIn: parent
                 text: root.data.authUrl ? "Открыть страницу авторизации" : "Войти через Яндекс"
                 color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.body; font.bold: true
@@ -1724,6 +1739,7 @@ Panel {
                     : (tabMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
                   borderSpec: root.page === index ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
                   Text {
+                    textFormat: Text.PlainText
                     anchors.centerIn: parent; text: modelData; color: root.foreground
                     font.family: root.fontFamily; font.pixelSize: Style.font.caption
                     font.bold: root.page === index; font.letterSpacing: .5
@@ -1767,12 +1783,14 @@ Panel {
                   }
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.left: parent.left; anchors.top: progressTrack.bottom; anchors.topMargin: Style.space(3)
                   text: root.formatTime(root.playbackPosition)
                     + (root.seeking && root.pendingSeek >= 0 ? "  (" + root.formatTime(root.pendingSeek) + ")" : "")
                   color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.right: parent.right; anchors.top: progressTrack.bottom; anchors.topMargin: Style.space(3)
                   text: root.formatTime(root.data.duration); color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
                 }
@@ -1818,6 +1836,7 @@ Panel {
                       enabled: root.hasTrack; opacity: enabled ? 1 : .4
                       onClicked: root.action("pause")
                       Text {
+                        textFormat: Text.PlainText
                         z: 2; anchors.centerIn: parent
                         anchors.horizontalCenterOffset: root.playing ? 0 : Style.space(2)
                         text: root.playing ? "󰏤" : "󰐊"
@@ -1847,6 +1866,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 visible: !root.hasTrack && !root.browsingLibrary
                 width: parent.width; horizontalAlignment: Text.AlignHCenter
                 text: "Выберите плейлист в медиатеке или найдите трек"
@@ -1882,6 +1902,7 @@ Panel {
                     height: currentTrackPaneTabs.height
 
                     Text {
+                      textFormat: Text.PlainText
                       anchors.centerIn: parent
                       text: modelData.label
                       color: parent.selected ? Color.accent : root.dim
@@ -1928,6 +1949,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   id: queueHeading
                   visible: !root.queueListLoading || root.currentTrackPaneOpen
                   anchors.left: returnToQueueButton.visible ? returnToQueueButton.right : parent.left
@@ -1946,6 +1968,7 @@ Panel {
                 }
 
                 Text {
+                  textFormat: Text.PlainText
                   id: queuePosition
                   visible: !root.queueListLoading || root.currentTrackPaneOpen
                   anchors.right: parent.right
@@ -2003,6 +2026,7 @@ Panel {
                   && !root.queueListLoading && root.trackListDisplay.length === 0
                 width: parent.width; height: visible ? Style.space(260) : 0
                 Text {
+                  textFormat: Text.PlainText
                   anchors.centerIn: parent
                   text: "Плейлист пока пуст"
                   color: root.dim; font.family: root.fontFamily
@@ -2050,6 +2074,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter; spacing: Style.space(9)
 
                     Text {
+                      textFormat: Text.PlainText
                       width: Style.space(18); anchors.verticalCenter: parent.verticalCenter
                       horizontalAlignment: Text.AlignHCenter
                       text: queueRow.isCurrent ? (root.playing ? "󰏤" : "󰐊") : String(modelData.index + 1)
@@ -2059,6 +2084,7 @@ Panel {
                     Column {
                       width: parent.width - Style.space(76); anchors.verticalCenter: parent.verticalCenter; spacing: 1
                       Text {
+                        textFormat: Text.PlainText
                         width: parent.width; text: modelData.title; elide: Text.ElideRight
                         color: root.foreground; font.family: root.fontFamily
                         font.pixelSize: Style.font.bodySmall; font.bold: queueRow.isCurrent
@@ -2074,6 +2100,7 @@ Panel {
                           Repeater {
                             model: queueRow.modelData.artists || []
                             Text {
+                              textFormat: Text.PlainText
                               id: queueArtistLink
                               required property var modelData
                               required property int index
@@ -2088,6 +2115,7 @@ Panel {
                             }
                           }
                           Text {
+                            textFormat: Text.PlainText
                             id: queueAlbumLink
                             visible: String(queueRow.modelData.album || "") !== ""
                             text: (queueRow.modelData.artists || []).length > 0
@@ -2110,6 +2138,7 @@ Panel {
                       width: Style.space(40); height: Style.space(26)
                       anchors.verticalCenter: parent.verticalCenter
                       Text {
+                        textFormat: Text.PlainText
                         visible: !queueRow.hovered
                         anchors.fill: parent
                         verticalAlignment: Text.AlignVCenter
@@ -2150,6 +2179,7 @@ Panel {
                   width: queueList.width
                   height: root.data.libraryLoadingMore === true ? Style.space(36) : 0
                   Text {
+                    textFormat: Text.PlainText
                     visible: root.data.libraryLoadingMore === true
                     anchors.centerIn: parent
                     text: "󰔟  Загружаем ещё 50…"
@@ -2177,6 +2207,7 @@ Panel {
                   width: parent.width - Style.space(32)
                   spacing: Style.space(10)
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
@@ -2234,6 +2265,7 @@ Panel {
                     ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
 
                   Text {
+                    textFormat: Text.PlainText
                     id: lyricText
                     anchors.left: parent.left; anchors.right: parent.right
                     anchors.margins: Style.space(9)
@@ -2257,6 +2289,7 @@ Panel {
                 }
 
                 footer: Text {
+                  textFormat: Text.PlainText
                   width: lyricsList.width
                   height: visible ? contentHeight + Style.space(20) : 0
                   visible: (root.lyricsData.writers || []).length > 0
@@ -2288,6 +2321,7 @@ Panel {
                   width: parent.width - Style.space(32)
                   spacing: Style.space(10)
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     horizontalAlignment: Text.AlignHCenter
                     wrapMode: Text.WordWrap
@@ -2354,6 +2388,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(2)
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       text: String(trackInfoRow.modelData.label || "")
                       color: trackInfoRow.isSection ? root.dim : Color.accent
@@ -2362,6 +2397,7 @@ Panel {
                       font.letterSpacing: trackInfoRow.isSection ? .7 : 0
                     }
                     Text {
+                      textFormat: Text.PlainText
                       visible: !trackInfoRow.isSection
                       width: parent.width
                       text: String(trackInfoRow.modelData.value || "")
@@ -2384,6 +2420,7 @@ Panel {
                     anchors.verticalCenter: parent.verticalCenter
                     spacing: Style.space(8)
                     Text {
+                      textFormat: Text.PlainText
                       width: parent.width
                       horizontalAlignment: Text.AlignHCenter
                       wrapMode: Text.WordWrap
@@ -2411,11 +2448,13 @@ Panel {
                   : Style.normalFillFor(root.foreground, Color.accent)
                 borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
                 Text {
+                  textFormat: Text.PlainText
                   anchors.left: parent.left; anchors.leftMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
                   text: "󰝚   Моя волна"; color: root.foreground; font.family: root.fontFamily
                   font.pixelSize: Style.font.body; font.bold: true
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.right: parent.right; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
                   text: root.waveOptionsOpen ? "󰅃" : "󰅀"
                   color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body
@@ -2599,6 +2638,7 @@ Panel {
                     HoverHandler { id: libraryHover }
 
                     Text {
+                      textFormat: Text.PlainText
                       visible: ["section", "error", "warning", "empty", "back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
                       anchors.left: parent.left; anchors.right: parent.right
                       anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
@@ -2634,6 +2674,7 @@ Panel {
                         fillMode: Image.PreserveAspectCrop
                       }
                       Text {
+                        textFormat: Text.PlainText
                         visible: !libraryRow.entityRow
                         width: visible ? Style.space(40) : 0
                         anchors.verticalCenter: parent.verticalCenter
@@ -2648,6 +2689,7 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 1
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: String(libraryRow.entityRow
                             ? (libraryRow.value.title || libraryRow.value.name || "Без названия")
@@ -2656,6 +2698,7 @@ Panel {
                           font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
                         }
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: {
                             if (!libraryRow.entityRow) return String(libraryRow.modelData.subtitle || "")
@@ -2742,6 +2785,7 @@ Panel {
                     keyCatcher.forceActiveFocus()
                   }
                   Text {
+                    textFormat: Text.PlainText
                     z: 2
                     visible: catalogController.suggestionLoading
                     anchors.right: parent.right
@@ -2875,6 +2919,7 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: Style.space(4)
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: String(catalogRow.value.title || catalogRow.value.name || "Каталог")
                           color: root.foreground; font.family: root.fontFamily
@@ -2885,6 +2930,7 @@ Panel {
                           Repeater {
                             model: catalogRow.value.artists || []
                             Text {
+                              textFormat: Text.PlainText
                               id: entityArtistLink
                               required property var modelData
                               required property int index
@@ -2900,6 +2946,7 @@ Panel {
                           }
                         }
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: [catalogRow.value.year || catalogRow.value.releaseDate,
                             catalogRow.value.genre, catalogRow.value.ownerName].filter(function(value) {
@@ -2912,6 +2959,7 @@ Panel {
                     }
 
                     Text {
+                      textFormat: Text.PlainText
                       id: catalogText
                       visible: ["section", "description", "error", "warning", "empty",
                         "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(catalogRow.rowKind) >= 0
@@ -2954,6 +3002,7 @@ Panel {
                         anchors.verticalCenter: parent.verticalCenter
                         spacing: 1
                         Text {
+                          textFormat: Text.PlainText
                           width: parent.width
                           text: String(catalogRow.value.title || catalogRow.value.name || "Без названия")
                           color: root.foreground; font.family: root.fontFamily
@@ -2964,6 +3013,7 @@ Panel {
                           Repeater {
                             model: catalogRow.value.artists || []
                             Text {
+                              textFormat: Text.PlainText
                               id: catalogArtistLink
                               required property var modelData
                               required property int index
@@ -2978,6 +3028,7 @@ Panel {
                             }
                           }
                           Text {
+                            textFormat: Text.PlainText
                             id: catalogAlbumLink
                             visible: catalogRow.rowKind === "track" && String(catalogRow.value.album || "") !== ""
                             text: (catalogRow.value.artists || []).length > 0
@@ -2994,6 +3045,7 @@ Panel {
                             }
                           }
                           Text {
+                            textFormat: Text.PlainText
                             visible: catalogRow.rowKind !== "track"
                               && (catalogRow.value.artists || []).length === 0
                             text: String(catalogRow.value.artist || catalogRow.value.ownerName
@@ -3072,6 +3124,7 @@ Panel {
                           ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
                       }
                       Text {
+                        textFormat: Text.PlainText
                         anchors.left: parent.left; anchors.right: parent.right
                         anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
                         text: String(modelData); elide: Text.ElideRight
@@ -3112,6 +3165,7 @@ Panel {
                   onClicked: root.closeSettings()
                 }
                 Text {
+                  textFormat: Text.PlainText
                   anchors.left: settingsBackButton.right
                   anchors.leftMargin: Style.space(8)
                   anchors.verticalCenter: parent.verticalCenter
@@ -3120,6 +3174,7 @@ Panel {
                   font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: 1
                 }
                 Text {
+                  textFormat: Text.PlainText
                   visible: String(root.data.version || "") !== ""
                   anchors.right: parent.right; anchors.verticalCenter: parent.verticalCenter
                   text: "v" + String(root.data.version || "")
@@ -3129,6 +3184,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: "ВОСПРОИЗВЕДЕНИЕ"
                 color: root.dim; font.family: root.fontFamily
                 font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
@@ -3144,6 +3200,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: "ВОССТАНОВЛЕНИЕ СЕССИИ"
                 color: root.dim; font.family: root.fontFamily
                 font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
@@ -3177,6 +3234,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: "ВЕРХНИЙ БАР"
                 color: root.dim; font.family: root.fontFamily
                 font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
@@ -3265,6 +3323,7 @@ Panel {
               }
 
               Text {
+                textFormat: Text.PlainText
                 text: "АККАУНТ"
                 color: root.dim; font.family: root.fontFamily
                 font.pixelSize: Style.font.caption; font.bold: true; font.letterSpacing: .7
@@ -3284,12 +3343,14 @@ Panel {
                   anchors.verticalCenter: parent.verticalCenter
                   spacing: Style.space(8)
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width
                     text: "Яндекс Музыка подключена"
                     color: root.foreground; font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall; font.bold: true
                   }
                   Text {
+                    textFormat: Text.PlainText
                     visible: root.confirmLogout
                     width: parent.width; wrapMode: Text.WordWrap
                     text: "Токен авторизации будет удалён. Для повторного входа понадобится браузер."
@@ -3403,6 +3464,7 @@ Panel {
               }
             }
             Text {
+              textFormat: Text.PlainText
               id: actionsVolumePercent
               width: Style.space(34)
               anchors.verticalCenter: parent.verticalCenter
@@ -3418,6 +3480,7 @@ Panel {
           }
 
           Text {
+            textFormat: Text.PlainText
             width: parent.width
             text: "ДЕЙСТВИЯ"
             color: root.dim; font.family: root.fontFamily
@@ -3540,6 +3603,7 @@ Panel {
         spacing: Style.space(8)
 
         Text {
+          textFormat: Text.PlainText
           width: parent.width
           text: collectionController.mode === "recommendations"
             ? "РЕКОМЕНДАЦИИ · " + String(collectionController.playlistTitle || "Плейлист")
@@ -3553,6 +3617,7 @@ Panel {
         }
 
         Text {
+          textFormat: Text.PlainText
           visible: ["track", "create", "delete"].indexOf(collectionController.mode) >= 0
           width: parent.width
           text: String(collectionController.target.title || "Трек")
@@ -3570,16 +3635,19 @@ Panel {
             onClicked: collectionController.beginCreate()
           }
           Text {
+            textFormat: Text.PlainText
             visible: (collectionController.ownPlaylists || []).length > 0
             width: parent.width; text: "ВАШИ ПЛЕЙЛИСТЫ"
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
           }
           Text {
+            textFormat: Text.PlainText
             visible: collectionController.checkingMemberships
             width: parent.width; text: "Проверяем, где уже есть этот трек…"
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
           }
           Text {
+            textFormat: Text.PlainText
             visible: collectionController.membershipError !== ""
             width: parent.width; wrapMode: Text.WordWrap
             text: collectionController.membershipError
@@ -3634,6 +3702,7 @@ Panel {
             Keys.onReturnPressed: collectionController.submitCreate()
           }
           Text {
+            textFormat: Text.PlainText
             width: parent.width; wrapMode: Text.WordWrap
             text: "Новый плейлист будет приватным. Выбранный трек добавится после создания."
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
@@ -3660,6 +3729,7 @@ Panel {
           visible: collectionController.mode === "delete"
           width: parent.width; spacing: Style.space(10)
           Text {
+            textFormat: Text.PlainText
             width: parent.width; wrapMode: Text.WordWrap
             text: "Удалить выбранный трек из «"
               + String(collectionController.target.playlistTitle || "плейлиста") + "»?"
@@ -3687,12 +3757,14 @@ Panel {
           width: parent.width
           height: visible ? Style.space(285) : 0
           Text {
+            textFormat: Text.PlainText
             visible: collectionController.busy
             anchors.centerIn: parent
             text: "Подбираем треки…"
             color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
           }
           Text {
+            textFormat: Text.PlainText
             visible: !collectionController.busy
               && collectionController.recommendations.length === 0
             anchors.centerIn: parent
@@ -3723,11 +3795,13 @@ Panel {
                   width: parent.width - Style.space(80)
                   anchors.verticalCenter: parent.verticalCenter; spacing: 1
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width; text: String(modelData.title || "Трек")
                     color: root.foreground; font.family: root.fontFamily
                     font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
                   }
                   Text {
+                    textFormat: Text.PlainText
                     width: parent.width; text: String(modelData.artist || "")
                     color: root.dim; font.family: root.fontFamily
                     font.pixelSize: Style.font.caption; elide: Text.ElideRight
@@ -3752,6 +3826,7 @@ Panel {
           visible: collectionController.mode === "result"
           width: parent.width; spacing: Style.space(10)
           Text {
+            textFormat: Text.PlainText
             width: parent.width; wrapMode: Text.WordWrap
             text: collectionController.error !== ""
               ? collectionController.error : collectionController.message

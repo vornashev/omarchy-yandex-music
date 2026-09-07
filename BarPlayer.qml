@@ -51,6 +51,7 @@ Item {
       width: Style.space(34); height: root.implicitHeight
       opacity: root.hasTrack ? 1 : .35
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent; text: "󰒮"; color: root.foreground
         font.family: root.fontFamily; font.pixelSize: 20
       }
@@ -67,6 +68,7 @@ Item {
       width: Style.space(34); height: root.implicitHeight
       opacity: root.hasTrack ? 1 : .35
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent; text: root.playing ? "󰏤" : "󰐊"; color: root.foreground
         font.family: root.fontFamily; font.pixelSize: 20
       }
@@ -83,6 +85,7 @@ Item {
       width: Style.space(34); height: root.implicitHeight
       opacity: root.hasTrack ? 1 : .35
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent; text: "󰒭"; color: root.foreground
         font.family: root.fontFamily; font.pixelSize: 20
       }
@@ -98,6 +101,7 @@ Item {
       visible: !root.showCover && !labelSlot.visible
       width: Style.space(24); height: root.implicitHeight
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         text: "󰝚"; color: root.foreground
         font.family: root.fontFamily; font.pixelSize: Style.font.icon
@@ -137,6 +141,7 @@ Item {
         }
       }
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent; visible: !root.logic || !root.logic.data.artUrl
         text: "󰝚"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.caption
       }
@@ -179,6 +184,7 @@ Item {
         }
       }
       Text {
+        textFormat: Text.PlainText
         anchors.centerIn: parent
         visible: root.hasError && !root.loading
         text: "󰀪"; color: Color.urgent
@@ -194,6 +200,7 @@ Item {
       clip: true
 
       Text {
+        textFormat: Text.PlainText
         id: trackInfoLabel
         anchors.verticalCenter: parent.verticalCenter
         width: root.longTitleMode === "scroll" ? implicitWidth : parent.width

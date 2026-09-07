@@ -4,6 +4,13 @@
 
 All notable changes to this project are documented here. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/).
 
+## [Unreleased]
+
+### Security
+
+- Repository coding-agent instructions and task artifacts are no longer shipped in the plugin checkout
+- Every Qt Quick `Text` element now forces `Text.PlainText`, preventing API, backend, error, catalogue, playlist, track, artist, album, lyrics, writer, and user-controlled strings from being interpreted as rich text or loading referenced resources
+
 ## [0.8.1] - 2026-09-05
 
 ### Security
