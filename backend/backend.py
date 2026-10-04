@@ -38,7 +38,7 @@ if __package__:
 else:
     from audio_cache import AudioCache, AudioIdentity, AudioSource, BackgroundBusy, CacheRequest, cache_directory
 
-APP_VERSION = "0.9.0"
+APP_VERSION = "0.10.0"
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"

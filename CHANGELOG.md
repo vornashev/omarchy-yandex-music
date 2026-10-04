@@ -6,6 +6,8 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-10-04
+
 ### Added
 
 - A volume control in the bar to the right of the track title: a mute icon plus a level track, adjusted with the mouse wheel in 5% steps
@@ -265,6 +267,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
+[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...HEAD
+[0.10.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.0...v0.8.1
