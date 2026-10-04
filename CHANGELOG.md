@@ -6,6 +6,27 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+
+- A volume control in the bar to the right of the track title: a mute icon plus a level track, adjusted with the mouse wheel in 5% steps
+- Session restore retries transient network errors after boot or resume and shows a reconnecting message; the panel's retry action uses a new `reconnect` command
+- A persistent Show volume setting toggles the existing bar volume control independently of popup volume and transport buttons; enabled by default
+
+### Changed
+
+- Starting an uncached track is faster: Yandex Music API calls reuse one keep-alive HTTP session, only the played download variant resolves a direct link, listening reports wait until the new track has started, and mpv reuses its HTTP connection while opening a stream
+- Mute, the volume slider, and its percentage moved from the Actions sheet to directly under the transport controls in the regular and expanded cover views
+- Volume follows a perceptual curve: UI percentages remain 0–100 while the mpv gain grows more slowly, so low settings stay audible (7% ≈ 20, 15% ≈ 32, 50% ≈ 66)
+- The full `details` snapshot is polled only while the panel is open; the bar keeps polling the compact `status`
+- `Panel.qml` is split into catalog, library, session, details, intent, volume and skeleton components covered by QML unit tests and Quickshell smoke tests
+
+### Fixed
+
+- Concurrent state saves use unique temporary files and can no longer publish an older snapshot last
+- Service IPC reads are bounded by a one-second deadline and the 64 KiB limit; a stalled client no longer blocks the service
+- Status polling no longer overwrites the volume while it is being changed
+- Now Playing sizes its list, lyrics, and track-info panes to the available height after adding the volume row, removing the redundant outer scrollbar without clipping controls; very short viewports retain an accessible scrolling fallback
+
 ## [0.9.0] - 2026-10-04
 
 ### Added

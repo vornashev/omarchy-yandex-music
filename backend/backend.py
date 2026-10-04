@@ -14,6 +14,7 @@ import re
 import signal
 import socket
 import subprocess
+import tempfile
 import threading
 import time
 import uuid
@@ -28,6 +29,8 @@ from dbus_next.aio import MessageBus
 from dbus_next.constants import PropertyAccess
 from dbus_next.service import ServiceInterface, dbus_property, method, signal as dbus_signal
 from yandex_music import Client
+from yandex_music.exceptions import NetworkError, TimedOutError
+from yandex_music.utils.request import Request
 from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET, _OAUTH_BASE_URL
 
 if __package__:
@@ -51,6 +54,7 @@ DEFAULT_PREFERENCES = {
     "waveDiversity": "default",
     "waveLanguage": "any",
     "showControls": True,
+    "showVolume": True,
     "showArtist": True,
     "showTitle": True,
     "showCover": True,
@@ -63,6 +67,19 @@ DEFAULT_PREFERENCES = {
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 SOCKET = RUNTIME / "omarchy-yandex-music.sock"
 MPV_SOCKET = RUNTIME / "omarchy-yandex-music-mpv.sock"
+# The UI slider stays linear (0-100) while the mpv gain grows more slowly, so
+# low settings remain audible and the slider range feels even.
+VOLUME_CURVE_EXPONENT = 0.6
+
+
+def volume_percent_to_gain(percent: float) -> float:
+    p = max(0.0, min(100.0, float(percent))) / 100.0
+    return 100.0 * (p ** VOLUME_CURVE_EXPONENT)
+
+
+def gain_to_volume_percent(gain: float) -> int:
+    g = max(0.0, min(100.0, float(gain))) / 100.0
+    return int(round(100.0 * (g ** (1.0 / VOLUME_CURVE_EXPONENT))))
 API_STATUS_URL = "https://api.music.yandex.net/account/status"
 NETWORK_PROBE_TTL = 30
 LIBRARY_PAGE_SIZE = 50
@@ -73,6 +90,12 @@ AUDIO_STREAM_ATTEMPTS = 3
 AUDIO_STREAM_TIMEOUT = 5
 AUDIO_STALL_TIMEOUT = 20
 RATE_LIMIT_MESSAGE = "Яндекс Музыка временно ограничила запросы. Подождите минуту и повторите."
+RESTORE_RETRY_DELAYS = (3, 5, 10, 20, 30, 60)
+RESTORE_RETRY_MESSAGE = "Нет соединения с Яндекс Музыкой при запуске. Повторяем подключение…"
+RESTORE_OFFLINE_MESSAGE = (
+    "Не удалось подключиться к Яндекс Музыке: нет соединения. "
+    "Проверьте интернет и нажмите «Повторить»."
+)
 PLAYBACK_REPORT_FROM = "desktop_win-home-playlist_of_the_day-playlist-default"
 RADIO_REPORT_FROM = "mobile-radio-user-default"
 TELEMETRY_QUEUE_SIZE = 100
@@ -99,6 +122,12 @@ MPV_RESPONSE_MAX_BYTES = 1024 * 1024
 HTTP_JSON_MAX_BYTES = 1024 * 1024
 NOTIFICATION_COVER_MAX_BYTES = 5_000_000
 NETWORK_CHUNK_BYTES = 64 * 1024
+IPC_READ_TIMEOUT = 1.0
+# Analytics wait this long after a finished track so the next start is not
+# queued behind them on the shared API lock, but never longer than the cap.
+TELEMETRY_SWITCH_HOLD = 1.0
+TELEMETRY_MAX_DEFER = 20.0
+IPC_WRITE_TIMEOUT = 3.0
 
 
 def recv_line(sock: socket.socket, max_bytes: int, source: str) -> bytes:
@@ -142,11 +171,22 @@ def read_http_json(response: Any, max_bytes: int, source: str) -> Any:
 
 
 def atomic_json(path: Path, value: Any) -> None:
+    # A unique temporary file per write: concurrent saves must not truncate or
+    # publish each other's half-written file.
     path.parent.mkdir(parents=True, exist_ok=True)
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(value, ensure_ascii=False))
-    tmp.chmod(0o600)
-    tmp.replace(path)
+    tmp: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent,
+            prefix=f".{path.name}.", suffix=".tmp", delete=False,
+        ) as output:
+            tmp = Path(output.name)
+            json.dump(value, output, ensure_ascii=False)
+        tmp.chmod(0o600)
+        tmp.replace(path)
+    finally:
+        if tmp is not None:
+            tmp.unlink(missing_ok=True)
 
 
 class MprisRoot(ServiceInterface):
@@ -375,9 +415,36 @@ def playback_control(function: Callable) -> Callable:
     return controlled
 
 
+class SessionRequest(Request):
+    """Library request layer over a shared keep-alive session.
+
+    The stock layer opens a new TLS connection for every call, which adds
+    roughly half a second to each API request made while switching tracks.
+    """
+
+    def __init__(self, session: requests.Session) -> None:
+        super().__init__()
+        self.session = session
+
+    def _request_wrapper(self, *args: Any, **kwargs: Any) -> bytes:
+        kwargs = self._prepare_kwargs(kwargs)
+        try:
+            resp = self.session.request(*args, **kwargs)
+        except requests.Timeout as exc:
+            raise TimedOutError from exc
+        except requests.RequestException as exc:
+            raise NetworkError(exc) from exc
+        if 200 <= resp.status_code <= 299:
+            return resp.content
+        self._handle_error_response(resp.status_code, resp.content)
+        return None
+
+
 class Player:
     def __init__(self) -> None:
         self.lock = threading.RLock()
+        self.save_lock = threading.Lock()
+        self.restore_lock = threading.Lock()
         self.api_lock = threading.Lock()
         self.client: Client | None = None
         self.queue: list[Any] = []
@@ -444,6 +511,9 @@ class Player:
         self.radio_advance_pending = False
         self.playback_report: dict[str, Any] | None = None
         self.telemetry_queue: queue_module.Queue[Any] = queue_module.Queue(maxsize=TELEMETRY_QUEUE_SIZE)
+        self.telemetry_hold_until = 0.0
+        self.playback_loads = 0
+        self.http = requests.Session()
         self.mpv: subprocess.Popen | None = None
         self.had_file = False
         self.active_ticks = 0
@@ -544,6 +614,14 @@ class Player:
     def _telemetry_worker(self) -> None:
         while True:
             operation = self.telemetry_queue.get()
+            # A track start must not queue behind analytics on the shared API lock.
+            deadline = time.monotonic() + TELEMETRY_MAX_DEFER
+            while time.monotonic() < deadline:
+                with self.lock:
+                    busy = (getattr(self, "playback_loads", 0) > 0
+                            or time.monotonic() < getattr(self, "telemetry_hold_until", 0.0))
+                if not busy: break
+                time.sleep(.1)
             try:
                 # Analytics must remain serialized with foreground API calls, but
                 # must not amplify a rate limit or expose a background error in UI.
@@ -624,6 +702,8 @@ class Player:
             play_id = str(report["playId"])
             station = str(report["station"])
             batch_id = str(report["batchId"])
+            # The next track usually starts right after this report is queued.
+            self.telemetry_hold_until = self._float(report["lastTick"]) + TELEMETRY_SWITCH_HOLD
         operations: list[Callable[[], Any]] = []
         if album_id:
             operations.append(lambda client=client, track_id=track_id, album_id=album_id,
@@ -716,7 +796,7 @@ class Player:
         except Exception:
             saved = {}
         bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
-                     "showControls", "showArtist", "showTitle", "showCover", "showProgress")
+                     "showControls", "showVolume", "showArtist", "showTitle", "showCover", "showProgress")
         for key in bool_keys: preferences[key] = bool(preferences.get(key, DEFAULT_PREFERENCES[key]))
         allowed = {
             "audioQuality": ("best", "economy"),
@@ -737,7 +817,7 @@ class Player:
     def set_preference(self, key: str, value: Any) -> None:
         if key not in DEFAULT_PREFERENCES: raise ValueError(f"Неизвестная настройка: {key}")
         bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
-                     "showControls", "showArtist", "showTitle", "showCover", "showProgress")
+                     "showControls", "showVolume", "showArtist", "showTitle", "showCover", "showProgress")
         allowed = {
             "audioQuality": ("best", "economy"),
             "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
@@ -798,22 +878,68 @@ class Player:
         atomic_json(TOKEN_FILE, saved)
         return saved["access_token"]
 
+    @staticmethod
+    def _is_transient_restore_error(exc: Any) -> bool:
+        """Detect temporary network/DNS failures, typical right after boot or resume."""
+        markers = (
+            "temporary failure", "failed to resolve", "name resolution", "max retries exceeded",
+            "network is unreachable", "no route to host", "name or service not known",
+            "connection aborted", "connection reset", "connection refused", "timed out",
+        )
+        transient_types = (
+            "connectionerror", "connecttimeout", "readtimeout", "timeout", "timedouterror",
+            "nameresolutionerror", "newconnectionerror", "maxretryerror", "gaierror", "networkerror",
+        )
+        current: BaseException | None = exc
+        for _ in range(4):
+            if current is None: break
+            if (any(name in type(current).__name__.lower() for name in transient_types)
+                    or any(marker in str(current).lower() for marker in markers)):
+                return True
+            current = current.__cause__ or current.__context__
+        return False
+
     def _restore(self) -> None:
         if not TOKEN_FILE.exists(): return
+        self._restore_session_with_retry()
+
+    def _restore_session_with_retry(self) -> None:
+        """Restore the saved session, retrying while the network is not up yet."""
+        if not self.restore_lock.acquire(blocking=False): return
         try:
-            saved = self._load_token()
-            expires = int(saved.get("expires_in") or 0)
-            token = saved["access_token"]
-            if expires and time.time() >= int(saved.get("saved_at") or 0) + expires - 86400:
-                token = self._refresh_token(saved)
-            self._connect(token)
-            self._restore_queue()
-        except Exception as exc:
-            self._set_error(f"Не удалось восстановить сессию: {exc}")
+            for attempt in range(len(RESTORE_RETRY_DELAYS) + 1):
+                try:
+                    saved = self._load_token()
+                    expires = int(saved.get("expires_in") or 0)
+                    token = saved["access_token"]
+                    if expires and time.time() >= int(saved.get("saved_at") or 0) + expires - 86400:
+                        token = self._refresh_token(saved)
+                    self._connect(token)
+                    self._restore_queue()
+                    return
+                except Exception as exc:
+                    transient = self._is_transient_restore_error(exc)
+                    if not transient or attempt >= len(RESTORE_RETRY_DELAYS):
+                        self._set_error(RESTORE_OFFLINE_MESSAGE if transient
+                                        else f"Не удалось восстановить сессию: {self._friendly_error(exc)}")
+                        return
+                    with self.lock: self.state.update(connecting=True, error=RESTORE_RETRY_MESSAGE)
+                    threading.Event().wait(RESTORE_RETRY_DELAYS[attempt])
+        finally:
+            self.restore_lock.release()
+
+    def reconnect(self) -> None:
+        """Manual restore retry, used by the panel's «Повторить» button."""
+        with self.lock:
+            if (self.state.get("authenticated") and self.client is not None) or self.state.get("authPending"):
+                return
+            if not TOKEN_FILE.exists(): return
+            self.state.update(connecting=True, error="")
+        threading.Thread(target=self._restore_session_with_retry, daemon=True).start()
 
     def _connect(self, token: str) -> None:
         with self.lock: self.state.update(connecting=True, error="")
-        client = Client(token).init()
+        client = Client(token, request=SessionRequest(self.http)).init()
         with self.lock:
             self.client = client
             self.session_generation += 1
@@ -828,7 +954,7 @@ class Player:
             self.state.update(authPending=True, authUrl="", authCode="", error="")
         def worker() -> None:
             try:
-                client = Client()
+                client = Client(request=SessionRequest(self.http))
                 def got_code(code: Any) -> None:
                     with self.lock: self.state.update(authUrl=code.verification_url, authCode=code.user_code)
                 token = client.device_auth(on_code=got_code)
@@ -1066,21 +1192,23 @@ class Player:
             self.collection_cache.pop("likes", None)
 
     def _save_state(self, force: bool = False) -> None:
-        if not force and time.monotonic() - self.last_saved_at < 5: return
-        with self.lock:
-            current = self._current_track_locked()
-            current_batch = self.radio_track_batches.get(
-                self._track_id(current), self.radio_batch_id) if current is not None else self.radio_batch_id
-            value = {"queue": [self._track_id(t) for t in self.queue if self._track_id(t)],
-                     "index": self.index, "queueName": self.state["queueName"],
-                     "position": self.state["position"], "playing": self.state["playing"],
-                     "volume": self.volume, "muted": self.muted,
-                     "radioStation": self.radio_station, "radioBatchId": current_batch}
-            value["queueCollectionKey"] = self.queue_collection_key
-            value["queueArtistId"] = self.queue_artist_id
-            value["queueArtistPage"] = self.queue_artist_page
-            value["queueArtistHasMore"] = self.queue_artist_has_more
-        atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
+        # Snapshot and write under one lock so an older snapshot can never land last.
+        with self.save_lock:
+            if not force and time.monotonic() - self.last_saved_at < 5: return
+            with self.lock:
+                current = self._current_track_locked()
+                current_batch = self.radio_track_batches.get(
+                    self._track_id(current), self.radio_batch_id) if current is not None else self.radio_batch_id
+                value = {"queue": [self._track_id(t) for t in self.queue if self._track_id(t)],
+                         "index": self.index, "queueName": self.state["queueName"],
+                         "position": self.state["position"], "playing": self.state["playing"],
+                         "volume": self.volume, "muted": self.muted,
+                         "radioStation": self.radio_station, "radioBatchId": current_batch}
+                value["queueCollectionKey"] = self.queue_collection_key
+                value["queueArtistId"] = self.queue_artist_id
+                value["queueArtistPage"] = self.queue_artist_page
+                value["queueArtistHasMore"] = self.queue_artist_has_more
+            atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
 
     def _restore_queue(self) -> None:
         if not STATE_FILE.exists() or not self.client: return
@@ -1299,7 +1427,7 @@ class Player:
                 # The current settings2 endpoint requires JSON, while the
                 # unofficial client's helper still submits form data.
                 def update_settings() -> dict[str, Any]:
-                    response = requests.post(
+                    response = self.http.post(
                         f"{self.client.base_url}/rotor/station/{station}/settings2",
                         headers=dict(self.client._request.headers),
                         proxies=self.client._request.proxies,
@@ -3590,8 +3718,9 @@ class Player:
             finally:
                 self.api_lock.release()
         else:
+            # get_direct_links=True resolves every variant serially; fetch only the chosen one.
             infos = self._api_call(
-                lambda: track.get_download_info(get_direct_links=True),
+                lambda: track.get_download_info(get_direct_links=False),
                 update_loading=update_loading) or []
         if not infos: raise RuntimeError("Яндекс не вернул ссылку на аудио")
         if quality == "economy":
@@ -3735,7 +3864,10 @@ class Player:
         self.mpv = subprocess.Popen(["/usr/bin/mpv", "--idle=yes", "--no-video", "--audio-display=no",
             "--no-terminal", "--load-scripts=no", "--gapless-audio=yes", "--prefetch-playlist=yes",
             "--audio-client-name=Yandex Music",
-            f"--input-ipc-server={MPV_SOCKET}", "--force-window=no", f"--volume={self.volume}"],
+            # Reuse one HTTP connection for the range requests mpv makes while opening a stream.
+            "--stream-lavf-o=multiple_requests=1",
+            f"--input-ipc-server={MPV_SOCKET}", "--force-window=no",
+            f"--volume={volume_percent_to_gain(self.volume)}"],
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         for _ in range(60):
             if MPV_SOCKET.exists():
@@ -3957,7 +4089,12 @@ class Player:
                 self.active_cache_path = None
                 if self.state.get("loadingKind", "") in ("", "track"):
                     self.state.update(loading=True, loadingKind="track", error="")
+                self.playback_loads = getattr(self, "playback_loads", 0) + 1
         def load() -> None:
+            try: load_track()
+            finally:
+                with self.lock: self.playback_loads -= 1
+        def load_track() -> None:
             last_error: Exception | None = None
             cache = getattr(self, "audio_cache", None)
             identity = self._cache_identity(track) if cache else None
@@ -4122,7 +4259,7 @@ class Player:
         self.volume = max(0, min(100, self._int(value)))
         self.muted = False
         try:
-            self._mpv_command(["set_property", "volume", self.volume])
+            self._mpv_command(["set_property", "volume", volume_percent_to_gain(self.volume)])
             self._mpv_command(["set_property", "mute", False])
         except Exception as exc: self._set_error(exc)
         with self.lock: self.state.update(volume=self.volume, muted=False)
@@ -4280,8 +4417,9 @@ class Player:
                 position = self._float(self._mpv_command(["get_property", "time-pos"], False))
                 position_observed_at = time.time()
                 duration = self._int(self._float(self._mpv_command(["get_property", "duration"], False)))
-                volume = self._int(self._float(
-                    self._mpv_command(["get_property", "volume"], False) or self.volume))
+                volume = gain_to_volume_percent(self._float(
+                    self._mpv_command(["get_property", "volume"], False)
+                    or volume_percent_to_gain(self.volume)))
                 muted = bool(self._mpv_command(["get_property", "mute"], False))
                 with self.lock:
                     if generation != getattr(self, "play_generation", 0): continue
@@ -4355,6 +4493,7 @@ class Player:
         if cmd == "track_info": return self.track_info()
         if cmd == "track_info_refresh": return self.track_info(force=True)
         if cmd == "auth": self.authenticate()
+        elif cmd == "reconnect": self.reconnect()
         elif cmd == "logout": self.logout()
         elif cmd == "likes": self.play_likes()
         elif cmd == "wave": self.play_wave()
@@ -4431,6 +4570,47 @@ class Player:
         return {"ok": True}
 
 
+def _read_ipc_request(conn: socket.socket) -> dict[str, Any]:
+    """Read one request line within a deadline so a stalled client cannot block the service."""
+    raw = b""
+    deadline = time.monotonic() + IPC_READ_TIMEOUT
+    while b"\n" not in raw:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            raise TimeoutError("Превышено время ожидания IPC-запроса")
+        conn.settimeout(remaining)
+        chunk = conn.recv(min(NETWORK_CHUNK_BYTES, IPC_REQUEST_MAX_BYTES + 1 - len(raw)))
+        if not chunk:
+            raise ValueError("Неполный IPC-запрос")
+        raw += chunk
+        if len(raw) > IPC_REQUEST_MAX_BYTES:
+            raise ValueError("Слишком длинный IPC-запрос")
+    request = json.loads(raw.split(b"\n", 1)[0])
+    if not isinstance(request, dict):
+        raise ValueError("Некорректный IPC-запрос")
+    return request
+
+
+def _send_ipc_response(conn: socket.socket, response: dict[str, Any]) -> None:
+    try:
+        conn.settimeout(IPC_WRITE_TIMEOUT)
+        conn.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode())
+    except (OSError, TypeError, ValueError):
+        pass
+
+
+def _serve_connection(conn: socket.socket,
+                      handle: Callable[[dict[str, Any]], dict[str, Any]]) -> None:
+    with conn:
+        try:
+            response = handle(_read_ipc_request(conn))
+        except TimeoutError:
+            response = {"error": "Превышено время ожидания IPC-запроса"}
+        except Exception as exc:
+            response = {"error": str(exc)}
+        _send_ipc_response(conn, response)
+
+
 def serve() -> None:
     SOCKET.unlink(missing_ok=True)
     server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM); server.bind(str(SOCKET)); os.chmod(SOCKET, 0o600)
@@ -4440,11 +4620,6 @@ def serve() -> None:
     signal.signal(signal.SIGTERM, shutdown); signal.signal(signal.SIGINT, shutdown)
     while True:
         conn, _ = server.accept()
-        with conn:
-            try:
-                raw = recv_line(conn, IPC_REQUEST_MAX_BYTES, "service IPC")
-                response = player.handle(json.loads(raw or b"{}"))
-            except Exception as exc: response = {"error": str(exc)}
-            conn.sendall((json.dumps(response, ensure_ascii=False) + "\n").encode())
+        _serve_connection(conn, player.handle)
 
 if __name__ == "__main__": serve()

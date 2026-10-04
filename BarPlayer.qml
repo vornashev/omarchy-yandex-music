@@ -13,8 +13,10 @@ Item {
   readonly property bool loading: logic ? logic.loading : false
   readonly property bool hasError: logic ? logic.error !== "" : false
   property real loaderAngle: 0
-  readonly property var preferences: logic && logic.data.preferences ? logic.data.preferences : ({})
+  property real wheelAccumulator: 0
+  readonly property var preferences: logic && logic.snapshot.preferences ? logic.snapshot.preferences : ({})
   readonly property bool showControls: preferences.showControls === undefined ? true : Boolean(preferences.showControls)
+  readonly property bool showVolume: preferences.showVolume === undefined ? true : Boolean(preferences.showVolume)
   readonly property bool showArtist: preferences.showArtist === undefined ? true : Boolean(preferences.showArtist)
   readonly property bool showTitle: preferences.showTitle === undefined ? true : Boolean(preferences.showTitle)
   readonly property bool showCover: preferences.showCover === undefined ? true : Boolean(preferences.showCover)
@@ -33,9 +35,19 @@ Item {
     if (hasError) return "Ошибка Яндекс Музыки — нажмите, чтобы открыть"
     if (loading && !hasTrack) return "Яндекс Музыка загружается…"
     if (!hasTrack) return "Я.Музыка"
-    var artist = String(logic.data.artist || "")
-    var title = String(logic.data.title || "")
+    var artist = String(logic.snapshot.artist || "")
+    var title = String(logic.snapshot.title || "")
     return artist ? artist + " — " + title : title
+  }
+
+  function queueVolume(value) { if (logic) logic.queueVolume(value) }
+  function changeVolumeFromWheel(delta) {
+    if (!logic || delta === 0) return false
+    var wheel = Util.wheelSteps(wheelAccumulator, delta)
+    wheelAccumulator = wheel.remainder
+    if (wheel.steps === 0) return false
+    queueVolume(Number(logic.snapshot.volume || 0) + wheel.steps * 5)
+    return true
   }
 
   implicitWidth: controls.width + Style.space(12)
@@ -57,7 +69,7 @@ Item {
       }
       MouseArea {
         anchors.fill: parent; enabled: root.hasTrack; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-        onClicked: root.logic.action("previous")
+        onClicked: root.logic.transport("previousTrack")
         onEntered: if (root.bar) root.bar.showTooltip(parent, "Предыдущий трек")
         onExited: if (root.bar) root.bar.hideTooltip(parent)
       }
@@ -74,7 +86,7 @@ Item {
       }
       MouseArea {
         anchors.fill: parent; enabled: root.hasTrack; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-        onClicked: root.logic.action("pause")
+        onClicked: root.logic.transport("togglePlayback")
         onEntered: if (root.bar) root.bar.showTooltip(parent, root.playing ? "Пауза" : "Продолжить")
         onExited: if (root.bar) root.bar.hideTooltip(parent)
       }
@@ -91,7 +103,7 @@ Item {
       }
       MouseArea {
         anchors.fill: parent; enabled: root.hasTrack; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-        onClicked: root.logic.action("next")
+        onClicked: root.logic.transport("nextTrack")
         onEntered: if (root.bar) root.bar.showTooltip(parent, "Следующий трек")
         onExited: if (root.bar) root.bar.hideTooltip(parent)
       }
@@ -132,7 +144,7 @@ Item {
         color: "white"
       }
       Image {
-        anchors.fill: parent; source: root.logic && root.logic.data.artUrl ? root.logic.data.artUrl : ""
+        anchors.fill: parent; source: root.logic && root.logic.snapshot.artUrl ? root.logic.snapshot.artUrl : ""
         fillMode: Image.PreserveAspectCrop; asynchronous: true; visible: source !== ""
         layer.enabled: true; layer.smooth: true
         layer.effect: MultiEffect {
@@ -142,7 +154,7 @@ Item {
       }
       Text {
         textFormat: Text.PlainText
-        anchors.centerIn: parent; visible: !root.logic || !root.logic.data.artUrl
+        anchors.centerIn: parent; visible: !root.logic || !root.logic.snapshot.artUrl
         text: "󰝚"; color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.caption
       }
       Rectangle {
@@ -207,8 +219,8 @@ Item {
         text: {
           if (!root.hasTrack) return "Я.Музыка"
           var parts = []
-          var artist = root.logic ? String(root.logic.data.artist || "") : ""
-          var title = root.logic ? String(root.logic.data.title || "") : ""
+          var artist = root.logic ? String(root.logic.snapshot.artist || "") : ""
+          var title = root.logic ? String(root.logic.snapshot.title || "") : ""
           if (root.showArtist && artist) parts.push(artist)
           if (root.showTitle && title) parts.push(title)
           return parts.join(" — ")
@@ -239,6 +251,65 @@ Item {
       Connections {
         target: trackInfoMarquee
         function onRunningChanged() { if (!trackInfoMarquee.running) trackInfoLabel.x = 0 }
+      }
+    }
+
+    Item {
+      id: volumeSlot
+      visible: root.showVolume
+      width: volumeIcon.width + Style.space(64)
+      height: root.implicitHeight
+
+      Text {
+        textFormat: Text.PlainText
+        id: volumeIcon
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        width: Style.space(28)
+        horizontalAlignment: Text.AlignHCenter
+        text: root.logic && root.logic.snapshot.muted ? "󰖁" : "󰕾"
+        color: root.foreground
+        font.family: root.fontFamily; font.pixelSize: 18
+      }
+
+      Rectangle {
+        id: volumeTrack
+        anchors.left: volumeIcon.right
+        anchors.right: parent.right
+        anchors.verticalCenter: parent.verticalCenter
+        height: Style.space(5); radius: height / 2
+        color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .2)
+        Rectangle {
+          width: parent.width * Math.max(0, Math.min(100,
+            Number(root.logic ? root.logic.snapshot.volume || 0 : 0))) / 100
+          height: parent.height; radius: parent.radius
+          color: root.logic && root.logic.snapshot.muted
+            ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .4)
+            : Color.accent
+        }
+      }
+
+      MouseArea {
+        id: volumeMouse
+        anchors.fill: parent
+        hoverEnabled: true
+        preventStealing: true
+        cursorShape: Qt.PointingHandCursor
+        onEntered: if (root.bar) root.bar.showTooltip(parent,
+          "Громкость " + Math.round(Number(root.logic ? root.logic.snapshot.volume || 0 : 0))
+            + "% — колесо ±5%, иконка — mute")
+        onExited: if (root.bar) root.bar.hideTooltip(parent)
+        onClicked: function(mouse) {
+          if (mouse.x <= volumeIcon.width && root.logic) root.logic.transport("toggleMute")
+        }
+        // Хост бара (modulePointer в Bar.qml) перехватывает press/move,
+        // поэтому drag в баре невозможен. Колесо до виджета доходит —
+        // у host-а нет wheel-обработчика (проверено нативным Qt-тестом).
+        onWheel: function(wheel) {
+          if (!root.logic || wheel.angleDelta.y === 0) return
+          root.changeVolumeFromWheel(wheel.angleDelta.y)
+          wheel.accepted = true
+        }
       }
     }
   }
@@ -272,7 +343,7 @@ Item {
     height: Style.space(2); color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
     Rectangle {
       width: parent.width * (root.logic
-        ? Math.min(1, Number(root.logic.data.position || 0) / Math.max(1, Number(root.logic.data.duration || 1)))
+        ? Math.min(1, Number(root.logic.snapshot.position || 0) / Math.max(1, Number(root.logic.snapshot.duration || 1)))
         : 0)
       height: parent.height; color: Color.accent
     }

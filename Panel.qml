@@ -4,6 +4,8 @@ import Quickshell
 import Quickshell.Io
 import qs.Commons
 import qs.Ui
+import "DetailsReconciler.js" as DetailsReconciler
+import "ActionIntents.js" as ActionIntents
 
 Panel {
   id: root
@@ -12,11 +14,11 @@ Panel {
 
   property var anchorItem: null
   property var hostWidget: null
+  property var session: null
   property int page: 0
   property int pageBeforeSettings: 0
   property bool settingsOpen: false
   property bool confirmLogout: false
-  property bool waveOptionsOpen: false
   property bool playerActionsOpen: false
   property bool lyricsOpen: false
   property bool lyricsAutoScroll: true
@@ -57,8 +59,9 @@ Panel {
   property var lastActionArgument: undefined
   property bool refreshing: false
   property bool hasLoadedStatus: false
-  property int pendingVolume: -1
-  property int sentVolume: -1
+  property int detailsVolumeRevision: 0
+  property int detailsActionRevision: 0
+  property bool detailsStartedAfterVolume: true
   property int pendingSeek: -1
   property int sentSeek: -1
   property bool seeking: false
@@ -102,8 +105,6 @@ Panel {
   readonly property bool browsingLibrary: String(data.libraryBrowseName || "") !== ""
   readonly property bool browsingCollection: browsingLibrary
   readonly property var trackListDisplay: browsingLibrary ? libraryDisplay : queueDisplay
-  readonly property var catalogRows: buildCatalogRows()
-  readonly property var libraryRows: libraryController.rows
   readonly property string playbackMode: String(preference("playbackMode", "repeatQueue"))
   readonly property string playbackModeIcon: playbackMode === "shuffle" ? "󰒟"
     : (playbackMode === "repeatTrack" ? "󰑘" : (playbackMode === "repeatQueue" ? "󰑖" : "󰐕"))
@@ -113,14 +114,12 @@ Panel {
   readonly property bool busy: data.connecting === true || data.restoring === true
     || data.loading === true || data.libraryLoadingMore === true
     || libraryController.loading || libraryController.loadingMore
-    || collectionController.busy || actionProcess.running || settingsProcess.running
+    || collectionController.busy || (session && session.actionRunning) || settingsProcess.running
     || (refreshing && !hasLoadedStatus)
   readonly property var networkInfo: data.network || ({})
   readonly property bool hasVisibleError: lastError !== "" && lastError !== dismissedError
   readonly property bool queueListLoading: data.loading === true
     && ["likes", "playlist", "personal", "wave", "radio", "station"].indexOf(String(data.loadingKind || "")) >= 0
-  readonly property bool searchListLoading: catalogDisplay.search.loading === true
-    || catalogDisplay.entity.loading === true
   readonly property string errorTitle: errorSource === "status"
     ? "Нет связи с музыкальным сервисом"
     : (errorSource === "backend" ? "Ошибка Яндекс Музыки" : "Не удалось выполнить действие")
@@ -153,9 +152,9 @@ Panel {
       if (operation === "recommendations") return "Подбираем рекомендации…"
       return "Обновляем плейлист…"
     }
-    if (actionProcess.running && lastActionCommand === "like") return "Обновляем отметку «Мне нравится»…"
-    if (actionProcess.running && lastActionCommand === "dislike") return "Обновляем отметку «Не рекомендовать»…"
-    if (actionProcess.running) return "Выполняем действие…"
+    if (session && session.actionRunning && session.lastCommand === "like") return "Обновляем отметку «Мне нравится»…"
+    if (session && session.actionRunning && session.lastCommand === "dislike") return "Обновляем отметку «Не рекомендовать»…"
+    if (session && session.actionRunning) return "Выполняем действие…"
     return "Загрузка…"
   }
   readonly property string loaderTooltip: {
@@ -223,8 +222,8 @@ Panel {
       lyricsOpen = false
       trackInfoOpen = false
       page = 0
-      searchField.focus = false
-      stationSearchField.focus = false
+      catalogPage.clearSearchFocus()
+      libraryPage.clearStationFocus()
       panelScroll.contentY = 0
       keyCatcher.forceActiveFocus()
     }
@@ -277,8 +276,10 @@ Panel {
       if (collectionController.openRecommendations(
           String(data.libraryPlaylistKind || ""), String(data.libraryBrowseName || "")))
         collectionPopup.open()
-    } else if (command === "queue") action("close_library")
-    else action(command)
+    } else if (command === "queue") intent("closeLibraryQueue")
+    else if (command === "dislike") transport("dislikeTrack")
+    else if (command === "track_radio") intent("startTrackRadio")
+    else if (command === "mode") intent("cyclePlaybackMode")
   }
   function selectCurrentTrackPane(index) {
     if (index === 1) setLyricsOpen(true)
@@ -423,14 +424,19 @@ Panel {
     }
   }
   function refresh() {
-    if (statusProcess.running) return
+    if (!opened || statusProcess.running) return
+    detailsActionRevision = session ? session.actionRevision : 0
+    if (session) {
+      detailsVolumeRevision = session.volumeRevision
+      detailsStartedAfterVolume = !session.volumePending
+    }
     refreshing = true; statusProcess.command = [cli, "details"]; statusProcess.running = true
   }
   function maybeLoadMoreLibrary() {
     if (!root.browsingLibrary || root.data.libraryHasMore !== true
-        || root.data.libraryLoadingMore === true || actionProcess.running) return
+        || root.data.libraryLoadingMore === true || (session && session.actionRunning)) return
     if (queueList.contentY + queueList.height >= queueList.contentHeight - Style.space(50))
-      root.action("load_more_library")
+      root.intent("loadMoreLibraryTracks")
   }
   function normalizeShortcutKey(value) {
     var t = String(value || "").toLowerCase()
@@ -442,11 +448,11 @@ Panel {
   function runPlayerShortcut(value) {
     var t = normalizeShortcutKey(value)
     if (!hasTrack) return false
-    if (t === " ") action("pause")
-    else if (t === "l") action("like")
-    else if (t === "d") action("dislike")
-    else if (t === "n") action("next")
-    else if (t === "p") action("previous")
+    if (t === " ") transport("togglePlayback")
+    else if (t === "l") transport("toggleLike")
+    else if (t === "d") transport("dislikeTrack")
+    else if (t === "n") transport("nextTrack")
+    else if (t === "p") transport("previousTrack")
     else if (t === "f") setCoverExpanded(!coverExpanded)
     else return false
     return true
@@ -459,21 +465,21 @@ Panel {
   function openCatalogArtist(artistId, returnPage) {
     if (!artistId) return
     prepareCatalogNavigation(returnPage)
-    searchField.focus = false
+    catalogPage.clearSearchFocus()
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("artist", artistId, "", "", "")
   }
   function openCatalogAlbum(albumId, returnPage) {
     if (!albumId) return
     prepareCatalogNavigation(returnPage)
-    searchField.focus = false
+    catalogPage.clearSearchFocus()
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("album", albumId, "", "", "")
   }
   function openCatalogPlaylist(row, returnPage) {
     var value = row || {}
     prepareCatalogNavigation(returnPage)
-    searchField.focus = false
+    catalogPage.clearSearchFocus()
     keyCatcher.forceActiveFocus()
     catalogController.openEntity("playlist", "", value.uuid, value.owner, value.kind)
   }
@@ -487,134 +493,53 @@ Panel {
     pendingSuggestionCommand = [cli, "catalog_suggest", String(generation), String(query)]
     startSuggestionRequest()
   }
-  function buildCatalogRows() {
-    var rows = []
-    var snapshot = catalogDisplay || {}
-    var view = String(snapshot.view || "search")
-    var search = snapshot.search || {}
-    var sections = search.sections || {}
-    var labels = { tracks: "ТРЕКИ", artists: "ИСПОЛНИТЕЛИ",
-      albums: "АЛЬБОМЫ", playlists: "ПЛЕЙЛИСТЫ" }
-    if (view === "search") {
-      if (String(search.query || "") === "" && search.loading !== true) {
-        rows.push({ kind: "empty", title: "Введите запрос для поиска по каталогу" })
-        return rows
-      }
-      var names = ["tracks", "artists", "albums", "playlists"]
-      var selected = String(search.filter || catalogController.filter || "all")
-      for (var i = 0; i < names.length; i++) {
-        var name = names[i]
-        if (selected !== "all" && selected + "s" !== name) continue
-        var section = sections[name] || { items: [], total: 0, hasMore: false }
-        rows.push({ kind: "section", title: labels[name], count: Number(section.total || 0) })
-        var items = section.items || []
-        for (var j = 0; j < items.length; j++)
-          rows.push({ kind: name.slice(0, -1), value: items[j], source: "search" })
-        if (items.length === 0 && search.loading !== true)
-          rows.push({ kind: "empty", title: "Ничего не найдено" })
-      }
-      if (String(search.error || "") !== "") {
-        rows.push({ kind: "error", title: search.error })
-        rows.push({ kind: "retrySearch", title: "Повторить поиск" })
-      }
-      var hasMore = false
-      for (var n = 0; n < names.length; n++)
-        if ((sections[names[n]] || {}).hasMore === true) hasMore = true
-      if (hasMore || search.loadingMore === true)
-        rows.push({ kind: "loadSearch", title: search.loadingMore ? "Загружаем…" : "Загрузить ещё" })
-      return rows
-    }
-    var entity = snapshot.entity || {}
-    rows.push({ kind: "entityHeader", value: entity })
-    if (String(entity.description || "") !== "")
-      rows.push({ kind: "description", title: entity.description })
-    if (String(entity.error || "") !== "") {
-      rows.push({ kind: "error", title: entity.error })
-      rows.push({ kind: "retryEntity", title: "Повторить загрузку" })
-    }
-    if (String(entity.warning || "") !== "") rows.push({ kind: "warning", title: entity.warning })
-    var tracks = entity.tracks || []
-    if (tracks.length > 0) rows.push({ kind: "section", title: view === "artist" ? "ПОПУЛЯРНЫЕ ТРЕКИ" : "ТРЕКИ", count: tracks.length })
-    for (var k = 0; k < tracks.length; k++)
-      rows.push({ kind: "track", value: tracks[k], source: "entity" })
-    if ((view === "album" || view === "playlist") && (entity.hasMore === true || entity.loadingMore === true))
-      rows.push({ kind: "loadEntity", title: entity.loadingMore ? "Загружаем…" : "Загрузить ещё треки" })
-    if (view === "artist") {
-      var releaseSections = [{ key: "albums", title: "АЛЬБОМЫ" }, { key: "singles", title: "СИНГЛЫ" }]
-      for (var r = 0; r < releaseSections.length; r++) {
-        var releaseSection = releaseSections[r]
-        var releases = entity[releaseSection.key] || []
-        rows.push({ kind: "section", title: releaseSection.title, count: releases.length })
-        for (var a = 0; a < releases.length; a++) rows.push({ kind: "album", value: releases[a] })
-        if ((entity.releaseErrors || {})[releaseSection.key])
-          rows.push({ kind: "error", title: entity.releaseErrors[releaseSection.key] })
-        if ((entity.releaseHasMore || {})[releaseSection.key] === true
-            || (entity.releaseLoading || {})[releaseSection.key] === true)
-          rows.push({ kind: "loadRelease", section: releaseSection.key,
-            title: (entity.releaseLoading || {})[releaseSection.key] ? "Загружаем…" : "Загрузить ещё" })
-      }
-      var similar = entity.similar || []
-      if (similar.length > 0)
-        rows.push({ kind: "section", title: "ПОХОЖИЕ ИСПОЛНИТЕЛИ", count: similar.length })
-      for (var s = 0; s < similar.length; s++)
-        rows.push({ kind: "artist", value: similar[s] })
-    }
-    return rows
-  }
   function action(command, argument) {
-    if (actionProcess.running) return false
+    var policy = ActionIntents.policyForCommand(command)
+    if (!policy || !session || !session.action(command, argument)) return false
     lastActionCommand = command
     lastActionArgument = argument
     dismissedError = ""
     errorSource = ""
-    var loadingKinds = { "artist": "artist", "likes": "likes", "playlist": "playlist",
-      "browse_personal": "personal", "wave": "wave", "track_radio": "radio",
-      "play_station": "station", "search": "search" }
-    if (command === "library_section" || command === "library_retry") {
-      libraryController.applySnapshot({ view: "section", section: String(argument || ""),
-        loading: true, error: "", warning: "", items: [], revision: libraryHubDisplay.revision || 0 })
-    } else if (command === "library_back") {
-      libraryController.applySnapshot({ view: "home", section: "", loading: false,
-        error: "", warning: "", items: [], revision: libraryHubDisplay.revision || 0 })
-    }
-    if (loadingKinds[command] !== undefined || command === "load_more_library") {
-      var optimistic = {}
-      for (var key in data) optimistic[key] = data[key]
-      if (loadingKinds[command] !== undefined) {
-        optimistic.loading = true
-        optimistic.loadingKind = loadingKinds[command]
-      } else {
-        optimistic.libraryLoadingMore = true
-      }
-      optimistic.error = ""
-      data = optimistic
-    }
-    var args = [cli, command]
-    if (Array.isArray(argument)) {
-      for (var i = 0; i < argument.length; i++) args.push(String(argument[i]))
-    } else if (argument !== undefined && argument !== null) args.push(String(argument))
-    actionProcess.command = args; actionProcess.running = true
-    if (command === "catalog_search" && catalogResultsList) catalogResultsList.positionViewAtBeginning()
+    var librarySnapshot = ActionIntents.optimisticLibrary(
+      policy, argument, libraryHubDisplay.revision || 0)
+    if (librarySnapshot) libraryController.applySnapshot(librarySnapshot)
+    var optimistic = ActionIntents.optimisticData(policy, data)
+    if (optimistic) data = optimistic
+    if (policy.resetCatalogScroll) catalogPage.scrollToBeginning()
+    return true
+  }
+  function intent(name, payload) {
+    var request = ActionIntents.resolve(name, payload)
+    return request ? action(request.command, request.argument) : false
+  }
+  function transport(intent, payload) {
+    if (!session || !session.transport(intent, payload)) return false
+    lastActionCommand = session.lastCommand
+    lastActionArgument = session.lastArgument
+    dismissedError = ""
+    errorSource = ""
     return true
   }
   function retryLastOperation() {
     dismissedError = ""
     lastError = ""
+    // Session restore errors leave authenticated=false with no last action.
+    // A plain status refresh would return the same sticky error, so trigger
+    // an explicit backend reconnect instead.
+    if (!authenticated && data.authPending !== true) {
+      intent("reconnect")
+      return
+    }
     if (errorSource === "status" || lastActionCommand === "") refresh()
     else action(lastActionCommand, lastActionArgument)
   }
   function queueVolume(value) {
-    var next = Math.max(0, Math.min(100, Math.round(Number(value))))
-    pendingVolume = next
+    if (!session || !session.queueVolume(value)) return
     var copy = {}
     for (var key in data) copy[key] = data[key]
-    copy.volume = next
+    copy.volume = session.pendingVolume
     copy.muted = false
     data = copy
-    volumeDebounce.restart()
-  }
-  function volumeFromPointer(mouse, area) {
-    queueVolume(mouse.x / Math.max(1, area.width) * 100)
   }
   function previewSeek(mouse, area) {
     var ratio = Math.max(0, Math.min(1, mouse.x / Math.max(1, area.width)))
@@ -628,95 +553,85 @@ Panel {
   function applyStatus(text) {
     try {
       var parsed = JSON.parse(String(text || "{}"))
-      var queueChanged = Number(parsed.queueIndex || 0) !== previousQueueIndex
-      var browseChanged = String(parsed.libraryBrowseName || "") !== String(data.libraryBrowseName || "")
-      var previousContentY = queueList ? queueList.contentY : 0
-      var libraryExpanded = (parsed.libraryTracks || []).length > (data.libraryTracks || []).length
-      if (Number(parsed.libraryRevision || 0) === Number(data.libraryRevision || 0))
-        parsed.libraryTracks = data.libraryTracks || []
-      if (Number(parsed.queueRevision || 0) === Number(data.queueRevision || 0)) {
-        parsed.queueTracks = queueDisplay
-      } else {
-        queueDisplay = parsed.queueTracks || []
+      var result = DetailsReconciler.reconcile(parsed, {
+        data: data, queueDisplay: queueDisplay,
+        libraryHubDisplay: libraryHubDisplay, collectionDisplay: collectionDisplay,
+        catalogDisplay: catalogDisplay, catalogSearchContentY: catalogSearchContentY,
+        catalogInitialized: catalogInitialized, previousQueueIndex: previousQueueIndex,
+        page: page
+      }, {
+        queueY: queueList ? queueList.contentY : 0,
+        libraryY: libraryPage ? libraryPage.viewportY : 0,
+        catalogY: catalogPage ? catalogPage.viewportY : 0
+      }, detailsActionRevision, session ? session.actionRevision : 0)
+      if (result.ignored) {
+        if (opened && (!session || !session.actionRunning)) settleTimer.restart()
+        return
       }
-      if (parsed.libraryHub
-          && Number(parsed.libraryHubRevision || 0) !== Number(data.libraryHubRevision || 0)) {
-        var oldLibraryView = String(libraryHubDisplay.view || "home")
-        var oldLibrarySection = String(libraryHubDisplay.section || "")
-        var newLibraryView = String(parsed.libraryHub.view || "home")
-        var newLibrarySection = String(parsed.libraryHub.section || "")
-        var previousLibraryContentY = libraryList ? libraryList.contentY : 0
-        var libraryHubExpanded = (parsed.libraryHub.items || []).length
-          > (libraryHubDisplay.items || []).length
-        libraryHubDisplay = parsed.libraryHub
-        libraryController.applySnapshot(parsed.libraryHub)
-        if (oldLibraryView !== newLibraryView || oldLibrarySection !== newLibrarySection) {
-          Qt.callLater(function() { if (libraryList) libraryList.contentY = 0 })
-        } else if (libraryHubExpanded) {
+      if (result.changed.queue) queueDisplay = result.queueDisplay
+      if (result.changed.libraryHub) {
+        libraryHubDisplay = result.libraryHubDisplay
+        libraryController.applySnapshot(result.libraryHubDisplay)
+        if (result.intents.libraryViewport === "reset") {
+          Qt.callLater(function() { if (libraryPage) libraryPage.resetViewport() })
+        } else if (result.intents.libraryViewport === "preserve") {
+          var libraryTargetY = result.intents.libraryTargetY
           Qt.callLater(function() {
-            if (libraryList) libraryList.contentY = Math.min(previousLibraryContentY,
-              Math.max(0, libraryList.contentHeight - libraryList.height))
+            if (libraryPage) libraryPage.preserveViewport(libraryTargetY)
           })
         }
       }
-      if (parsed.collection
-          && Number(parsed.collectionRevision || 0) !== Number(data.collectionRevision || 0)) {
-        collectionDisplay = parsed.collection
-        collectionController.applySnapshot(parsed.collection)
+      if (result.changed.collection) {
+        collectionDisplay = result.collectionDisplay
+        collectionController.applySnapshot(result.collectionDisplay)
       }
-      if (parsed.catalog && Number(parsed.catalogRevision || 0) !== Number(data.catalogRevision || 0)) {
-        var oldView = String(catalogDisplay.view || "search")
-        var newView = String(parsed.catalog.view || "search")
-        var previousCatalogContentY = catalogResultsList ? catalogResultsList.contentY : 0
-        var oldSearch = catalogDisplay.search || {}
-        var newSearch = parsed.catalog.search || {}
-        var searchChanged = String(oldSearch.query || "") !== String(newSearch.query || "")
-          || String(oldSearch.filter || "all") !== String(newSearch.filter || "all")
-        var oldEntity = catalogDisplay.entity || {}
-        var newEntity = parsed.catalog.entity || {}
-        var entityChanged = String(oldEntity.type || "") !== String(newEntity.type || "")
-          || String(oldEntity.id || "") !== String(newEntity.id || "")
-        if (oldView === "search") catalogSearchContentY = previousCatalogContentY
-        catalogDisplay = parsed.catalog
-        if (!catalogInitialized) {
+      if (result.changed.catalog) {
+        catalogSearchContentY = result.catalogSearchContentY
+        catalogDisplay = result.catalogDisplay
+        if (result.initializeCatalog) {
           catalogInitialized = true
-          catalogController.filter = String((parsed.catalog.search || {}).filter || "all")
-          catalogController.fieldText = String((parsed.catalog.search || {}).fieldText || "")
-          searchField.text = catalogController.fieldText
+          catalogController.filter = String((result.catalogDisplay.search || {}).filter || "all")
+          catalogController.fieldText = String((result.catalogDisplay.search || {}).fieldText || "")
+          catalogPage.setSearchText(catalogController.fieldText)
         }
-        catalogController.applySuggestions(parsed.catalog.suggestions || {})
-        if (oldView !== newView && newView === "search") {
-          Qt.callLater(function() { catalogResultsList.contentY = root.catalogSearchContentY })
-        } else if (oldView !== newView || searchChanged || entityChanged) {
-          Qt.callLater(function() { catalogResultsList.contentY = 0 })
-        } else {
+        catalogController.applySuggestions(result.catalogDisplay.suggestions || {})
+        if (result.intents.catalogViewport === "restoreSearch") {
+          var searchTargetY = result.intents.catalogTargetY
+          Qt.callLater(function() { if (catalogPage) catalogPage.restoreViewport(searchTargetY) })
+        } else if (result.intents.catalogViewport === "reset") {
+          Qt.callLater(function() { if (catalogPage) catalogPage.resetViewport() })
+        } else if (result.intents.catalogViewport === "preserve") {
+          var catalogTargetY = result.intents.catalogTargetY
           Qt.callLater(function() {
-            catalogResultsList.contentY = Math.min(previousCatalogContentY,
-              Math.max(0, catalogResultsList.contentHeight - catalogResultsList.height))
+            if (catalogPage) catalogPage.preserveViewport(catalogTargetY)
           })
         }
       }
-      if (pendingVolume >= 0 && (actionsVolumeDrag.pressed
-          || volumeProcess.running || volumeDebounce.running)) {
-        parsed.volume = pendingVolume
-        parsed.muted = false
+      var nextData = result.data
+      if (session && session.pendingVolume >= 0 && (expandedVolumeControl.pressed
+          || regularVolumeControl.pressed
+          || session.shouldPreserveVolume(detailsVolumeRevision, detailsStartedAfterVolume))) {
+        nextData.volume = session.pendingVolume
+        nextData.muted = false
       }
-      data = parsed
+      data = nextData
       positionClockMs = Date.now()
       hasLoadedStatus = true
-      var nextError = String(parsed.error || "")
+      var nextError = String(nextData.error || "")
       if (nextError !== lastError) dismissedError = ""
       lastError = nextError
       errorSource = lastError === "" ? "" : "backend"
-      previousQueueIndex = Number(parsed.queueIndex || 0)
-      if (queueChanged && page === 0) queueScrollTimer.restart()
-      if (browseChanged && String(parsed.libraryBrowseName || "") !== "")
+      previousQueueIndex = result.previousQueueIndex
+      if (result.intents.queueCurrent) queueScrollTimer.restart()
+      if (result.intents.queueViewport === "reset")
         Qt.callLater(function() { if (queueList) queueList.contentY = 0 })
-      else if (libraryExpanded)
+      else if (result.intents.queueViewport === "preserve") {
+        var queueTargetY = result.intents.queueTargetY
         Qt.callLater(function() {
-          if (queueList) queueList.contentY = Math.min(previousContentY,
+          if (queueList) queueList.contentY = Math.min(queueTargetY,
             Math.max(0, queueList.contentHeight - queueList.height))
         })
+      }
     } catch (e) {
       console.warn("Yandex Music status update failed:", String(e))
       errorSource = "status"
@@ -757,13 +672,13 @@ Panel {
       Qt.callLater(function() {
         if (root.page !== 2 || root.settingsOpen) return
         panelScroll.contentY = 0
-        searchField.forceActiveFocus()
+        catalogPage.focusSearch()
       })
     } else {
       // A hidden TextField keeps active focus unless it is transferred
       // explicitly, which would make it consume shortcuts from other pages.
-      searchField.focus = false
-      stationSearchField.focus = false
+      catalogPage.clearSearchFocus()
+      libraryPage.clearStationFocus()
       keyCatcher.forceActiveFocus()
     }
   }
@@ -771,12 +686,16 @@ Panel {
   LibraryController {
     id: libraryController
     ownPlaylists: root.data.playlists || []
-    onSectionRequested: function(section) { root.action("library_section", section) }
-    onBackRequested: root.action("library_back")
-    onRetryRequested: function(section) { root.action("library_retry", section) }
-    onLoadMoreRequested: root.action("library_section_more")
+    onSectionRequested: function(section) { root.intent("openLibrarySection", section) }
+    onBackRequested: root.intent("returnLibraryHome")
+    onRetryRequested: function(section) { root.intent("retryLibrarySection", section) }
+    onLoadMoreRequested: root.intent("loadMoreLibrarySection")
     onCollectionRequested: function(command, argument) {
-      root.action(command, argument === "" ? undefined : argument)
+      if (command === "likes") root.intent("openLikes")
+      else if (command === "playlist") root.intent("openOwnedPlaylist",
+        argument === "" ? undefined : argument)
+      else if (command === "browse_personal") root.intent("openPersonalPlaylist",
+        argument === "" ? undefined : argument)
       root.selectPage(0)
     }
     onEntityRequested: function(type, id, uuid, owner, kind) {
@@ -786,11 +705,11 @@ Panel {
         { uuid: uuid, owner: owner, kind: kind }, 1)
     }
     onTrackPlaybackRequested: function(index) {
-      root.action("play_library_hub_track", index)
+      root.transport("playLibraryHubTrack", index)
       root.selectPage(0)
     }
     onStationPlaybackRequested: function(station, title) {
-      root.action("play_station", [station, title])
+      root.intent("playStation", [station, title])
       root.selectPage(0)
     }
   }
@@ -799,23 +718,23 @@ Panel {
     id: collectionController
     ownPlaylists: root.data.playlists || []
     onMembershipsRequested: function(source, index, trackId, albumId) {
-      if (!root.action("playlist_memberships", [source, index, trackId, albumId]))
+      if (!root.intent("inspectPlaylistMembership", [source, index, trackId, albumId]))
         collectionController.membershipRequestFailed()
     }
     onAddRequested: function(kind, source, index, trackId, albumId) {
-      if (!root.action("playlist_add_track", [kind, source, index, trackId, albumId]))
+      if (!root.intent("addPlaylistTrack", [kind, source, index, trackId, albumId]))
         collectionController.requestPending = false
     }
     onCreateRequested: function(title, source, index, trackId, albumId) {
-      if (!root.action("playlist_create", [source, index, trackId, albumId, title]))
+      if (!root.intent("createPlaylist", [source, index, trackId, albumId, title]))
         collectionController.requestPending = false
     }
     onDeleteRequested: function(kind, source, index, trackId, albumId) {
-      if (!root.action("playlist_delete_track", [kind, source, index, trackId, albumId]))
+      if (!root.intent("deletePlaylistTrack", [kind, source, index, trackId, albumId]))
         collectionController.requestPending = false
     }
     onRecommendationsRequested: function(kind, title) {
-      if (!root.action("playlist_recommendations", [kind, title]))
+      if (!root.intent("loadPlaylistRecommendations", [kind, title]))
         collectionController.requestPending = false
     }
     onClearRequested: {
@@ -834,32 +753,32 @@ Panel {
       root.startSuggestionRequest()
     }
     onSearchRequested: function(query, filter) {
-      root.action("catalog_search", [filter, query])
+      root.intent("searchCatalog", [filter, query])
     }
     onEntityRequested: function(type, id, uuid, owner, kind) {
-      if (type === "artist") root.action("catalog_artist", id)
-      else if (type === "album") root.action("catalog_album", id)
-      else if (type === "playlist") root.action("catalog_playlist", [uuid, owner, kind])
+      if (type === "artist") root.intent("openCatalogArtist", id)
+      else if (type === "album") root.intent("openCatalogAlbum", id)
+      else if (type === "playlist") root.intent("openCatalogPlaylist", [uuid, owner, kind])
     }
     onBackRequested: {
-      root.action("catalog_back")
+      root.intent("returnCatalogSearch")
       if (root.catalogReturnPage === 1) {
         root.catalogReturnPage = 2
         root.selectPage(1)
       }
     }
-    onLoadMoreRequested: root.action("catalog_load_more")
-    onReleaseMoreRequested: function(section) { root.action("catalog_artist_more", section) }
+    onLoadMoreRequested: root.intent("loadMoreCatalogSearch")
+    onReleaseMoreRequested: function(section) { root.intent("loadMoreArtistRelease", section) }
     onTrackPlaybackRequested: function(source, index) {
-      root.action("play_catalog_track", [source, index])
+      root.transport("playCatalogTrack", [source, index])
     }
   }
 
   onCatalogDisplayChanged: if (page === 2) {
     if (String(catalogDisplay.view || "search") === "search")
-      Qt.callLater(function() { if (root.page === 2) searchField.forceActiveFocus() })
+      Qt.callLater(function() { if (root.page === 2) catalogPage.focusSearch() })
     else {
-      searchField.focus = false
+      catalogPage.clearSearchFocus()
       keyCatcher.forceActiveFocus()
     }
   }
@@ -910,6 +829,11 @@ Panel {
     stderr: StdioCollector { id: statusErr; waitForEnd: true }
     onExited: function(exitCode) {
       root.refreshing = false
+      if (DetailsReconciler.isStaleResponse(root.detailsActionRevision,
+          root.session ? root.session.actionRevision : 0)) {
+        if (root.opened && (!root.session || !root.session.actionRunning)) settleTimer.restart()
+        return
+      }
       if (exitCode === 0) root.applyStatus(statusOut.text)
       else {
         root.errorSource = "status"
@@ -968,16 +892,21 @@ Panel {
       else settleTimer.restart()
     }
   }
-  Process {
-    id: actionProcess; command: []
-    stdout: StdioCollector { id: actionOut; waitForEnd: true }
-    stderr: StdioCollector { id: actionErr; waitForEnd: true }
-    onExited: function(exitCode) {
+  Connections {
+    target: root.session
+    function onActionFinished(exitCode, stdoutText, stderrText) {
+      if (!root.opened) return
       if (exitCode !== 0) {
+        root.lastActionCommand = root.session.lastCommand
+        root.lastActionArgument = root.session.lastArgument
         root.errorSource = "action"
-        root.lastError = String(actionErr.text || actionOut.text || "Не удалось выполнить действие")
+        root.lastError = String(stderrText || stdoutText || "Не удалось выполнить действие")
       }
-      settleTimer.restart()
+      var policy = ActionIntents.policyForCommand(root.session.lastCommand)
+      if (!policy || policy.refresh === "settle") settleTimer.restart()
+    }
+    function onVolumeDrained() {
+      if (root.opened) settleTimer.restart()
     }
   }
   Process {
@@ -994,14 +923,6 @@ Panel {
     }
   }
   Process {
-    id: volumeProcess
-    command: []
-    onExited: {
-      if (root.pendingVolume !== root.sentVolume) volumeDebounce.restart()
-      else settleTimer.restart()
-    }
-  }
-  Process {
     id: seekProcess
     command: []
     onExited: {
@@ -1010,17 +931,6 @@ Panel {
         root.pendingSeek = -1
         settleTimer.restart()
       }
-    }
-  }
-  Timer {
-    id: volumeDebounce
-    interval: 45
-    repeat: false
-    onTriggered: {
-      if (volumeProcess.running || root.pendingVolume < 0) return
-      root.sentVolume = root.pendingVolume
-      volumeProcess.command = [root.cli, "volume", String(root.sentVolume)]
-      volumeProcess.running = true
     }
   }
   Timer {
@@ -1035,8 +945,10 @@ Panel {
     }
   }
   Timer {
-    interval: root.opened || root.playing || root.data.authPending ? 1000 : 5000
-    running: true; repeat: true; triggeredOnStart: true; onTriggered: root.refresh()
+    interval: 1000
+    running: root.opened
+    repeat: true
+    onTriggered: root.refresh()
   }
   Timer {
     interval: 100
@@ -1087,77 +999,6 @@ Panel {
     onTriggered: root.copiedAuthCode = ""
   }
 
-  component SkeletonList: Column {
-    id: skeletonRoot
-    property color foreground: Color.foreground
-    property int rowCount: 5
-    spacing: 0
-
-    Repeater {
-      model: skeletonRoot.rowCount
-      Item {
-        id: skeletonRow
-        required property int index
-        width: skeletonRoot.width
-        height: Style.space(50)
-        clip: true
-
-        Row {
-          anchors.left: parent.left; anchors.right: parent.right
-          anchors.leftMargin: Style.space(10); anchors.rightMargin: Style.space(10)
-          anchors.verticalCenter: parent.verticalCenter
-          spacing: Style.space(10)
-
-          Rectangle {
-            width: Style.space(18); height: width; radius: width / 2
-            anchors.verticalCenter: parent.verticalCenter
-            color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
-              skeletonRoot.foreground.b, .09)
-          }
-          Column {
-            width: parent.width - Style.space(72)
-            anchors.verticalCenter: parent.verticalCenter
-            spacing: Style.space(6)
-            Rectangle {
-              width: parent.width * (.58 + (skeletonRow.index % 3) * .09)
-              height: Style.space(8); radius: height / 2
-              color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
-                skeletonRoot.foreground.b, .11)
-            }
-            Rectangle {
-              width: parent.width * (.32 + (skeletonRow.index % 2) * .13)
-              height: Style.space(6); radius: height / 2
-              color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
-                skeletonRoot.foreground.b, .07)
-            }
-          }
-          Rectangle {
-            width: Style.space(34); height: Style.space(6); radius: height / 2
-            anchors.verticalCenter: parent.verticalCenter
-            color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
-              skeletonRoot.foreground.b, .07)
-          }
-        }
-
-        Rectangle {
-          id: shimmer
-          width: parent.width * .18; height: parent.height
-          color: Qt.rgba(skeletonRoot.foreground.r, skeletonRoot.foreground.g,
-            skeletonRoot.foreground.b, .045)
-          rotation: 8
-          SequentialAnimation on x {
-            loops: Animation.Infinite
-            PauseAnimation { duration: skeletonRow.index * 55 }
-            NumberAnimation {
-              from: -shimmer.width; to: skeletonRow.width + shimmer.width
-              duration: 1050; easing.type: Easing.InOutQuad
-            }
-            PauseAnimation { duration: 300 }
-          }
-        }
-      }
-    }
-  }
 
   KeyboardPanel {
     id: panel
@@ -1178,8 +1019,8 @@ Panel {
       id: shortcutInterceptor
       Keys.onPressed: function(event) {
         if (event.modifiers & ~Qt.KeypadModifier) return
-        if (root.settingsOpen || root.playerActionsOpen || searchField.activeFocus
-            || stationSearchField.activeFocus || !root.hasTrack) return
+        if (root.settingsOpen || root.playerActionsOpen || catalogPage.searchActiveFocus
+            || libraryPage.stationSearchActiveFocus || !root.hasTrack) return
         var t = event.text ? String(event.text).toLowerCase() : ""
         if (!t && event.key >= Qt.Key_A && event.key <= Qt.Key_Z)
           t = String.fromCharCode(event.key).toLowerCase()
@@ -1191,7 +1032,7 @@ Panel {
       id: keyCatcher
       anchors.fill: parent
       Keys.forwardTo: [shortcutInterceptor]
-      blocked: searchField.activeFocus || stationSearchField.activeFocus
+      blocked: catalogPage.searchActiveFocus || libraryPage.stationSearchActiveFocus
         || root.playerActionsOpen
       onCloseRequested: {
         if (root.playerActionsOpen) root.closePlayerActions()
@@ -1224,10 +1065,10 @@ Panel {
         contentHeight: content.implicitHeight
         clip: true
         boundsBehavior: Flickable.StopAtBounds
-        interactive: !root.coverExpanded && contentHeight > height
+        interactive: !root.coverExpanded && !root.coverTransitioning && contentHeight > height
           && (root.settingsOpen || root.page !== 2)
         ScrollBar.vertical: ScrollBar {
-          policy: root.coverExpanded || (!root.settingsOpen && root.page === 2)
+          policy: root.coverExpanded || root.coverTransitioning || (!root.settingsOpen && root.page === 2)
             ? ScrollBar.AlwaysOff : ScrollBar.AsNeeded
           topPadding: root.settingsOpen ? Style.space(34) : 0
           bottomPadding: Style.space(4)
@@ -1238,14 +1079,28 @@ Panel {
           // Never derive layout width from contentHeight: switching pages or
           // animating the cover may toggle the scrollbar and create a feedback loop.
           property real stableGutter: Style.space(14)
+          // fittedContentHeight includes the card's padding and border. Use a
+          // screen-capped budget, not this Column's height, to avoid a size loop.
+          readonly property real viewportBudget: Math.max(0,
+            panel.fittedContentHeight(Style.space(620), Style.space(620))
+              - panel.verticalContentInset)
+          readonly property real regularErrorHeight: root.hasVisibleError
+            ? errorContent.implicitHeight + Style.space(20) + spacing : 0
+          readonly property real expandedViewportBudget: Math.min(viewportBudget,
+            root.coverStablePanelHeight > 0 && (root.coverExpanded || root.coverTransitioning)
+              ? root.coverStablePanelHeight - panel.verticalContentInset : viewportBudget)
+          readonly property real expandedCoverSize: Math.min(width, Math.max(1,
+            expandedViewportBudget - expandedPlayer.implicitHeight - spacing))
           readonly property real regularCoverBodyHeight: Style.space(68)
-            + authenticatedContent.implicitHeight
-          readonly property real expandedCoverBodyHeight: width
+            + authenticatedContent.implicitHeight + regularErrorHeight
+          readonly property real expandedCoverBodyHeight: expandedCoverSize
             + expandedPlayer.implicitHeight
-          readonly property real regularCoverHeightBalance: Math.max(0,
-            expandedCoverBodyHeight - regularCoverBodyHeight)
+          readonly property real regularCoverHeightBalance: root.settingsOpen ? 0 : Math.max(0,
+            Math.min(expandedCoverBodyHeight - regularCoverBodyHeight,
+              viewportBudget - spacing - regularCoverBodyHeight))
           readonly property real expandedCoverHeightBalance: Math.max(0,
-            regularCoverBodyHeight - expandedCoverBodyHeight)
+            Math.min(regularCoverBodyHeight - expandedCoverBodyHeight,
+              expandedViewportBudget - spacing - expandedCoverBodyHeight))
           x: stableGutter / 2
           width: panelScroll.width - stableGutter
           spacing: Style.space(12)
@@ -1254,8 +1109,15 @@ Panel {
             id: hero
             visible: !root.settingsOpen
             width: parent.width
-            height: root.coverExpanded ? width : Style.space(68)
+            height: root.coverExpanded ? content.expandedCoverSize : Style.space(68)
             spacing: root.coverExpanded ? 0 : Style.space(14)
+            leftPadding: root.coverExpanded ? (width - content.expandedCoverSize) / 2 : 0
+            Behavior on leftPadding {
+              NumberAnimation {
+                duration: root.coverTransitionDuration
+                easing.type: Easing.OutCubic
+              }
+            }
             Behavior on height {
               NumberAnimation {
                 duration: root.coverTransitionDuration
@@ -1268,7 +1130,7 @@ Panel {
 
             BorderSurface {
               id: coverSurface
-              width: root.coverExpanded ? hero.width : Style.space(68)
+              width: root.coverExpanded ? content.expandedCoverSize : Style.space(68)
               height: hero.height
               radius: root.coverExpanded ? Style.cornerRadius : Style.spacing.labelGap
               clip: true
@@ -1554,7 +1416,7 @@ Panel {
                 tooltipText: root.data.liked
                   ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
                 foreground: root.data.liked ? Color.accent : root.foreground
-                onClicked: root.action("like")
+                onClicked: root.transport("toggleLike")
               }
               Row {
                 anchors.centerIn: parent
@@ -1563,14 +1425,14 @@ Panel {
                   width: Style.space(42); height: Style.space(40)
                   horizontalPadding: 0; verticalPadding: 0; iconSize: 22
                   iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
-                  onClicked: root.action("previous")
+                  onClicked: root.transport("previousTrack")
                 }
                 Button {
                   width: Style.space(46); height: Style.space(44); radius: height / 2
                   horizontalPadding: 0; verticalPadding: 0; iconSize: 26
                   tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
                   foreground: Color.accent; bordered: true
-                  onClicked: root.action("pause")
+                  onClicked: root.transport("togglePlayback")
                   Text {
                     textFormat: Text.PlainText
                     z: 2; anchors.centerIn: parent
@@ -1584,7 +1446,7 @@ Panel {
                   width: Style.space(42); height: Style.space(40)
                   horizontalPadding: 0; verticalPadding: 0; iconSize: 22
                   iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
-                  onClicked: root.action("next")
+                  onClicked: root.transport("nextTrack")
                 }
               }
               Button {
@@ -1597,6 +1459,18 @@ Panel {
                 foreground: root.foreground
                 onClicked: root.openPlayerActions()
               }
+            }
+
+            VolumeControl {
+              id: regularVolumeControl
+              width: parent.width
+              volume: Number(root.data.volume || 0)
+              muted: root.data.muted === true
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              onMuteRequested: root.transport("toggleMute")
+              onVolumeChangeRequested: function(value) { root.queueVolume(value) }
             }
           }
 
@@ -1688,7 +1562,7 @@ Panel {
               }
               MouseArea {
                 id: authMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                onClicked: if (root.data.authUrl) Quickshell.execDetached(["xdg-open", String(root.data.authUrl)]); else root.action("auth")
+                onClicked: if (root.data.authUrl) Quickshell.execDetached(["xdg-open", String(root.data.authUrl)]); else root.intent("authenticate")
               }
             }
           }
@@ -1699,8 +1573,8 @@ Panel {
             width: parent.width
             // Keep the popup equally tall in both cover states without
             // distorting the square artwork or compacting player controls.
-            // Any difference between the two natural layouts becomes
-            // invisible space below this column.
+            // Any difference that fits the viewport becomes invisible space
+            // below this column; the inner panes absorb the remaining budget.
             height: root.coverExpanded ? 0
               : implicitHeight + content.regularCoverHeightBalance
             opacity: root.coverExpanded ? 0 : 1
@@ -1726,6 +1600,7 @@ Panel {
             }
 
             Row {
+              id: navigationTabs
               visible: !root.settingsOpen
               width: parent.width; spacing: Style.space(4)
               Repeater {
@@ -1750,6 +1625,16 @@ Panel {
             }
 
             Column {
+              id: playerPage
+              // Everything above the pane keeps its natural size, including
+              // volume and contextual errors. Only the scrolling pane shrinks.
+              // Keep a usable minimum on exceptionally short screens; the
+              // outer Flickable remains a fallback rather than clipping controls.
+              readonly property real paneHeight: Math.max(Style.space(80),
+                Math.min(Style.space(260), content.viewportBudget
+                  - Style.space(68) - content.spacing - content.regularErrorHeight
+                  - navigationTabs.height - authenticatedContent.spacing
+                  - trackPaneHeader.y - trackPaneHeader.height - spacing))
               visible: !root.settingsOpen && root.page === 0; width: parent.width; spacing: Style.space(14)
 
               Item {
@@ -1816,7 +1701,7 @@ Panel {
                       ? "Убрать из «Мне нравится» (L)" : "Добавить в «Мне нравится» (L)"
                     foreground: root.data.liked ? Color.accent : root.foreground
                     enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                    onClicked: root.action("like")
+                    onClicked: root.transport("toggleLike")
                   }
                   Row {
                     anchors.centerIn: parent
@@ -1826,7 +1711,7 @@ Panel {
                       horizontalPadding: 0; verticalPadding: 0; iconSize: 22
                       iconText: "󰒮"; tooltipText: "Предыдущий (P)"; foreground: root.foreground
                       enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                      onClicked: root.action("previous")
+                      onClicked: root.transport("previousTrack")
                     }
                     Button {
                       width: Style.space(46); height: Style.space(44); radius: height / 2
@@ -1834,7 +1719,7 @@ Panel {
                       tooltipText: root.playing ? "Пауза (Space)" : "Продолжить (Space)"
                       foreground: Color.accent; bordered: true
                       enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                      onClicked: root.action("pause")
+                      onClicked: root.transport("togglePlayback")
                       Text {
                         textFormat: Text.PlainText
                         z: 2; anchors.centerIn: parent
@@ -1849,7 +1734,7 @@ Panel {
                       horizontalPadding: 0; verticalPadding: 0; iconSize: 22
                       iconText: "󰒭"; tooltipText: "Следующий (N)"; foreground: root.foreground
                       enabled: root.hasTrack; opacity: enabled ? 1 : .4
-                      onClicked: root.action("next")
+                      onClicked: root.transport("nextTrack")
                     }
                   }
                   Button {
@@ -1862,6 +1747,18 @@ Panel {
                     foreground: root.foreground
                     onClicked: root.openPlayerActions()
                   }
+                }
+
+                VolumeControl {
+                  id: expandedVolumeControl
+                  width: parent.width
+                  volume: Number(root.data.volume || 0)
+                  muted: root.data.muted === true
+                  foreground: root.foreground
+                  dim: root.dim
+                  fontFamily: root.fontFamily
+                  onMuteRequested: root.transport("toggleMute")
+                  onVolumeChangeRequested: function(value) { root.queueVolume(value) }
                 }
               }
 
@@ -1927,6 +1824,7 @@ Panel {
               }
 
               Item {
+                id: trackPaneHeader
                 visible: root.hasTrack || root.browsingLibrary
                   || root.queueListLoading || root.trackListDisplay.length > 0
                 width: parent.width
@@ -1945,7 +1843,7 @@ Panel {
                   tooltipText: "Вернуться к очереди"
                   foreground: Color.accent
                   enabled: !root.busy
-                  onClicked: root.action("close_library")
+                  onClicked: root.intent("closeLibraryQueue")
                 }
 
                 Text {
@@ -2016,7 +1914,7 @@ Panel {
               SkeletonList {
                 visible: !root.currentTrackPaneOpen && root.queueListLoading
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 rowCount: 5
                 foreground: root.foreground
               }
@@ -2024,7 +1922,7 @@ Panel {
               Item {
                 visible: !root.currentTrackPaneOpen && root.browsingLibrary
                   && !root.queueListLoading && root.trackListDisplay.length === 0
-                width: parent.width; height: visible ? Style.space(260) : 0
+                width: parent.width; height: visible ? playerPage.paneHeight : 0
                 Text {
                   textFormat: Text.PlainText
                   anchors.centerIn: parent
@@ -2039,7 +1937,7 @@ Panel {
                 visible: !root.currentTrackPaneOpen && !root.queueListLoading
                   && root.trackListDisplay.length > 0
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 clip: true
                 model: root.trackListDisplay
                 boundsBehavior: Flickable.StopAtBounds
@@ -2169,8 +2067,8 @@ Panel {
                     hoverEnabled: true
                     cursorShape: Qt.PointingHandCursor
                     onClicked: {
-                      if (root.browsingLibrary) root.action("play_library_track", modelData.index)
-                      else if (!queueRow.isCurrent) root.action("play_queue", modelData.index)
+                      if (root.browsingLibrary) root.transport("playLibraryTrack", modelData.index)
+                      else if (!queueRow.isCurrent) root.transport("playQueueTrack", modelData.index)
                     }
                   }
                 }
@@ -2191,7 +2089,7 @@ Panel {
               SkeletonList {
                 visible: root.lyricsOpen && root.lyricsLoading
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 rowCount: 5
                 foreground: root.foreground
               }
@@ -2200,7 +2098,7 @@ Panel {
                 visible: root.lyricsOpen && !root.lyricsLoading
                   && (!root.lyricsData.available || root.lyricsLines.length === 0)
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
 
                 Column {
                   anchors.centerIn: parent
@@ -2232,7 +2130,7 @@ Panel {
                 visible: root.lyricsOpen && !root.lyricsLoading
                   && root.lyricsData.available && root.lyricsLines.length > 0
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 clip: true
                 model: root.lyricsLines
                 boundsBehavior: Flickable.StopAtBounds
@@ -2305,7 +2203,7 @@ Panel {
               SkeletonList {
                 visible: root.trackInfoOpen && root.trackInfoLoading
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 rowCount: 5
                 foreground: root.foreground
               }
@@ -2314,7 +2212,7 @@ Panel {
                 visible: root.trackInfoOpen && !root.trackInfoLoading
                   && root.trackInfoRows.length === 0
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
 
                 Column {
                   anchors.centerIn: parent
@@ -2346,7 +2244,7 @@ Panel {
                 visible: root.trackInfoOpen && !root.trackInfoLoading
                   && root.trackInfoRows.length > 0
                 width: parent.width
-                height: visible ? Style.space(260) : 0
+                height: visible ? playerPage.paneHeight : 0
                 clip: true
                 model: root.trackInfoRows
                 boundsBehavior: Flickable.StopAtBounds
@@ -2440,708 +2338,55 @@ Panel {
               }
             }
 
-            Column {
-              visible: !root.settingsOpen && root.page === 1; width: parent.width; spacing: Style.space(6)
-              BorderSurface {
-                width: parent.width; height: Style.space(48); radius: Style.cornerRadius
-                color: waveMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent)
-                  : Style.normalFillFor(root.foreground, Color.accent)
-                borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.left: parent.left; anchors.leftMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
-                  text: "󰝚   Моя волна"; color: root.foreground; font.family: root.fontFamily
-                  font.pixelSize: Style.font.body; font.bold: true
-                }
-                Text {
-                  textFormat: Text.PlainText
-                  anchors.right: parent.right; anchors.rightMargin: Style.space(12); anchors.verticalCenter: parent.verticalCenter
-                  text: root.waveOptionsOpen ? "󰅃" : "󰅀"
-                  color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.body
-                }
-                MouseArea {
-                  id: waveMouse; anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                  onClicked: root.waveOptionsOpen = !root.waveOptionsOpen
-                }
+            LibraryPage {
+              id: libraryPage
+              visible: !root.settingsOpen && root.page === 1
+              width: parent.width
+              controller: libraryController
+              preferences: root.data.preferences || ({})
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              panelOpened: root.opened
+              settingsOpen: root.settingsOpen
+              settingsRunning: settingsProcess.running
+              focusTarget: keyCatcher
+              onPreferenceRequested: function(key, value) { root.setPreference(key, value) }
+              onWaveRequested: {
+                root.intent("startWave")
+                root.selectPage(0)
               }
-
-              Column {
-                visible: root.waveOptionsOpen
-                width: parent.width
-                spacing: Style.space(7)
-
-                Dropdown {
-                  x: Style.space(8); width: parent.width - Style.space(16)
-                  label: "Настроение"
-                  value: String(root.preference("waveMood", "all"))
-                  foreground: root.foreground; fontFamily: root.fontFamily
-                  options: [
-                    { value: "all", label: "Любое" },
-                    { value: "fun", label: "Весёлое" },
-                    { value: "active", label: "Энергичное" },
-                    { value: "calm", label: "Спокойное" },
-                    { value: "sad", label: "Грустное" }
-                  ]
-                  onChanged: function(value) { root.setPreference("waveMood", value) }
-                }
-                Dropdown {
-                  x: Style.space(8); width: parent.width - Style.space(16)
-                  label: "Подбор треков"
-                  value: String(root.preference("waveDiversity", "default"))
-                  foreground: root.foreground; fontFamily: root.fontFamily
-                  options: [
-                    { value: "default", label: "Сбалансированный" },
-                    { value: "favorite", label: "Больше любимого" },
-                    { value: "popular", label: "Популярное" },
-                    { value: "discover", label: "Больше нового" }
-                  ]
-                  onChanged: function(value) { root.setPreference("waveDiversity", value) }
-                }
-                Dropdown {
-                  x: Style.space(8); width: parent.width - Style.space(16)
-                  label: "Язык"
-                  value: String(root.preference("waveLanguage", "any"))
-                  foreground: root.foreground; fontFamily: root.fontFamily
-                  options: [
-                    { value: "any", label: "Любой" },
-                    { value: "russian", label: "Русская музыка" },
-                    { value: "not-russian", label: "Зарубежная музыка" }
-                  ]
-                  onChanged: function(value) { root.setPreference("waveLanguage", value) }
-                }
-                Button {
-                  x: Style.space(8); width: parent.width - Style.space(16)
-                  text: settingsProcess.running ? "Сохраняем настройки…" : "Запустить Мою волну"
-                  iconText: "󰐊"; foreground: root.foreground; bordered: true
-                  enabled: !settingsProcess.running; opacity: enabled ? 1 : .5
-                  onClicked: {
-                    root.action("wave")
-                    root.waveOptionsOpen = false
-                    root.selectPage(0)
-                  }
-                }
-              }
-
-              Item {
-                id: libraryViewport
-                width: parent.width
-                height: Style.space(360)
-                clip: true
-
-                TextField {
-                  id: stationSearchField
-                  visible: libraryController.stationMode
-                  anchors.top: parent.top
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  height: visible ? Style.space(36) : 0
-                  placeholderText: "Найти радиостанцию"
-                  foreground: root.foreground
-                  font.family: root.fontFamily
-                  text: libraryController.stationQuery
-                  onTextEdited: {
-                    libraryController.setStationQuery(text)
-                    libraryList.positionViewAtBeginning()
-                  }
-                  onVisibleChanged: {
-                    if (visible) {
-                      Qt.callLater(function() {
-                        if (stationSearchField.visible && !root.settingsOpen)
-                          stationSearchField.forceActiveFocus()
-                      })
-                    } else {
-                      focus = false
-                      Qt.callLater(function() {
-                        if (root.opened && !root.settingsOpen) keyCatcher.forceActiveFocus()
-                      })
-                    }
-                  }
-                  Keys.onEscapePressed: {
-                    if (text !== "") {
-                      libraryController.setStationQuery("")
-                      libraryList.positionViewAtBeginning()
-                    } else {
-                      focus = false
-                      keyCatcher.forceActiveFocus()
-                    }
-                  }
-                }
-
-                SkeletonList {
-                  visible: libraryController.loading
-                  anchors.top: stationSearchField.visible ? stationSearchField.bottom : parent.top
-                  anchors.topMargin: stationSearchField.visible ? Style.space(6) : 0
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  anchors.bottom: parent.bottom
-                  rowCount: 7
-                  foreground: root.foreground
-                }
-
-                ListView {
-                  id: libraryList
-                  property bool stationPageScheduled: false
-                  visible: !libraryController.loading
-                  anchors.top: stationSearchField.visible ? stationSearchField.bottom : parent.top
-                  anchors.topMargin: stationSearchField.visible ? Style.space(6) : 0
-                  anchors.left: parent.left
-                  anchors.right: parent.right
-                  anchors.bottom: parent.bottom
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  interactive: contentHeight > height
-                  cacheBuffer: height * 2
-                  model: root.libraryRows
-                  spacing: Style.space(2)
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  function requestStationPageNearEnd() {
-                    if (stationPageScheduled || !libraryController.stationMode
-                        || !libraryController.hasMore) return
-                    var remaining = contentHeight - (contentY + height)
-                    if (remaining > Style.space(116)) return
-                    stationPageScheduled = true
-                    Qt.callLater(function() {
-                      stationPageScheduled = false
-                      var currentRemaining = contentHeight - (contentY + height)
-                      if (libraryController.stationMode && libraryController.hasMore
-                          && currentRemaining <= Style.space(116))
-                        libraryController.requestMore()
-                    })
-                  }
-
-                  onContentYChanged: requestStationPageNearEnd()
-                  onContentHeightChanged: requestStationPageNearEnd()
-                  onHeightChanged: requestStationPageNearEnd()
-                  onMovementEnded: requestStationPageNearEnd()
-
-                  delegate: BorderSurface {
-                    id: libraryRow
-                    required property var modelData
-                    readonly property string rowKind: String(modelData.kind || "")
-                    readonly property var value: modelData.value || ({})
-                    readonly property bool entityRow: ["track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
-                    readonly property bool actionable: ["collection", "navigation", "back", "retry", "loadMore",
-                      "track", "artist", "album", "playlist", "station"].indexOf(rowKind) >= 0
-                    readonly property bool hovered: libraryHover.hovered
-                    width: libraryList.width
-                      - (libraryList.contentHeight > libraryList.height ? Style.space(8) : 0)
-                    height: rowKind === "section" ? Style.space(30)
-                      : (entityRow || rowKind === "collection" || rowKind === "navigation"
-                        ? Style.space(58) : Style.space(42))
-                    radius: Style.cornerRadius
-                    opacity: libraryRow.value.available === false ? .45 : 1
-                    color: actionable && libraryRow.value.available !== false && libraryRow.hovered
-                      ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-                    borderSpec: Border.none()
-
-                    HoverHandler { id: libraryHover }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      visible: ["section", "error", "warning", "empty", "back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
-                      anchors.left: parent.left; anchors.right: parent.right
-                      anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
-                      text: (libraryRow.rowKind === "back"
-                        ? String(libraryRow.modelData.icon || "") + "  " : "")
-                        + String(libraryRow.modelData.title || "")
-                      color: libraryRow.rowKind === "error" ? Color.urgent
-                        : (["back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0 ? Color.accent : root.dim)
-                      horizontalAlignment: ["back", "retry", "loadMore", "empty"].indexOf(libraryRow.rowKind) >= 0
-                        ? Text.AlignHCenter : Text.AlignLeft
-                      elide: Text.ElideRight
-                      font.family: root.fontFamily
-                      font.pixelSize: libraryRow.rowKind === "section" ? Style.font.caption : Style.font.bodySmall
-                      font.bold: libraryRow.rowKind === "section"
-                        || ["back", "retry", "loadMore"].indexOf(libraryRow.rowKind) >= 0
-                      font.letterSpacing: libraryRow.rowKind === "section" ? .8 : 0
-                    }
-
-                    Row {
-                      z: 2
-                      visible: libraryRow.rowKind === "collection" || libraryRow.rowKind === "navigation"
-                        || libraryRow.entityRow
-                      anchors.left: parent.left; anchors.right: parent.right
-                      anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(9)
-
-                      CatalogImage {
-                        visible: libraryRow.entityRow
-                        width: visible ? Style.space(40) : 0; height: width
-                        requestedSource: String(libraryRow.value.artUrl || "")
-                        foreground: root.foreground
-                        fontFamily: root.fontFamily
-                        fillMode: Image.PreserveAspectCrop
-                      }
-                      Text {
-                        textFormat: Text.PlainText
-                        visible: !libraryRow.entityRow
-                        width: visible ? Style.space(40) : 0
-                        anchors.verticalCenter: parent.verticalCenter
-                        text: String(libraryRow.modelData.icon || "󰁔")
-                        horizontalAlignment: Text.AlignHCenter
-                        color: Color.accent; font.family: root.fontFamily
-                        font.pixelSize: Style.font.subtitle
-                      }
-                      Column {
-                        width: parent.width - Style.space(49)
-                          - (libraryRow.rowKind === "track" ? Style.space(35) : 0)
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 1
-                        Text {
-                          textFormat: Text.PlainText
-                          width: parent.width
-                          text: String(libraryRow.entityRow
-                            ? (libraryRow.value.title || libraryRow.value.name || "Без названия")
-                            : libraryRow.modelData.title || "")
-                          color: root.foreground; font.family: root.fontFamily
-                          font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
-                        }
-                        Text {
-                          textFormat: Text.PlainText
-                          width: parent.width
-                          text: {
-                            if (!libraryRow.entityRow) return String(libraryRow.modelData.subtitle || "")
-                            var details = String(libraryRow.value.artist || libraryRow.value.ownerName
-                              || libraryRow.value.subtitle || (libraryRow.value.genres || []).join(", ") || "")
-                            if (details === "" && Number(libraryRow.value.trackCount || 0) > 0)
-                              details = Number(libraryRow.value.trackCount) + " треков"
-                            var date = String(libraryRow.value.historyDate || "")
-                            return details + (date !== "" ? (details !== "" ? " · " : "") + date : "")
-                          }
-                          color: root.dim; font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption; elide: Text.ElideRight
-                        }
-                      }
-                      Button {
-                        visible: libraryRow.rowKind === "track" && libraryRow.hovered
-                        width: libraryRow.rowKind === "track" ? Style.space(26) : 0
-                        height: Style.space(26)
-                        anchors.verticalCenter: parent.verticalCenter
-                        horizontalPadding: 0; verticalPadding: 0
-                        iconText: "󰐒"; iconSize: Style.font.icon
-                        tooltipText: "Добавить в плейлист"
-                        foreground: root.dim
-                        onClicked: root.openCollectionTrack(
-                          "libraryHub", Number(libraryRow.value.trackIndex || 0), libraryRow.value,
-                          false, "", "")
-                      }
-                    }
-
-                    MouseArea {
-                      id: libraryMouse
-                      anchors.fill: parent
-                      anchors.rightMargin: libraryRow.rowKind === "track" ? Style.space(36) : 0
-                      enabled: libraryRow.actionable
-                        && libraryRow.value.available !== false
-                      hoverEnabled: enabled
-                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                      onClicked: libraryController.activate(libraryRow.modelData)
-                    }
-                  }
-                }
+              onCollectionTrackRequested: function(index, value) {
+                root.openCollectionTrack("libraryHub", index, value, false, "", "")
               }
             }
 
-            Column {
+            CatalogPage {
+              id: catalogPage
               visible: !root.settingsOpen && root.page === 2
               width: parent.width
-              spacing: Style.space(6)
-
-              Row {
-                visible: String(root.catalogDisplay.view || "search") === "search"
-                width: parent.width
-                height: visible ? Style.space(36) : 0
-                spacing: Style.space(8)
-                TextField {
-                  id: searchField
-                  width: parent.width - searchButton.width - parent.spacing
-                  placeholderText: "Трек, исполнитель, альбом или плейлист"
-                  foreground: root.foreground
-                  font.family: root.fontFamily
-                  rightPadding: Style.space(34)
-                  onTextEdited: catalogController.updateInput(text)
-                  Keys.onDownPressed: function(event) {
-                    if (!catalogController.moveSuggestion(1)) return
-                    suggestionList.positionViewAtIndex(
-                      catalogController.highlightedSuggestionIndex, ListView.Contain)
-                    event.accepted = true
-                  }
-                  Keys.onUpPressed: function(event) {
-                    if (!catalogController.moveSuggestion(-1)) return
-                    suggestionList.positionViewAtIndex(
-                      catalogController.highlightedSuggestionIndex, ListView.Contain)
-                    event.accepted = true
-                  }
-                  Keys.onReturnPressed: {
-                    if (catalogController.acceptHighlightedSuggestion())
-                      text = catalogController.fieldText
-                    else
-                      catalogController.submit()
-                  }
-                  Keys.onEscapePressed: {
-                    catalogController.dismissSuggestions()
-                    focus = false
-                    keyCatcher.forceActiveFocus()
-                  }
-                  Text {
-                    textFormat: Text.PlainText
-                    z: 2
-                    visible: catalogController.suggestionLoading
-                    anchors.right: parent.right
-                    anchors.rightMargin: Style.space(9)
-                    anchors.verticalCenter: parent.verticalCenter
-                    text: "󰦖"
-                    color: root.dim
-                    font.family: root.fontFamily
-                    font.pixelSize: Style.font.bodySmall
-                    RotationAnimator on rotation {
-                      running: catalogController.suggestionLoading
-                      from: 0; to: 360
-                      duration: 800
-                      loops: Animation.Infinite
-                    }
-                  }
-                }
-                Button {
-                  id: searchButton
-                  iconText: "󰍉"; tooltipText: "Найти"; foreground: root.foreground
-                  onClicked: catalogController.submit()
-                }
+              controller: catalogController
+              snapshot: root.catalogDisplay
+              foreground: root.foreground
+              dim: root.dim
+              fontFamily: root.fontFamily
+              returnToLibrary: root.catalogReturnPage === 1
+              hasVisibleError: root.hasVisibleError
+              errorCardHeight: errorCard.height
+              focusTarget: keyCatcher
+              onArtistRequested: function(id) { root.openCatalogArtist(id) }
+              onAlbumRequested: function(id) { root.openCatalogAlbum(id) }
+              onPlaylistRequested: function(value) { root.openCatalogPlaylist(value) }
+              onCollectionTrackRequested: function(source, index, value) {
+                root.openCollectionTrack(source, index, value, false, "", "")
               }
-
-              Row {
-                visible: String(root.catalogDisplay.view || "search") === "search"
-                width: parent.width
-                height: visible ? Style.space(34) : 0
-                spacing: Style.space(4)
-                Repeater {
-                  model: [
-                    { value: "all", label: "Все" }, { value: "track", label: "Треки" },
-                    { value: "artist", label: "Артисты" }, { value: "album", label: "Альбомы" },
-                    { value: "playlist", label: "Плейлисты" }
-                  ]
-                  Button {
-                    required property var modelData
-                    width: (parent.width - Style.space(16)) / 5
-                    height: Style.space(32)
-                    text: modelData.label
-                    foreground: catalogController.filter === modelData.value ? Color.accent : root.dim
-                    bordered: catalogController.filter === modelData.value
-                    onClicked: {
-                      catalogController.filter = modelData.value
-                      if (catalogController.trimmedText() !== "") catalogController.submit()
-                    }
-                  }
-                }
+              onEntityMoreRequested: root.intent("loadMoreCatalogEntity")
+              onRetryEntityRequested: function(entity) {
+                if (entity.type === "artist") root.intent("openCatalogArtist", entity.id)
+                else if (entity.type === "album") root.intent("openCatalogAlbum", entity.id)
+                else if (entity.type === "playlist")
+                  root.intent("openCatalogPlaylist", [entity.uuid, entity.owner, entity.kind])
               }
-
-              Item {
-                visible: String(root.catalogDisplay.view || "search") !== "search"
-                width: parent.width
-                height: visible ? Style.space(34) : 0
-                Button {
-                  anchors.left: parent.left
-                  height: parent.height
-                  text: root.catalogReturnPage === 1 ? "Назад в медиатеку" : "Назад к поиску"
-                  iconText: "󰁍"
-                  foreground: root.foreground
-                  bordered: true
-                  onClicked: catalogController.back()
-                }
-              }
-
-              Item {
-                id: searchResultsViewport
-                width: parent.width
-                height: Math.max(Style.space(240), Style.space(424)
-                  - (root.hasVisibleError ? errorCard.height + Style.space(12) : 0))
-                clip: true
-
-                SkeletonList {
-                  visible: root.searchListLoading
-                  anchors.fill: parent
-                  rowCount: 8
-                  foreground: root.foreground
-                }
-
-                ListView {
-                  id: catalogResultsList
-                  visible: !root.searchListLoading && !catalogController.suggestionsVisible
-                  anchors.fill: parent
-                  clip: true
-                  boundsBehavior: Flickable.StopAtBounds
-                  interactive: contentHeight > height
-                  cacheBuffer: height * 2
-                  model: root.catalogRows
-                  spacing: Style.space(2)
-                  ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
-
-                  delegate: BorderSurface {
-                    id: catalogRow
-                    required property var modelData
-                    readonly property string rowKind: String(modelData.kind || "")
-                    readonly property var value: modelData.value || ({})
-                    readonly property bool actionable: ["track", "artist", "album", "playlist",
-                      "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(rowKind) >= 0
-                    readonly property bool hovered: catalogHover.hovered
-                    width: catalogResultsList.width
-                      - (catalogResultsList.contentHeight > catalogResultsList.height ? Style.space(8) : 0)
-                    height: rowKind === "entityHeader" ? Style.space(112)
-                      : (rowKind === "description" ? Math.max(Style.space(52), catalogText.implicitHeight + Style.space(18))
-                      : (rowKind === "section" ? Style.space(30)
-                      : (rowKind === "track" || rowKind === "artist" || rowKind === "album" || rowKind === "playlist"
-                        ? Style.space(58) : Style.space(42))))
-                    radius: Style.cornerRadius
-                    color: actionable && catalogRow.hovered
-                      ? Style.hoverFillFor(root.foreground, Color.accent)
-                      : (rowKind === "entityHeader" ? Style.normalFillFor(root.foreground, Color.accent) : "transparent")
-                    borderSpec: rowKind === "entityHeader"
-                      ? Border.controlSpec("normal", root.foreground, Color.accent) : Border.none()
-
-                    HoverHandler { id: catalogHover }
-
-                    Row {
-                      visible: catalogRow.rowKind === "entityHeader"
-                      anchors.fill: parent
-                      anchors.margins: Style.space(10)
-                      spacing: Style.space(10)
-                      CatalogImage {
-                        width: Style.space(88); height: width
-                        requestedSource: String(catalogRow.value.artUrl || "")
-                        foreground: root.foreground
-                        fontFamily: root.fontFamily
-                        fillMode: Image.PreserveAspectCrop
-                      }
-                      Column {
-                        width: parent.width - Style.space(98)
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: Style.space(4)
-                        Text {
-                          textFormat: Text.PlainText
-                          width: parent.width
-                          text: String(catalogRow.value.title || catalogRow.value.name || "Каталог")
-                          color: root.foreground; font.family: root.fontFamily
-                          font.pixelSize: Style.font.subtitle; font.bold: true; elide: Text.ElideRight
-                        }
-                        Row {
-                          width: parent.width; spacing: 0
-                          Repeater {
-                            model: catalogRow.value.artists || []
-                            Text {
-                              textFormat: Text.PlainText
-                              id: entityArtistLink
-                              required property var modelData
-                              required property int index
-                              text: modelData.name + (index < (catalogRow.value.artists || []).length - 1 ? ", " : "")
-                              color: entityArtistMouse.containsMouse ? Color.accent : root.dim
-                              font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
-                              MouseArea {
-                                id: entityArtistMouse; anchors.fill: parent; hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openCatalogArtist(entityArtistLink.modelData.id)
-                              }
-                            }
-                          }
-                        }
-                        Text {
-                          textFormat: Text.PlainText
-                          width: parent.width
-                          text: [catalogRow.value.year || catalogRow.value.releaseDate,
-                            catalogRow.value.genre, catalogRow.value.ownerName].filter(function(value) {
-                              return String(value || "") !== ""
-                            }).join(" · ")
-                          color: root.dim; font.family: root.fontFamily
-                          font.pixelSize: Style.font.caption; elide: Text.ElideRight
-                        }
-                      }
-                    }
-
-                    Text {
-                      textFormat: Text.PlainText
-                      id: catalogText
-                      visible: ["section", "description", "error", "warning", "empty",
-                        "loadSearch", "loadEntity", "loadRelease", "retrySearch", "retryEntity"].indexOf(catalogRow.rowKind) >= 0
-                      anchors.left: parent.left; anchors.right: parent.right
-                      anchors.margins: Style.space(10); anchors.verticalCenter: parent.verticalCenter
-                      text: catalogRow.rowKind === "section"
-                        ? String(modelData.title || "") + (Number(modelData.count || 0) > 0 ? " · " + modelData.count : "")
-                        : String(modelData.title || "")
-                      wrapMode: catalogRow.rowKind === "description" ? Text.WordWrap : Text.NoWrap
-                      elide: catalogRow.rowKind === "description" ? Text.ElideNone : Text.ElideRight
-                      horizontalAlignment: catalogRow.rowKind.indexOf("load") === 0
-                        || catalogRow.rowKind.indexOf("retry") === 0 ? Text.AlignHCenter : Text.AlignLeft
-                      color: catalogRow.rowKind === "error" ? Color.urgent
-                        : (catalogRow.rowKind.indexOf("load") === 0
-                          || catalogRow.rowKind.indexOf("retry") === 0 ? Color.accent : root.dim)
-                      font.family: root.fontFamily
-                      font.pixelSize: catalogRow.rowKind === "section" ? Style.font.caption : Style.font.bodySmall
-                      font.bold: catalogRow.rowKind === "section"
-                        || catalogRow.rowKind.indexOf("load") === 0
-                        || catalogRow.rowKind.indexOf("retry") === 0
-                      font.letterSpacing: catalogRow.rowKind === "section" ? .8 : 0
-                    }
-
-                    Row {
-                      z: 2
-                      visible: ["track", "artist", "album", "playlist"].indexOf(catalogRow.rowKind) >= 0
-                      anchors.left: parent.left; anchors.right: parent.right
-                      anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
-                      spacing: Style.space(9)
-                      CatalogImage {
-                        width: Style.space(40); height: width
-                        requestedSource: String(catalogRow.value.artUrl || "")
-                        foreground: root.foreground
-                        fontFamily: root.fontFamily
-                        fillMode: Image.PreserveAspectCrop
-                      }
-                      Column {
-                        width: parent.width - Style.space(49)
-                          - (catalogRow.rowKind === "track" ? Style.space(35) : 0)
-                        anchors.verticalCenter: parent.verticalCenter
-                        spacing: 1
-                        Text {
-                          textFormat: Text.PlainText
-                          width: parent.width
-                          text: String(catalogRow.value.title || catalogRow.value.name || "Без названия")
-                          color: root.foreground; font.family: root.fontFamily
-                          font.pixelSize: Style.font.bodySmall; elide: Text.ElideRight
-                        }
-                        Row {
-                          width: parent.width; spacing: 0
-                          Repeater {
-                            model: catalogRow.value.artists || []
-                            Text {
-                              textFormat: Text.PlainText
-                              id: catalogArtistLink
-                              required property var modelData
-                              required property int index
-                              text: modelData.name + (index < (catalogRow.value.artists || []).length - 1 ? ", " : "")
-                              color: catalogArtistMouse.containsMouse ? Color.accent : root.dim
-                              font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                              MouseArea {
-                                id: catalogArtistMouse; anchors.fill: parent; hoverEnabled: true
-                                cursorShape: Qt.PointingHandCursor
-                                onClicked: root.openCatalogArtist(catalogArtistLink.modelData.id)
-                              }
-                            }
-                          }
-                          Text {
-                            textFormat: Text.PlainText
-                            id: catalogAlbumLink
-                            visible: catalogRow.rowKind === "track" && String(catalogRow.value.album || "") !== ""
-                            text: (catalogRow.value.artists || []).length > 0
-                              ? " · " + String(catalogRow.value.album || "") : String(catalogRow.value.album || "")
-                            color: catalogAlbumMouse.containsMouse && String(catalogRow.value.albumId || "") !== ""
-                              ? Color.accent : root.dim
-                            font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                            MouseArea {
-                              id: catalogAlbumMouse; anchors.fill: parent
-                              enabled: String(catalogRow.value.albumId || "") !== ""
-                              hoverEnabled: enabled
-                              cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                              onClicked: root.openCatalogAlbum(catalogRow.value.albumId)
-                            }
-                          }
-                          Text {
-                            textFormat: Text.PlainText
-                            visible: catalogRow.rowKind !== "track"
-                              && (catalogRow.value.artists || []).length === 0
-                            text: String(catalogRow.value.artist || catalogRow.value.ownerName
-                              || (catalogRow.value.genres || []).join(", ") || "")
-                            color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
-                          }
-                        }
-                      }
-                      Button {
-                        visible: catalogRow.rowKind === "track" && catalogRow.hovered
-                        width: catalogRow.rowKind === "track" ? Style.space(26) : 0
-                        height: Style.space(26)
-                        anchors.verticalCenter: parent.verticalCenter
-                        horizontalPadding: 0; verticalPadding: 0
-                        iconText: "󰐒"; iconSize: Style.font.icon
-                        tooltipText: "Добавить в плейлист"
-                        foreground: root.dim
-                        onClicked: root.openCollectionTrack(
-                          String(modelData.source || "search") === "entity"
-                            ? "catalogEntity" : "catalogSearch",
-                          Number(catalogRow.value.index || 0), catalogRow.value,
-                          false, "", "")
-                      }
-                    }
-
-                    MouseArea {
-                      id: catalogMouse
-                      anchors.fill: parent
-                      anchors.rightMargin: catalogRow.rowKind === "track" ? Style.space(36) : 0
-                      enabled: catalogRow.actionable
-                      hoverEnabled: enabled
-                      cursorShape: enabled ? Qt.PointingHandCursor : Qt.ArrowCursor
-                      onClicked: {
-                        if (catalogRow.rowKind === "track")
-                          catalogController.trackPlaybackRequested(String(modelData.source || "search"), Number(catalogRow.value.index || 0))
-                        else if (catalogRow.rowKind === "artist") root.openCatalogArtist(catalogRow.value.id)
-                        else if (catalogRow.rowKind === "album") root.openCatalogAlbum(catalogRow.value.id)
-                        else if (catalogRow.rowKind === "playlist") root.openCatalogPlaylist(catalogRow.value)
-                        else if (catalogRow.rowKind === "loadSearch") catalogController.loadMoreRequested()
-                        else if (catalogRow.rowKind === "loadEntity") root.action("catalog_entity_more")
-                        else if (catalogRow.rowKind === "loadRelease")
-                          catalogController.releaseMoreRequested(String(modelData.section || ""))
-                        else if (catalogRow.rowKind === "retrySearch") catalogController.submit()
-                        else if (catalogRow.rowKind === "retryEntity") {
-                          var entity = root.catalogDisplay.entity || {}
-                          if (entity.type === "artist") root.action("catalog_artist", entity.id)
-                          else if (entity.type === "album") root.action("catalog_album", entity.id)
-                          else if (entity.type === "playlist")
-                            root.action("catalog_playlist", [entity.uuid, entity.owner, entity.kind])
-                        }
-                      }
-                    }
-                  }
-                }
-
-                BorderSurface {
-                  z: 20
-                  visible: String(root.catalogDisplay.view || "search") === "search"
-                    && catalogController.suggestionsVisible
-                  anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
-                  height: visible ? Math.min(Style.space(152), suggestionList.contentHeight + Style.space(4)) : 0
-                  radius: Style.cornerRadius
-                  color: Style.normalFillFor(root.foreground, Color.accent)
-                  borderSpec: Border.controlSpec("normal", root.foreground, Color.accent)
-                  ListView {
-                    id: suggestionList
-                    anchors.fill: parent; anchors.margins: Style.space(2)
-                    clip: true; model: catalogController.suggestions
-                    delegate: Item {
-                      required property var modelData
-                      required property int index
-                      width: suggestionList.width; height: Style.space(36)
-                      Rectangle {
-                        anchors.fill: parent
-                        color: index === catalogController.highlightedSuggestionIndex
-                          ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent"
-                      }
-                      Text {
-                        textFormat: Text.PlainText
-                        anchors.left: parent.left; anchors.right: parent.right
-                        anchors.margins: Style.space(9); anchors.verticalCenter: parent.verticalCenter
-                        text: String(modelData); elide: Text.ElideRight
-                        color: root.foreground; font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
-                      }
-                      MouseArea {
-                        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-                        onEntered: catalogController.highlightedSuggestionIndex = index
-                        onClicked: {
-                          searchField.text = String(modelData)
-                          catalogController.selectSuggestion(modelData)
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-              Item { width: 1; height: Style.space(8) }
             }
 
             Column {
@@ -3243,6 +2488,11 @@ Panel {
                 width: parent.width; label: "Показывать кнопки управления"
                 checked: Boolean(root.preference("showControls", true)); foreground: root.foreground
                 onClicked: root.setPreference("showControls", !checked)
+              }
+              Toggle {
+                width: parent.width; label: "Показывать громкость"
+                checked: Boolean(root.preference("showVolume", true)); foreground: root.foreground
+                onClicked: root.setPreference("showVolume", !checked)
               }
               Toggle {
                 width: parent.width; label: "Показывать исполнителя"
@@ -3366,7 +2616,7 @@ Panel {
                       foreground: Color.urgent; bordered: true
                       onClicked: {
                         if (root.confirmLogout) {
-                          root.action("logout")
+                          root.intent("logout")
                           root.closeSettings()
                         } else root.confirmLogout = true
                       }
@@ -3419,64 +2669,6 @@ Panel {
         contentItem: Column {
           id: playerActionsContent
           spacing: Style.space(4)
-
-          Row {
-            width: parent.width
-            height: Style.space(36)
-            spacing: Style.space(7)
-
-            Button {
-              id: actionsMuteButton
-              width: Style.space(30); height: parent.height
-              horizontalPadding: 0; verticalPadding: 0
-              iconText: root.data.muted ? "󰖁" : "󰕾"
-              tooltipText: root.data.muted ? "Включить звук" : "Выключить звук"
-              foreground: root.data.muted ? root.dim : root.foreground
-              onClicked: root.action("mute")
-            }
-            Rectangle {
-              id: actionsVolumeTrack
-              width: Math.max(Style.space(150), parent.width - actionsMuteButton.width
-                - actionsVolumePercent.width - parent.spacing * 2)
-              height: Style.space(6); radius: height / 2
-              anchors.verticalCenter: parent.verticalCenter
-              color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
-              Rectangle {
-                width: parent.width * Number(root.data.volume || 0) / 100
-                height: parent.height; radius: parent.radius
-                color: root.data.muted ? root.dim : root.foreground
-              }
-              MouseArea {
-                id: actionsVolumeDrag
-                anchors.fill: parent
-                anchors.topMargin: -Style.space(10); anchors.bottomMargin: -Style.space(10)
-                cursorShape: pressed ? Qt.ClosedHandCursor : Qt.PointingHandCursor
-                preventStealing: true
-                onPressed: function(mouse) { root.volumeFromPointer(mouse, actionsVolumeDrag) }
-                onPositionChanged: function(mouse) {
-                  if (pressed) root.volumeFromPointer(mouse, actionsVolumeDrag)
-                }
-                onReleased: function(mouse) {
-                  root.volumeFromPointer(mouse, actionsVolumeDrag)
-                  volumeDebounce.restart()
-                }
-              }
-            }
-            Text {
-              textFormat: Text.PlainText
-              id: actionsVolumePercent
-              width: Style.space(34)
-              anchors.verticalCenter: parent.verticalCenter
-              horizontalAlignment: Text.AlignRight
-              text: root.data.muted ? "MUTE" : Math.round(Number(root.data.volume || 0)) + "%"
-              color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.font.caption
-            }
-          }
-
-          PanelSeparator {
-            width: parent.width
-            foreground: root.foreground
-          }
 
           Text {
             textFormat: Text.PlainText

@@ -10,7 +10,7 @@ import unittest
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, cast
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from backend import backend
 from backend.audio_cache import AudioCache, AudioIdentity, AudioSource, CacheRequest, cache_directory
@@ -158,8 +158,9 @@ class SecurityBoundaryTests(unittest.TestCase):
         player._set_error = lambda error: self.fail(error)
         queue_calls = []
         player._set_queue = lambda *args: queue_calls.append(args)
-        with patch.object(backend.requests, "post", return_value=response) as post:
-            player.play_wave()
+        post = MagicMock(return_value=response)
+        player.http = SimpleNamespace(post=post)
+        player.play_wave()
         self.assertTrue(post.call_args.kwargs["stream"])
         self.assertTrue(response.closed)
         self.assertEqual(queue_calls[0], ([track], "Моя волна", "user:onyourwave", "batch"))

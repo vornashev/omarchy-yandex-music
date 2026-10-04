@@ -50,19 +50,20 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 
 ### Bar
 
-The bar player can show previous, play/pause, and next controls, album artwork, artist, track title, and progress. Click the artwork or track information to open the popup.
+The bar player can show previous, play/pause, and next controls, album artwork, artist, track title, progress, and a volume control to the right of the title. Scroll the mouse wheel over the volume area to adjust the level in 5% steps, click the speaker icon to mute, and click the artwork or track information to open the popup.
 
-Long artist/title text can be truncated or scrolled as one continuous line. The information width, controls, artwork, and progress line are configurable.
+Long artist/title text can be truncated or scrolled as one continuous line. The information width, controls, artwork, progress line, and bar volume control are configurable. Settings → Bar → Show volume hides the bar volume area independently of the popup slider; it is enabled by default.
 
 ### Now Playing
 
 - Drag the seek slider and release to apply it; the real position remains visible while the target time is shown in parentheses
 - Previous, Play/Pause, and Next form a larger centered transport group, with Play/Pause emphasized and Like/Actions symmetrically framing it at the outer edges
-- Mute, the volume slider, and its percentage live at the top of the Actions sheet, keeping the main view shorter and infrequent controls away from playback
+- Mute, the volume slider, and its percentage sit directly under the transport controls in both the regular and expanded cover views; the volume follows a perceptual curve so quiet settings stay audible, while the Actions sheet keeps infrequent commands out of the way
 - Like or unlike with the heart button or `L`; use Actions or `D` to toggle “Do not recommend”, which immediately skips a new dislike in “My Wave”
 - Actions also provides Add current track to playlist, Track Radio, queue mode, and Settings
 - Click the cover to smoothly expand it across the popup while retaining track details, a seekable progress bar, and the same control hierarchy; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
 - Explicit List, Lyrics, and Track Info tabs replace the former cluster of ambiguous queue-header icons
+- The list, lyrics, and track-info areas fit the remaining popup height and scroll internally, keeping the player controls stationary; exceptionally short screens retain outer scrolling so controls stay reachable
 - In Lyrics, synced LRC lines highlight and scroll with playback and clicking a line seeks to it; plain lyrics are used as a fallback, while missing lyrics or loading errors never interrupt playback
 - Track Info shows available album, release date, genre, labels, track number, version, description, and recording credits
 - Select any queue item directly
@@ -108,7 +109,7 @@ Available options:
 - Resume playback after service restart
 - Restore queue, track position, and volume independently
 - Best available or traffic-saving audio quality
-- Show/hide bar controls, artist, title, artwork, and progress
+- Show/hide bar controls, volume, artist, title, artwork, and progress independently
 - Square, rounded, or circular artwork
 - Compact, normal, or wide track information
 - Truncated or smoothly scrolling long text
@@ -207,6 +208,21 @@ omarchy restart shell
 - Temporary notification artwork: `$XDG_RUNTIME_DIR/omarchy-yandex-music-covers/`
 
 Credential and state files use mode `600` and are excluded from the repository. Notification artwork is temporary and disappears after reboot.
+
+## Development
+
+`omarchy plugin add` clones the repository straight into `~/.config/omarchy/plugins/vornashev.yandex-music`, so that checkout is both the installed plugin and a working copy. Run the checks from the repository root:
+
+```bash
+python -m compileall -q backend tests
+HOME="$(mktemp -d)" ~/.local/share/omarchy-yandex-music/venv/bin/python -m unittest discover -s tests
+QT_QPA_PLATFORM=offscreen /usr/lib/qt6/bin/qmltestrunner -input tests/qml -import .
+for smoke in tests/smoke/*/run.sh; do bash "$smoke"; done
+bash -n bootstrap.sh install.sh uninstall.sh bin/omarchy-yandex-music
+omarchy plugin validate .
+```
+
+The temporary `HOME` keeps the suite away from your real token and playback state. The real-mpv audio tests additionally need `mpv` and `ffmpeg`; see [audio cache validation](docs/audio-cache-validation.md). After changing the backend, run `./install.sh --backend-only` (it reinstalls the service whenever backend files change) and `omarchy restart shell` to reload QML.
 
 ## License
 

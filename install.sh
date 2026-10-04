@@ -54,8 +54,12 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd" "$PLUGIN_DIR/vendor"
   install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
     "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
-    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/LibraryController.qml" \
-    "$ROOT/CollectionController.qml" \
+    "$ROOT/VolumeControl.qml" \
+    "$ROOT/MusicSession.qml" "$ROOT/SessionController.qml" "$ROOT/DetailsReconciler.js" \
+    "$ROOT/TransportIntents.js" "$ROOT/ActionIntents.js" \
+    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/CatalogPage.qml" \
+    "$ROOT/LibraryController.qml" \
+    "$ROOT/LibraryPage.qml" "$ROOT/CollectionController.qml" "$ROOT/SkeletonList.qml" \
     "$ROOT/requirements.in" "$ROOT/requirements.txt" "$PLUGIN_DIR/"
   install -m 644 "$ROOT/vendor/README.md" \
     "$ROOT/vendor/yandex_music-3.1.0b2.origin.json" \
