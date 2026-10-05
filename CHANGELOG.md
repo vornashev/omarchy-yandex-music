@@ -6,6 +6,18 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.11.1] - 2026-10-05
+
+### Changed
+
+- Simplified both READMEs: installation and sign-in first, a dedicated interface preview, concise features and controls, and collapsible requirements and reference sections, including updates. The new demo-design gallery highlights Wide and Compact, with localized hero artwork and a visible mockup disclaimer.
+
+### Fixed
+
+- Match the track-pane tabs to the design: a 20 px top inset in Wide and a 16 px left inset in Compact, without changing queue-row spacing.
+- Queue lists keep a 20 px bottom inset and theme-matched top/bottom edge fades, preserving pointer interaction and the scrollbar lane in Wide and Compact, including light themes.
+- Opening the Queue pane or changing the current track centers its row where possible; active list scrolling and scrollbar dragging are never interrupted.
+
 ## [0.11.0] - 2026-10-05
 
 ### Added
@@ -307,7 +319,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
-[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.0...HEAD
+[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.1...HEAD
+[0.11.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.2...v0.9.0

@@ -348,6 +348,7 @@ Panel {
     else {
       setLyricsOpen(false)
       setTrackInfoOpen(false)
+      queueScrollTimer.restart()
     }
   }
   function formatTime(value) {
@@ -881,23 +882,12 @@ Panel {
     }
   }
   function scrollToCurrentTrack() {
-    if (!nowRoot || !trackPane.queueList) return
+    if (!opened || !nowRoot || !trackPane.queueList || !trackPane.queueList.visible
+        || trackPane.queueList.moving || trackPane.queueList.ScrollBar.vertical.pressed) return
     var index = Number(data.queueIndex || 0) - 1
     if (index < 0 || index >= trackPane.queueList.count) return
 
-    var item = trackPane.queueList.itemAtIndex(index)
-    var rowHeight = trackPane.wide ? Style.space(52) : Style.space(48)
-    var itemTop = item ? item.y : trackPane.queueList.originY + index * rowHeight
-    var itemBottom = itemTop + (item ? item.height : rowHeight)
-    var viewportTop = trackPane.queueList.contentY
-    var viewportBottom = viewportTop + trackPane.queueList.height
-    var tolerance = 1
-    if (itemTop >= viewportTop - tolerance && itemBottom <= viewportBottom + tolerance) return
-
-    var targetY = itemTop < viewportTop ? itemTop : itemBottom - trackPane.queueList.height
-    var minimumY = trackPane.queueList.originY
-    var maximumY = Math.max(minimumY, minimumY + trackPane.queueList.contentHeight - trackPane.queueList.height)
-    trackPane.queueList.contentY = Math.max(minimumY, Math.min(targetY, maximumY))
+    trackPane.queueList.positionViewAtIndex(index, ListView.Center)
   }
   function selectPage(index) {
     rememberRoute()

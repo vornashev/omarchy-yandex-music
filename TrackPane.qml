@@ -54,6 +54,7 @@ Item {
     id: tabs
     visible: panel.hasTrack
     anchors.left: parent.left; anchors.right: parent.right; anchors.top: parent.top
+    anchors.topMargin: root.wide ? Style.space(20) : 0
     height: visible ? (root.wide ? Style.space(35) : Style.space(45)) : 0
 
     Rectangle {
@@ -65,7 +66,7 @@ Item {
     }
 
     Row {
-      anchors.left: parent.left; anchors.leftMargin: root.sideInset
+      anchors.left: parent.left; anchors.leftMargin: root.wide ? root.sideInset : Style.space(16)
       anchors.verticalCenter: parent.verticalCenter
       anchors.verticalCenterOffset: root.wide ? 0 : -Style.space(1)
       spacing: root.wide ? Style.space(24) : Style.space(6)
@@ -217,12 +218,13 @@ Item {
       visible: root.listVisible && !panel.queueListLoading && panel.queueDisplay.length > 0
       anchors.fill: parent
       anchors.leftMargin: root.sideInset; anchors.rightMargin: root.sideInset
+      anchors.bottomMargin: Style.space(20)
       clip: true
       model: panel.queueDisplay
       boundsBehavior: Flickable.StopAtBounds
       interactive: contentHeight > height
       cacheBuffer: Math.max(0, height)
-      ScrollBar.vertical: ScrollBar { policy: ScrollBar.AsNeeded }
+      ScrollBar.vertical: ScrollBar { id: queueScrollBar; policy: ScrollBar.AsNeeded }
 
       delegate: BorderSurface {
         id: queueRow
@@ -350,6 +352,34 @@ Item {
         }
       }
 
+    }
+
+    Rectangle {
+      visible: queueList.visible && !queueList.atYBeginning
+      anchors.left: queueList.left; anchors.right: queueList.right; anchors.top: queueList.top
+      anchors.rightMargin: queueScrollBar.visible ? queueScrollBar.width : 0
+      height: Style.space(16)
+      z: 1
+      enabled: false
+      gradient: Gradient {
+        GradientStop { position: 0; color: Color.popups.background }
+        GradientStop { position: 1; color: Qt.rgba(Color.popups.background.r,
+          Color.popups.background.g, Color.popups.background.b, 0) }
+      }
+    }
+
+    Rectangle {
+      visible: queueList.visible && !queueList.atYEnd
+      anchors.left: queueList.left; anchors.right: queueList.right; anchors.bottom: queueList.bottom
+      anchors.rightMargin: queueScrollBar.visible ? queueScrollBar.width : 0
+      height: Style.space(32)
+      z: 1
+      enabled: false
+      gradient: Gradient {
+        GradientStop { position: 0; color: Qt.rgba(Color.popups.background.r,
+          Color.popups.background.g, Color.popups.background.b, 0) }
+        GradientStop { position: 1; color: Color.popups.background }
+      }
     }
 
     // ── lyrics ──────────────────────────────────────────────────────────

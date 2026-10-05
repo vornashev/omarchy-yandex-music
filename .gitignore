@@ -17,3 +17,4 @@ venv/
 # Local agent artifacts
 .pi/
 .pi-tasks/
+design.pen
