@@ -12,12 +12,11 @@ TestCase {
   SignalSpy { id: searchSpy; target: controller; signalName: "searchRequested" }
   SignalSpy { id: entitySpy; target: controller; signalName: "entityRequested" }
   SignalSpy { id: backSpy; target: controller; signalName: "backRequested" }
-  SignalSpy { id: loadSpy; target: controller; signalName: "loadMoreRequested" }
   SignalSpy { id: playSpy; target: controller; signalName: "trackPlaybackRequested" }
 
   function init() {
     suggestSpy.clear(); clearSpy.clear(); searchSpy.clear(); entitySpy.clear()
-    backSpy.clear(); loadSpy.clear(); playSpy.clear()
+    backSpy.clear(); playSpy.clear()
     controller.fieldText = ""
     controller.filter = "all"
     controller.submittedQuery = ""
@@ -126,16 +125,12 @@ TestCase {
     compare(searchSpy.signalArguments[0][1], "album")
   }
 
-  function test_four_sections_and_append_deduplication() {
-    compare(controller.sectionNames.length, 4)
-    compare(controller.sectionNames.join(","), "tracks,artists,albums,playlists")
+  function test_appending_search_pages_deduplicates_without_reordering() {
     controller.append("tracks", [{ trackId: "1" }, { trackId: "2" }])
     controller.append("tracks", [{ trackId: "2" }, { trackId: "3" }])
     compare(controller.results.tracks.length, 3)
     compare(controller.results.tracks[0].trackId, "1")
     compare(controller.results.tracks[2].trackId, "3")
-    controller.loadMoreRequested()
-    compare(loadSpy.count, 1)
   }
 
   function test_entity_navigation_preserves_search_and_does_not_play() {
@@ -147,24 +142,34 @@ TestCase {
     var savedResults = controller.results
 
     controller.openEntity("artist", "2", "", "", "")
-    compare(controller.view, "artist")
-    compare(entitySpy.count, 1)
+    controller.openEntity("album", "7", "", "", "")
+    compare(controller.view, "album")
     compare(playSpy.count, 0)
     controller.back()
-    compare(controller.view, "search")
-    compare(backSpy.count, 1)
+    compare(controller.view, "album")
+    // Только владелец стека выбирает предыдущий маршрут, не обязательно поиск.
+    controller.view = "artist"
+    controller.back()
+    compare(controller.view, "artist")
+    controller.view = "search"
+    compare(backSpy.count, 2)
     compare(controller.fieldText, "saved field")
     compare(controller.filter, "artist")
     compare(controller.submittedQuery, "saved query")
     compare(controller.results, savedResults)
   }
 
-  function test_playback_requires_explicit_track_action() {
-    controller.openEntity("album", "7", "", "", "")
-    compare(playSpy.count, 0)
-    controller.trackPlaybackRequested("entity", 3)
-    compare(playSpy.count, 1)
-    compare(playSpy.signalArguments[0][0], "entity")
-    compare(playSpy.signalArguments[0][1], 3)
+  function test_entity_open_cancels_pending_suggestions_and_rejects_late_reply() {
+    controller.updateInput("saved query")
+    var generation = controller.suggestionGeneration
+    controller.openEntity("artist", "2", "", "", "")
+    wait(340)
+    compare(suggestSpy.count, 0)
+    verify(!controller.applySuggestions({ generation: generation,
+      query: "saved query", loading: false, items: ["Late suggestion"] }))
+    controller.view = "search"
+    verify(!controller.suggestionLoading)
+    verify(!controller.suggestionsVisible)
+    compare(controller.fieldText, "saved query")
   }
 }

@@ -18,8 +18,8 @@ TestCase {
         catalogRevision: 1, collectionRevision: 1, queueIndex: 1,
         libraryBrowseName: "", libraryTracks: library },
       queueDisplay: queue, libraryHubDisplay: hub, catalogDisplay: catalog,
-      collectionDisplay: collection, catalogSearchContentY: 123,
-      catalogInitialized: true, previousQueueIndex: 1, page: 0
+      collectionDisplay: collection, catalogInitialized: true,
+      previousQueueIndex: 1, nowRoot: true
     }
   }
 
@@ -64,7 +64,7 @@ TestCase {
     compare(result.intents.catalogViewport, "none")
   }
 
-  function test_queue_change_and_library_extension_preserve_viewport() {
+  function test_queue_extension_keeps_scroll_but_browse_does_not_move_queue() {
     var state = oldState()
     var incoming = incomingFrom(state)
     incoming.queueRevision = 2
@@ -100,22 +100,15 @@ TestCase {
     compare(error.libraryHubDisplay.error, "Локальная ошибка")
   }
 
-  function test_catalog_back_restores_search_position() {
+  function test_new_search_resets_viewport_but_entity_return_does_not_own_scroll() {
     var state = oldState()
-    state.catalogDisplay = { view: "artist", search: { query: "old", filter: "all" },
-      entity: { type: "artist", id: "a" } }
     var next = incomingFrom(state)
     next.catalogRevision = 2
-    var result = reconcile(next, state)
-    compare(result.intents.catalogViewport, "restoreSearch")
-    compare(result.catalogSearchContentY, 123)
-
-    state.catalogDisplay = { view: "search", search: { query: "old", filter: "all" }, entity: {} }
-    next.catalog = { view: "artist", search: { query: "old", filter: "all" },
-      entity: { type: "artist", id: "a" }, suggestions: {} }
-    result = reconcile(next, state, { queueY: 0, libraryY: 0, catalogY: 77 })
-    compare(result.intents.catalogViewport, "reset")
-    compare(result.catalogSearchContentY, 77)
+    next.catalog.search.query = "new"
+    compare(reconcile(next, state).intents.catalogViewport, "reset")
+    next.catalog.search.query = "old"
+    state.catalogDisplay.view = "artist"
+    compare(reconcile(next, state).intents.catalogViewport, "preserve")
   }
 
   function test_stale_response_is_ignored_but_backend_revision_reset_is_allowed() {

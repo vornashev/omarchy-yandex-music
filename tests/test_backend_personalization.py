@@ -1,10 +1,13 @@
 import threading
+import json
+import tempfile
 import time
 import unittest
 from collections import OrderedDict
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from backend import backend
 
@@ -152,6 +155,173 @@ class PersonalizationTests(unittest.TestCase):
         player.preferences = {"playbackMode": "repeatQueue"}
         return player
 
+    def test_collection_reactivation_keeps_pages_and_does_not_touch_playback(self):
+        client = FakePersonalizationClient()
+        client.personal["daily"].data.tracks = [track(i) for i in range(123)]
+        player = self.make_player(client)
+        player.state.update(loading=True, loadingKind="track", loadingStage="audioStream",
+                            queueName="Старая очередь", queueSourceKind="album", queueSourceArg="99")
+        original_queue = list(player.queue)
+        with patch.object(backend.threading, "Thread",
+                          side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            player.browse_personal_playlist("daily")
+            self.assertEqual(len(player.library_results), 50)
+            self.assertEqual(player.state["libraryDuration"], -1)
+            player.load_more_library()
+            player.browse_personal_playlist("missedLikes")
+            player.browse_personal_playlist("daily")
+        self.assertEqual([row.id for row in player.library_results], [str(i) for i in range(100)])
+        self.assertEqual(player.state["libraryBrowseKind"], "browse_personal")
+        self.assertEqual(player.state["libraryBrowseArg"], "daily")
+        self.assertTrue(player.state["libraryFromCache"])
+        self.assertEqual(player.queue, original_queue)
+        self.assertEqual(player.state["queueSourceArg"], "99")
+        self.assertEqual(player.state["loadingKind"], "track")
+        self.assertEqual(player.state["loadingStage"], "audioStream")
+
+    def test_late_collection_reply_cannot_overwrite_active_identity(self):
+        player = self.make_player(FakePersonalizationClient())
+        with patch.object(backend.threading, "Thread") as worker:
+            player.browse_personal_playlist("daily")
+            old_reply = worker.call_args.kwargs["target"]
+            player.browse_personal_playlist("missedLikes")
+            worker.call_args.kwargs["target"]()
+            old_reply()
+        self.assertEqual(player.state["libraryBrowseArg"], "missedLikes")
+        self.assertEqual(player.state["libraryBrowseName"], "Тайник")
+        self.assertEqual([row.id for row in player.library_results], ["2"])
+
+    def test_shuffle_uses_full_light_index_and_continues_every_page(self):
+        client = FakePersonalizationClient()
+        client.personal["daily"].data.tracks = [track(i) for i in range(123)]
+        player = self.make_player(client)
+        player.set_preference = lambda key, value: player.preferences.update({key: value})
+        with patch.object(backend.threading, "Thread",
+                          side_effect=lambda target, daemon: SimpleNamespace(start=target)), \
+                patch.object(backend.random, "shuffle", side_effect=lambda rows: rows.reverse()), \
+                patch.object(player, "_save_state"), patch.object(player, "_play_current"), \
+                patch.object(player, "_schedule_preload"):
+            player.browse_personal_playlist("daily")
+            player.play_library_collection("shuffle")
+            self.assertEqual([row.id for row in player.queue], [str(i) for i in range(122, 72, -1)])
+            self.assertEqual(len(player.queue_source), 73)
+            self.assertEqual(player._next_target_locked(True), 1)
+            player.index = 49
+            self.assertEqual(player._next_target_locked(True), "collection")
+            player._extend_collection(advance=True)
+            self.assertEqual(player.index, 50)
+            player.index = 99
+            player._extend_collection(advance=True)
+        self.assertEqual([row.id for row in player.queue], [str(i) for i in range(122, -1, -1)])
+        self.assertEqual(player.queue_source, [])
+        self.assertEqual(player.state["queueSourceKind"], "browse_personal")
+        self.assertEqual(player.state["queueSourceArg"], "daily")
+        self.assertEqual(len(player.library_results), 50)
+        self.assertEqual(player.state["libraryBrowseArg"], "daily")
+
+    def test_queue_source_and_lazy_tail_survive_restore_without_private_files(self):
+        player = self.make_player(FakePersonalizationClient())
+        player.client.tracks = lambda ids: [track(value) for value in ids]
+        player.preferences.update(restoreVolume=True, restoreQueue=True,
+                                  restorePosition=True, autoResume=False)
+        player.save_lock = threading.Lock()
+        player.last_saved_at = 0
+        player.volume = 60; player.muted = False
+        player.state.update(position=17, playing=False, queueName="Подборка")
+        player.queue_source = [SimpleNamespace(id="tail", album_id="10")]
+        player.queue_collection_key = "personal:daily"
+        player.queue_collection_shuffled = True
+        player.state.update(queueSourceKind="browse_personal", queueSourceArg="daily",
+                            queueSourceName="Подборка")
+        with tempfile.TemporaryDirectory() as directory, \
+                patch.object(backend, "STATE_FILE", Path(directory) / "state.json"), \
+                patch.object(player, "_play_current"):
+            player._save_state(True)
+            saved = json.loads(backend.STATE_FILE.read_text())
+            self.assertEqual(saved["queueRemaining"], [["tail", "10"]])
+            player.state.update(queueSourceKind="album", queueSourceArg="other")
+            player.queue_source = []
+            player._restore_queue()
+        self.assertEqual(player.state["queueSourceKind"], "browse_personal")
+        self.assertEqual(player.state["queueSourceArg"], "daily")
+        self.assertEqual(player.state["queueSourceName"], "Подборка")
+        self.assertEqual(player.queue_source[0].id, "tail")
+        self.assertTrue(player.queue_collection_shuffled)
+
+    def test_cached_owned_start_and_source_transitions_are_explicit(self):
+        player = self.make_player(FakePersonalizationClient())
+        player.library_source = [track(1), track(2)]
+        player.library_results = list(player.library_source)
+        player.library_offset = 2
+        player.active_library_cache_key = "playlist:7"
+        player.state.update(libraryBrowseName="Свой", libraryPlaylistKind="7", libraryEditable=True)
+        player._store_collection_cache_locked()
+        with player.lock:
+            player._reset_library_locked()
+        player.play_playlist("7")
+        with patch.object(player, "_save_state"), patch.object(player, "_play_current"), \
+                patch.object(player, "_report_radio_started"):
+            player.play_library_track(1)
+            self.assertEqual(player.state["queueSourceKind"], "playlist")
+            self.assertEqual(player.state["queueSourceArg"], "7")
+            self.assertEqual(player.index, 1)
+            player._set_queue([track(3)], "Волна", station="user:onyourwave")
+            self.assertEqual(player.state["queueSourceKind"], "wave")
+            self.assertEqual(player.state["queueSourceArg"], "")
+            player._set_queue([track(4)], "Альбом", source_kind="album", source_arg="42")
+        self.assertEqual(player.state["queueSourceKind"], "album")
+        self.assertEqual(player.state["queueSourceArg"], "42")
+
+    def test_search_queue_browse_preserves_new_search_and_original_provenance(self):
+        player = self.make_player(FakePersonalizationClient())
+        player.catalog = player._empty_catalog()
+        player.catalog["search"].update(query="Новый поиск", fieldText="Новый поиск")
+        player.catalog_search_models = {"tracks": [track("new")]}
+        player.queue = [track(i) for i in range(75)]
+        player.queue_source = [track(i) for i in range(75, 123)]
+        player.state.update(queueName="Поиск: исходный", queueSourceName="Поиск: исходный",
+                            queueSourceKind="search", queueSourceArg="исходный")
+        original_queue = list(player.queue)
+        original_tail = list(player.queue_source)
+        with patch.object(backend.threading, "Thread",
+                          side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            player.handle({"command": "browse_queue_source"})
+            self.assertEqual(player.state["libraryBrowseKind"], "browse_queue_source")
+            self.assertEqual(player.state["libraryBrowseArg"], "")
+            self.assertEqual(player.state["libraryBrowseName"], "Поиск: исходный")
+            self.assertEqual([row.id for row in player.library_results], [str(i) for i in range(50)])
+            player.load_more_library()
+            player.browse_personal_playlist("daily")
+            player.browse_queue_source()
+        self.assertEqual([row.id for row in player.library_results], [str(i) for i in range(100)])
+        self.assertEqual(player.queue, original_queue)
+        self.assertEqual(player.queue_source, original_tail)
+        self.assertEqual(player.catalog["search"]["query"], "Новый поиск")
+        self.assertEqual(player.catalog_search_models["tracks"][0].id, "new")
+        with patch.object(player, "_save_state"), patch.object(player, "_play_current"):
+            player.play_library_track(42)
+        self.assertEqual(player.state["queueSourceKind"], "search")
+        self.assertEqual(player.state["queueSourceArg"], "исходный")
+        self.assertEqual(player.state["queueSourceName"], "Поиск: исходный")
+        self.assertEqual(player.index, 42)
+        self.assertEqual(len(player.queue_source), 23)
+
+    def test_browse_and_source_status_contains_no_heavy_rows(self):
+        player = self.make_player(FakePersonalizationClient())
+        player.playlists = []; player.network = {}; player.search_results = []
+        player.catalog_revision = 0; player.catalog = player._empty_catalog()
+        player.collection_revision = 0; player.collection = player._empty_collection()
+        with patch.object(backend.threading, "Thread",
+                          side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            player.browse_personal_playlist("daily")
+        status = player.status()
+        self.assertEqual(status["libraryBrowseKind"], "browse_personal")
+        self.assertEqual(status["libraryBrowseArg"], "daily")
+        self.assertEqual(status["libraryDuration"], 120)
+        self.assertNotIn("libraryTracks", status)
+        self.assertNotIn("queueTracks", status)
+        self.assertNotIn("queueRemaining", status)
+
     @staticmethod
     def wait_until(predicate, timeout=2):
         deadline = time.monotonic() + timeout
@@ -161,6 +331,197 @@ class PersonalizationTests(unittest.TestCase):
             time.sleep(0.01)
         raise AssertionError("background personalization worker did not finish")
 
+    def test_home_metadata_stays_in_details_not_status(self):
+        player = self.make_player(FakePersonalizationClient())
+        player.playlists = []; player.network = {}; player.search_results = []
+        player.catalog_revision = 0; player.catalog = player._empty_catalog()
+        player.collection_revision = 0; player.collection = player._empty_collection()
+        with patch.object(backend.threading, "Thread") as worker:
+            player.handle({"command": "library_home"})
+            worker.call_args.kwargs["target"]()
+        status = player.status()
+        details = player.status(include_queue=True)
+        self.assertNotIn("libraryHub", status)
+        self.assertEqual(status["libraryHubRevision"], details["libraryHub"]["revision"])
+        self.assertEqual([row["personalId"] for row in details["libraryHub"]["items"]],
+                         [identifier for identifier, _ in backend.PERSONAL_PLAYLISTS])
+        details["libraryHub"]["items"].clear()
+        self.assertEqual(len(player.library_hub["items"]), len(backend.PERSONAL_PLAYLISTS))
+        with patch.object(backend.threading, "Thread") as worker:
+            player.handle({"command": "library_home_refresh"})
+            self.assertTrue(player.library_hub["loading"])
+            worker.call_args.kwargs["target"]()
+        self.assertEqual(len(player.client.calls), 2 * len(backend.PERSONAL_PLAYLISTS))
+
+    def test_home_loads_only_personal_metadata_and_reuses_it_for_browse(self):
+        client = FakePersonalizationClient()
+        for generated in client.personal.values():
+            generated.data.cover = SimpleNamespace(uri="covers.invalid/%%")
+            generated.data.fetch_tracks = Mock(side_effect=AssertionError("eager tracks"))
+        player = self.make_player(client)
+        player._set_queue = Mock()
+        original_queue = list(player.queue)
+        original_state = dict(player.state)
+        self.assertEqual(client.calls, [])
+
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_home()
+            self.assertEqual(player.library_hub["view"], "home")
+            self.assertTrue(player.library_hub["loading"])
+            self.assertFalse(player.library_hub["homeLoaded"])
+            player.library_home()
+            worker.assert_called_once()
+            worker.call_args.kwargs["target"]()
+
+        rows = player.library_hub["items"]
+        self.assertTrue(player.library_hub["homeLoaded"])
+        self.assertEqual([row["personalId"] for row in rows],
+                         [identifier for identifier, _ in backend.PERSONAL_PLAYLISTS])
+        self.assertTrue(all(row["artUrl"] == "https://covers.invalid/400x400" for row in rows))
+        self.assertEqual(client.calls, [("personal", identifier)
+                                       for identifier, _ in backend.PERSONAL_PLAYLISTS])
+        self.assertEqual(player.state, original_state)
+        self.assertEqual(player.queue, original_queue)
+        self.assertEqual(player.queue_revision, 0)
+        player._set_queue.assert_not_called()
+        for generated in client.personal.values():
+            generated.data.fetch_tracks.assert_not_called()
+
+        calls = list(client.calls)
+        player.library_section("personal")
+        self.assertEqual(player.library_hub["view"], "section")
+        self.assertEqual(player.library_hub["items"], rows)
+        player.library_back()
+        self.assertEqual(player.library_hub["view"], "home")
+        self.assertEqual(player.library_hub["items"], rows)
+        self.assertTrue(player.library_hub["homeLoaded"])
+        for playlist_id, title in (("daily", "Плейлист дня"), ("podcasts", "Подкасты недели")):
+            player.handle({"command": "browse_personal", "playlistId": playlist_id})
+            self.wait_until(lambda: not player.state["libraryLoading"])
+            self.assertEqual(player.state["libraryBrowseName"], title)
+            self.assertEqual(player.library_results, client.personal[playlist_id].data.tracks)
+            self.assertEqual(client.calls, calls)
+            self.assertEqual(player.queue, original_queue)
+            player._set_queue.assert_not_called()
+
+    def test_home_pending_generation_is_reloaded_and_old_ready_model_removed(self):
+        client = FakePersonalizationClient()
+        player = self.make_player(client)
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_home()
+            worker.call_args.kwargs["target"]()
+            client.personal["daily"].ready = False
+            player.library_home(force=True)
+            worker.call_args.kwargs["target"]()
+            row = player.library_hub["items"][0]
+            self.assertFalse(row["available"])
+            self.assertFalse(row["generationReady"])
+            self.assertNotIn("daily", player.personal_playlist_models)
+            self.assertTrue(player.library_hub["homeLoaded"])
+            player.library_back()
+            self.assertFalse(player.library_hub["items"][0]["available"])
+            client.personal["daily"].ready = True
+            player.library_section("personal")
+            self.assertTrue(player.library_hub["loading"])
+            worker.call_args.kwargs["target"]()
+        self.assertTrue(player.library_hub["items"][0]["available"])
+        self.assertEqual(len(client.calls), 3 * len(backend.PERSONAL_PLAYLISTS))
+
+    def test_home_cache_expires_without_fetching_on_back(self):
+        client = FakePersonalizationClient()
+        player = self.make_player(client)
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_section("personal")
+            worker.call_args.kwargs["target"]()
+            player.library_home()
+            self.assertFalse(player.library_hub["loading"])
+            worker.assert_called_once()
+            player.library_hub_cache["personal"]["storedAt"] -= backend.LIBRARY_HUB_CACHE_TTL + 1
+            player.library_back()
+            self.assertFalse(player.library_hub["homeLoaded"])
+            self.assertEqual(player.library_hub["items"], [])
+            self.assertEqual(player.personal_playlist_models, {})
+            self.assertEqual(len(client.calls), len(backend.PERSONAL_PLAYLISTS))
+            player.library_home()
+            self.assertTrue(player.library_hub["loading"])
+            worker.call_args.kwargs["target"]()
+        self.assertEqual(len(client.calls), 2 * len(backend.PERSONAL_PLAYLISTS))
+
+    def test_home_partial_and_failure_remain_local_and_retryable(self):
+        client = FakePersonalizationClient()
+        player = self.make_player(client)
+        original_state = dict(player.state)
+        client.personal["daily"] = RuntimeError("secret raw response")
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_home()
+            worker.call_args.kwargs["target"]()
+            self.assertEqual({row["personalId"] for row in player.library_hub["items"]},
+                             {"missedLikes", "recentTracks", "neverHeard", "podcasts"})
+            self.assertTrue(player.library_hub["warning"])
+            self.assertEqual(player.library_hub["error"], "")
+            for key in client.personal:
+                client.personal[key] = RuntimeError("secret raw response")
+            player.library_home()
+            self.assertTrue(player.library_hub["loading"])
+            worker.call_args.kwargs["target"]()
+        self.assertTrue(player.library_hub["homeLoaded"])
+        self.assertTrue(player.library_hub["error"])
+        self.assertNotIn("secret", player.library_hub["error"])
+        self.assertEqual(player.library_hub["items"], [])
+        self.assertEqual(player.personal_playlist_models, {})
+        self.assertEqual(player.state, original_state)
+        error = player.library_hub["error"]
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_section("albums")
+            worker.call_args.kwargs["target"]()
+            calls = list(client.calls)
+            player.library_back()
+            self.assertTrue(player.library_hub["homeLoaded"])
+            self.assertEqual(player.library_hub["error"], error)
+            self.assertEqual(client.calls, calls)
+            player.library_home()
+            self.assertTrue(player.library_hub["loading"])
+            worker.call_args.kwargs["target"]()
+        self.assertEqual(player.library_hub["error"], error)
+
+    def test_home_responses_cannot_publish_after_navigation_refresh_or_client_change(self):
+        for transition in ("section", "back", "refresh", "client"):
+            with self.subTest(transition=transition):
+                client = FakePersonalizationClient()
+                player = self.make_player(client)
+                original = client.playlists_personal
+
+                def interrupted(playlist_id):
+                    result = original(playlist_id)
+                    if transition == "section":
+                        player.library_section("albums")
+                    elif transition == "back":
+                        player.library_back()
+                    elif transition == "refresh":
+                        player.library_home(force=True)
+                    else:
+                        player.client = FakePersonalizationClient()
+                    return result
+
+                client.playlists_personal = interrupted
+                with patch.object(backend.threading, "Thread") as worker:
+                    player.library_home()
+                    worker.call_args.kwargs["target"]()
+                    self.assertEqual(player.library_hub_cache, {})
+                    self.assertEqual(player.personal_playlist_models, {})
+                    self.assertEqual(player.library_hub["items"], [])
+                    self.assertEqual(client.calls, [("personal", "daily")])
+                    if transition in ("section", "refresh"):
+                        client.playlists_personal = original
+                        worker.call_args.kwargs["target"]()
+                        self.assertFalse(player.library_hub["loading"])
+                        if transition == "refresh":
+                            self.assertEqual(len(player.library_hub["items"]), len(backend.PERSONAL_PLAYLISTS))
+                        else:
+                            self.assertEqual(player.library_hub["section"], "albums")
+                    elif transition == "back":
+                        self.assertFalse(player.library_hub["homeLoaded"])
+
     def test_sections_load_lazily_and_personal_playlists_are_cached(self):
         client = FakePersonalizationClient()
         player = self.make_player(client)
@@ -168,11 +529,12 @@ class PersonalizationTests(unittest.TestCase):
         player.library_section("personal")
         self.wait_until(lambda: not player.library_hub["loading"])
 
-        self.assertEqual([call[0] for call in client.calls], ["personal"] * 4)
+        self.assertEqual([call[0] for call in client.calls],
+                         ["personal"] * len(backend.PERSONAL_PLAYLISTS))
         self.assertEqual([row["personalId"] for row in player.library_hub["items"]],
                          [value for value, _title in backend.PERSONAL_PLAYLISTS])
         self.assertTrue(all(row["available"] for row in player.library_hub["items"]))
-        self.assertEqual(len(player.personal_playlist_models), 4)
+        self.assertEqual(len(player.personal_playlist_models), len(backend.PERSONAL_PLAYLISTS))
         call_count = len(client.calls)
         player.library_back()
         player.library_section("personal")
@@ -195,7 +557,7 @@ class PersonalizationTests(unittest.TestCase):
 
         client.personal["missedLikes"].ready = True
         player.browse_personal_playlist("missedLikes")
-        self.wait_until(lambda: not player.state["loading"])
+        self.wait_until(lambda: not player.state["libraryLoading"])
         self.assertEqual(player.state["libraryBrowseName"], "Тайник")
         self.assertIn("missedLikes", player.personal_playlist_models)
 
@@ -208,9 +570,9 @@ class PersonalizationTests(unittest.TestCase):
         player.library_section("personal")
         self.wait_until(lambda: not player.library_hub["loading"])
         player.browse_personal_playlist("missedLikes")
-        self.wait_until(lambda: not player.state["loading"])
+        self.wait_until(lambda: not player.state["libraryLoading"])
 
-        self.assertIn("не сформирован Яндекс Музыкой", player.state["error"])
+        self.assertIn("не сформирован Яндекс Музыкой", player.state["libraryError"])
         self.assertEqual(player.state["libraryBrowseName"], "")
 
     def test_history_resolves_and_displays_fifty_items_per_page(self):

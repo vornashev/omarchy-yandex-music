@@ -24,22 +24,22 @@ function reconcile(incoming, state, viewport, requestActionRevision, currentActi
   if (queueChanged) queue = next.queueTracks || []
   next.queueTracks = queue
 
-  var libraryExpanded = (next.libraryTracks || []).length > (old.libraryTracks || []).length
   if (revision(next, "libraryRevision") === revision(old, "libraryRevision"))
     next.libraryTracks = old.libraryTracks || []
 
   var intents = {
     queueCurrent: Number(next.queueIndex || 0) !== Number(state.previousQueueIndex || 0)
-      && state.page === 0,
+      && state.nowRoot === true,
     queueViewport: "none", queueTargetY: Number(view.queueY || 0),
     libraryViewport: "none", libraryTargetY: Number(view.libraryY || 0),
     catalogViewport: "none", catalogTargetY: Number(view.catalogY || 0)
   }
-  var browseChanged = String(next.libraryBrowseName || "")
-    !== String(old.libraryBrowseName || "")
-  if (browseChanged && String(next.libraryBrowseName || "") !== "")
-    intents.queueViewport = "reset"
-  else if (libraryExpanded) intents.queueViewport = "preserve"
+  if (queueChanged) {
+    var sameSource = String(next.queueName || "") === String(old.queueName || "")
+      && String(next.queueSourceKind || "") === String(old.queueSourceKind || "")
+      && String(next.queueSourceArg || "") === String(old.queueSourceArg || "")
+    intents.queueViewport = sameSource ? "preserve" : "reset"
+  }
 
   var hubChanged = !!next.libraryHub
     && revision(next, "libraryHubRevision") !== revision(old, "libraryHubRevision")
@@ -63,27 +63,12 @@ function reconcile(incoming, state, viewport, requestActionRevision, currentActi
 
   var catalogChanged = !!next.catalog
     && revision(next, "catalogRevision") !== revision(old, "catalogRevision")
-  var searchY = Number(state.catalogSearchContentY || 0)
   if (catalogChanged) {
-    var oldCatalogView = String(catalog.view || "search")
-    var newCatalogView = String(next.catalog.view || "search")
     var oldSearch = catalog.search || {}
     var newSearch = next.catalog.search || {}
     var searchChanged = String(oldSearch.query || "") !== String(newSearch.query || "")
       || String(oldSearch.filter || "all") !== String(newSearch.filter || "all")
-    var oldEntity = catalog.entity || {}
-    var newEntity = next.catalog.entity || {}
-    var entityChanged = String(oldEntity.type || "") !== String(newEntity.type || "")
-      || String(oldEntity.id || "") !== String(newEntity.id || "")
-    if (oldCatalogView === "search") searchY = Number(view.catalogY || 0)
-    if (oldCatalogView !== newCatalogView && newCatalogView === "search") {
-      intents.catalogViewport = "restoreSearch"
-      intents.catalogTargetY = searchY
-    } else if (oldCatalogView !== newCatalogView || searchChanged || entityChanged) {
-      intents.catalogViewport = "reset"
-    } else {
-      intents.catalogViewport = "preserve"
-    }
+    intents.catalogViewport = searchChanged ? "reset" : "preserve"
     catalog = next.catalog
   }
   next.catalog = catalog
@@ -93,7 +78,6 @@ function reconcile(incoming, state, viewport, requestActionRevision, currentActi
     queueDisplay: queue, libraryHubDisplay: hub,
     collectionDisplay: collection, catalogDisplay: catalog,
     previousQueueIndex: Number(next.queueIndex || 0),
-    catalogSearchContentY: searchY,
     changed: { queue: queueChanged, libraryHub: hubChanged,
       collection: collectionChanged, catalog: catalogChanged },
     initializeCatalog: catalogChanged && !state.catalogInitialized,

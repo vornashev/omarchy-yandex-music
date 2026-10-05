@@ -6,6 +6,46 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.11.0] - 2026-10-05
+
+### Added
+
+- Independent navigation stacks for Now Playing, Library, and Search, with a shared Back/breadcrumb header, per-page scroll restoration, and artist, album, and playlist pages inside the current tab. Switching tabs restores their last page; reselecting a tab returns to its root without clearing Search input, query, filter, loaded results, or scroll. Rail shortcuts reset the Library stack and highlight its current context
+- Dedicated collection pages for Likes, owned playlists, and personal mixes, with artwork, available count/duration, local loading/error states, and explicit Listen/Shuffle actions. Browsing never replaces the playback queue; Shuffle covers the complete collection while loading track metadata lazily
+- A queue-source link opens the source in Library without changing playback. Deep pages in Now Playing replace the large player and queue above the persistent mini player. Navigation from a previously saved Mini layout temporarily opens Compact without changing that preference
+- `Alt+Left` and `Backspace` go Back without interfering with focused nonempty text fields. Escape closes overlays/settings first, then goes Back, and closes the popup only at a root, including from the Search field
+- Personal Library cards with artwork for Playlist of the Day, Missed Likes, Premiere, and Deja Vu; Wide also shows Podcasts of the Week. Home metadata loads lazily, coalesces simultaneous requests, and shares bounded memory-only caches with personal collection browsing. Unavailable mixes and local errors remain visible, with explicit refresh rather than automatic retry loops
+- A dedicated My Wave screen with a theme-aware radio-glow card, description, and Start beside mood, selection, and language controls in Wide; Compact stacks them on one scrollable page. Instrumental music is now a language option. The mini player remains below; Start or Enter launches the wave, while saving settings or connecting prevents another start
+- A redesigned sign-in flow with an introduction, step-by-step device-code screen, large per-character code, Copy (`C`), Open page (`Enter`), and a live expiry countdown. Expired codes offer Get a new code (`R`), sign-in can be cancelled explicitly, and the success screen shows the login and Plus status with actions to start My Wave or open Library
+- Optional track time and a Like button in the bar, controlled by `showTime` and `showLike`
+
+### Changed
+
+- The popup offers Compact (400×640, page tabs, a 72 px track header, and one-row controls) and Wide (1040×640, navigation rail, current track, and queue/lyrics/track info side by side). Settings offer these two layouts only: the 380×101 Mini layout remains implemented and previously saved preferences still work, but its selector option is deferred to a future update. The persistent mini player under Library, Search, Settings, and deeper pages is separate and remains available
+- `W` (`Ц` on a Russian keyboard) and the layout buttons switch Compact/Wide and remember the choice; the retained Mini strip has an expand button. Screens too narrow for Wide fall back to Compact
+- The Wide rail starts directly with navigation, without a logo or application-name header. Its Compact-view button sits beside Settings at the bottom: a square 37×37 control, with a full-opacity dim icon and no border or background at rest. Hover adds a subtle border/fill, Tab focus adds an accent border, and pressing adds an accent border/icon with a soft accent fill. The tooltip appears after 500 ms of hover or immediately on keyboard focus; activation gives 120 ms of pressed feedback before switching
+- Now Playing places artwork, details, progress, transport, and volume on the left of the Wide view, beside tabbed queue/lyrics/track info with 48–52 px rows and artwork thumbnails. Compact opens volume from its speaker button. The centred Actions sheet includes the current track
+- Library keeps quick My Wave settings on its Wide home alongside owned collections and section shortcuts. Search adds a best result and counters; Wide artist pages place popular tracks beside albums, with Radio available for the best-matching or opened artist
+- Settings use two columns in Wide, compact toggle rows, a bar preview, and a popup-view selector. Select controls distinguish default, hover, focus, open, changed, busy, and error states
+- The playlist picker is a bottom sheet in Compact and a 340 px row-anchored popover without dimming in Wide. It includes track artwork, playlist thumbnails, membership checks, inline private-playlist creation, results alongside the list, and separate removal confirmation. Row actions use Lucide list-plus, or ellipsis in an editable owned playlist; ↑/↓, Enter, Escape, and Delete support keyboard operation. A previously saved Mini layout temporarily expands to Compact while picking
+- Playlist additions can be retried; creation and deletion never offer potentially duplicate or destructive retries. Membership checks block duplicate additions and mutations while checking. Deletion always requires confirmation; after any completed deletion attempt the target is cleared, and a revision conflict refreshes the list so another attempt requires selecting and confirming the track again
+- Popup and bar icons use the bundled ISC-licensed Lucide set instead of font glyphs
+- The bar dims artwork/text when paused, shows a stream-connection spinner while loading, offers one sign-in action when signed out, and shows a red dot with a short message on errors. Progress sits under track information; volume shows its percentage. Right-click toggles play/pause, and the wheel over track information adjusts volume
+- Bar buttons show hover, pressed, keyboard-focus, and disabled states with 24 px-wide hit zones, 14 px icons, and 2 px spacing; pressed icons shrink to 13 px over an accent fill. Like shows a half-opacity pending heart, a 200 ms success flash, or a red error dot. Volume adds hover/drag/wheel feedback, quiet/mute icons, and an unavailable state; Previous/Next show a short spinner while the stream loads
+
+### Fixed
+
+- Owned playlists are individual Library-home cards, sharing three equal-width wrapping columns with Likes and Recently Played in Wide. Compact keeps one column. Every playlist remains reachable through the outer page scroll, without a nested one- or two-card viewport
+- Previous/Next, Play/Pause, Like, and Mute respond over the full bar height, including the top and bottom edges, without enlarging their icons. The volume slider also accepts wheel events across the full height while its visible track stays centred
+- Hidden editors return focus to panel navigation. Stale browse/entity responses cannot replace a newer destination; reopening the current destination does not duplicate it. Each tab preserves its root within an eight-level limit, dropping the oldest non-root page when necessary
+- Returning to Now Playing no longer lets a delayed details response reset the queue after manual scrolling
+- Cancelled sign-in attempts cannot overwrite a new code, report an old error, or save/connect an old token, including when cancellation arrives during account initialization
+
+### Removed
+
+- Expandable cover mode and its `F` shortcut, replaced by the redesigned Compact and Wide views
+- Collection browsing inside the Now Playing queue and special cross-tab catalog return rules; browsing now follows the active tab's stack independently of playback
+
 ## [0.10.0] - 2026-10-04
 
 ### Added
@@ -267,7 +307,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
-[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...HEAD
+[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.0...HEAD
+[0.11.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.9.0...v0.10.0
 [0.9.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.2...v0.9.0
 [0.8.2]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.8.1...v0.8.2

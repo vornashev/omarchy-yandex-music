@@ -24,8 +24,7 @@ TestCase {
       ["returnCatalogSearch", undefined, "catalog_back", undefined],
       ["loadMoreCatalogSearch", undefined, "catalog_load_more", undefined],
       ["loadMoreCatalogEntity", undefined, "catalog_entity_more", undefined],
-      ["loadMoreArtistRelease", "singles", "catalog_artist_more", "singles"],
-      ["closeLibraryQueue", undefined, "close_library", undefined]
+      ["loadMoreArtistRelease", "singles", "catalog_artist_more", "singles"]
     ]
     for (var i = 0; i < cases.length; i++) {
       var request = ActionIntents.resolve(cases[i][0], cases[i][1])
@@ -87,6 +86,38 @@ TestCase {
     compare(more.libraryLoadingMore, true)
     compare(more.error, "")
     compare(ActionIntents.optimisticData(ActionIntents.policyForCommand("catalog_album"), current), null)
+  }
+  function test_browsing_does_not_mark_playback_loading() {
+    var current = { playing: true, queueIndex: 7, loading: false, loadingKind: "track" }
+    for (var command of ["likes", "playlist", "browse_personal"]) {
+      compare(ActionIntents.optimisticData(ActionIntents.policyForCommand(command), current), null)
+    }
+    compare(current.playing, true)
+    compare(current.queueIndex, 7)
+    compare(current.loading, false)
+    compare(ActionIntents.resolve("closeLibraryQueue"), null)
+  }
+
+  function test_home_metadata_requests_do_not_replace_playback_or_visible_cards() {
+    var current = { title: "Playing", queueIndex: 4, loading: true,
+      loadingKind: "track", error: "Playback error" }
+    var cases = [
+      ["loadLibraryHome", "library_home"],
+      ["retryLibraryHome", "library_home_refresh"]
+    ]
+    for (var i = 0; i < cases.length; i++) {
+      var request = ActionIntents.resolve(cases[i][0])
+      compare(request.command, cases[i][1])
+      compare(request.argument, undefined)
+      compare(ActionIntents.resolve(cases[i][0], "unexpected"), null)
+      var policy = ActionIntents.policyForCommand(request.command)
+      compare(policy.refresh, "settle")
+      compare(ActionIntents.optimisticData(policy, current), null)
+      compare(ActionIntents.optimisticLibrary(policy, undefined, 5), null)
+    }
+    compare(current.queueIndex, 4)
+    compare(current.loadingKind, "track")
+    compare(current.error, "Playback error")
   }
 
   function test_local_library_snapshot_and_search_scroll_policy() {

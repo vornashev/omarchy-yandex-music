@@ -50,6 +50,55 @@ class VolumePreferenceTests(unittest.TestCase):
                         self.assertEqual(player.state["volume"], 37)
                         self.assertTrue(player.state["muted"])
 
+    def test_bar_time_and_like_toggles_default_off_and_persist(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preferences_file = Path(temporary) / "preferences.json"
+            with patch.object(backend, "PREFERENCES_FILE", preferences_file):
+                player = backend.Player.__new__(backend.Player)
+                player.lock = threading.RLock()
+                player.preferences = player._load_preferences()
+                player.state = {}
+                self.assertIs(player.preferences["showTime"], False)
+                self.assertIs(player.preferences["showLike"], False)
+                player.set_preference("showTime", "true")
+                player.set_preference("showLike", "true")
+                restored = player._load_preferences()
+                self.assertIs(restored["showTime"], True)
+                self.assertIs(restored["showLike"], True)
+
+    def test_wave_language_accepts_instrumental_option(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preferences_file = Path(temporary) / "preferences.json"
+            with patch.object(backend, "PREFERENCES_FILE", preferences_file):
+                player = backend.Player.__new__(backend.Player)
+                player.lock = threading.RLock()
+                player.preferences = player._load_preferences()
+                player.state = {}
+                player.set_preference("waveLanguage", "without-words")
+                self.assertEqual(player._load_preferences()["waveLanguage"], "without-words")
+                with self.assertRaises(ValueError):
+                    player.set_preference("waveLanguage", "klingon")
+
+    def test_popup_layout_preference_is_validated_and_persisted(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preferences_file = Path(temporary) / "preferences.json"
+            preferences_file.write_text(json.dumps({"popupLayout": "huge"}))
+            with patch.object(backend, "PREFERENCES_FILE", preferences_file):
+                player = backend.Player.__new__(backend.Player)
+                player.lock = threading.RLock()
+                player.preferences = player._load_preferences()
+                player.state = {}
+
+                self.assertEqual(player.preferences["popupLayout"], "compact")
+                for value in ("mini", "wide", "compact"):
+                    with self.subTest(value=value):
+                        player.set_preference("popupLayout", value)
+                        self.assertEqual(player.state["preferences"]["popupLayout"], value)
+                        self.assertEqual(player._load_preferences()["popupLayout"], value)
+                with self.assertRaises(ValueError):
+                    player.set_preference("popupLayout", "huge")
+                self.assertEqual(player.preferences["popupLayout"], "compact")
+
 
 if __name__ == "__main__":
     unittest.main()

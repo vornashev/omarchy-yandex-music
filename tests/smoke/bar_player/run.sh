@@ -13,7 +13,7 @@ cp "$root/tests/smoke/bar_player/fake_cli.sh" "$probe/home/.local/bin/omarchy-ya
 chmod 755 "$probe/home/.local/bin/omarchy-yandex-music"
 printf '#!/bin/sh\nexit 0\n' >"$probe/home/.config/omarchy/plugins/vornashev.yandex-music/bootstrap.sh"
 chmod 755 "$probe/home/.config/omarchy/plugins/vornashev.yandex-music/bootstrap.sh"
-for name in BarWidget.qml WidgetLogic.qml MusicSession.qml SessionController.qml TransportIntents.js BarPlayer.qml; do
+for name in BarWidget.qml WidgetLogic.qml MusicSession.qml SessionController.qml TransportIntents.js BarPlayer.qml BarButton.qml LucideIcon.qml LucideIcons.js; do
   ln -s "$root/$name" "$probe/harness/$name"
 done
 for name in Commons Ui; do

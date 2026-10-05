@@ -29,6 +29,10 @@ function resolve(intent, payload) {
     var index = indexOf(payload)
     return index < 0 ? null : { command: indexedCommands[intent], argument: index }
   }
+  if (intent === "playLibraryCollection") {
+    if (payload !== "order" && payload !== "shuffle") return null
+    return { command: "play_library_collection", argument: payload }
+  }
   if (intent === "playCatalogTrack") {
     if (!Array.isArray(payload) || payload.length !== 2) return null
     var source = payload[0]

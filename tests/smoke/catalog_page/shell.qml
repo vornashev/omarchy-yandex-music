@@ -33,7 +33,6 @@ ShellRoot {
     foreground: "white"
     dim: "gray"
     fontFamily: "Sans"
-    returnToLibrary: false
     hasVisibleError: false
     errorCardHeight: 0
     onArtistRequested: shell.artistRequests += 1

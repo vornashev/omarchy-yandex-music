@@ -25,6 +25,7 @@ Item {
   signal loadMoreRequested()
   signal releaseMoreRequested(string section)
   signal trackPlaybackRequested(string source, int index)
+  signal radioRequested(string station, string title)
 
   function trimmedText() { return String(fieldText || "").trim() }
 
@@ -106,6 +107,8 @@ Item {
   }
 
   function openEntity(type, id, uuid, owner, kind) {
+    suggestionTimer.stop()
+    suggestionGeneration += 1
     view = String(type || "")
     highlightedSuggestionIndex = -1
     suggestionLoading = false
@@ -115,7 +118,6 @@ Item {
   }
 
   function back() {
-    view = "search"
     backRequested()
   }
 

@@ -60,6 +60,11 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
     "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/CatalogPage.qml" \
     "$ROOT/LibraryController.qml" \
     "$ROOT/LibraryPage.qml" "$ROOT/CollectionController.qml" "$ROOT/SkeletonList.qml" \
+    "$ROOT/PlaylistSheet.qml" \
+    "$ROOT/NavController.qml" "$ROOT/NavHeader.qml" "$ROOT/CollectionPage.qml" \
+    "$ROOT/AuthPage.qml" "$ROOT/BarButton.qml" "$ROOT/IconButton.qml" "$ROOT/LucideIcon.qml" "$ROOT/LucideIcons.js" \
+    "$ROOT/CompactPlayer.qml" "$ROOT/MiniBar.qml" "$ROOT/MusicSegmented.qml" "$ROOT/MusicSelect.qml" "$ROOT/NowPane.qml" "$ROOT/OptionTile.qml" "$ROOT/PageTabs.qml" "$ROOT/PlayButton.qml" \
+    "$ROOT/RailItem.qml" "$ROOT/RailPane.qml" "$ROOT/RoundImage.qml" "$ROOT/SeekBar.qml" "$ROOT/SettingRow.qml" "$ROOT/SettingsPage.qml" "$ROOT/TrackPane.qml" \
     "$ROOT/requirements.in" "$ROOT/requirements.txt" "$PLUGIN_DIR/"
   install -m 644 "$ROOT/vendor/README.md" \
     "$ROOT/vendor/yandex_music-3.1.0b2.origin.json" \

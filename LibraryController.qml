@@ -12,22 +12,27 @@ Item {
   property string stationQuery: ""
   property int stationPageSize: 50
   property int stationVisibleCount: stationPageSize
+  property bool homeRequestPending: false
+  property bool homeRequestAttempted: false
+  property int homeRequestRevision: 0
   readonly property string view: String(snapshot.view || "home")
   readonly property string section: String(snapshot.section || "")
   readonly property bool stationMode: view === "section" && section === "stations"
-  readonly property bool loading: snapshot.loading === true
+  readonly property bool loading: snapshot.loading === true || (view === "home" && homeRequestPending)
   readonly property bool loadingMore: !stationMode && snapshot.loadingMore === true
   readonly property bool hasMore: stationMode
     ? stationVisibleCount < filteredStationItems().length
     : snapshot.hasMore === true
   readonly property var rows: buildRows()
+  readonly property var personalItems: view === "home" ? (snapshot.items || []) : []
 
+  signal homeRequested(bool force)
   signal sectionRequested(string section)
   signal backRequested()
   signal retryRequested(string section)
   signal loadMoreRequested()
-  signal collectionRequested(string command, string argument)
-  signal entityRequested(string type, string id, string uuid, string owner, string kind)
+  signal collectionRequested(string command, string argument, string title)
+  signal entityRequested(string type, string id, string uuid, string owner, string kind, string title)
   signal trackPlaybackRequested(int index)
   signal stationPlaybackRequested(string station, string title)
 
@@ -96,8 +101,6 @@ Item {
       return rows
     }
 
-    rows.push({ kind: "back", title: "Назад в медиатеку", icon: "󰁍" })
-    rows.push({ kind: "section", title: sectionTitle(section) })
     if (String(snapshot.error || "") !== "") {
       rows.push({ kind: "error", title: String(snapshot.error) })
       rows.push({ kind: "retry", title: "Повторить" })
@@ -119,12 +122,26 @@ Item {
     return rows
   }
 
+  function requestHome(force) {
+    if (view !== "home" || homeRequestPending || snapshot.loading === true) return
+    if (force !== true && (homeRequestAttempted || snapshot.homeLoaded === true)) return
+    homeRequestRevision = Number(snapshot.revision || 0)
+    homeRequestAttempted = true
+    homeRequestPending = true
+    homeRequested(force === true)
+  }
+
   function applySnapshot(value) {
     var previousView = view
     var previousSection = section
     snapshot = value || ({ view: "home", section: "", loading: false,
       loadingMore: false, hasMore: false, total: 0,
       error: "", warning: "", items: [], revision: 0 })
+    if (view === "home" && snapshot.homeLoaded === true && snapshot.loading !== true
+        && (!homeRequestPending || Number(snapshot.revision || 0) > homeRequestRevision)) {
+      homeRequestPending = false
+      homeRequestAttempted = true
+    }
     if (previousView !== view || previousSection !== section) {
       stationQuery = ""
       stationVisibleCount = stationPageSize
@@ -137,6 +154,10 @@ Item {
   function openSection(value) {
     var next = String(value || "")
     if (next === "") return
+    if (homeRequestPending) {
+      homeRequestPending = false
+      homeRequestAttempted = false
+    }
     sectionRequested(next)
   }
 
@@ -157,29 +178,28 @@ Item {
   function activate(row) {
     var value = row || {}
     var kind = String(value.kind || "")
-    if (kind === "back") backRequested()
-    else if (kind === "retry") retryRequested(section)
+    if (kind === "retry") retryRequested(section)
     else if (kind === "loadMore") requestMore()
     else if (kind === "navigation") openSection(value.section)
     else if (kind === "collection")
-      collectionRequested(String(value.command || ""), String(value.argument || ""))
+      collectionRequested(String(value.command || ""), String(value.argument || ""), String(value.title || ""))
     else {
       var item = value.value || {}
-      if (item.available === false) return
+      if (item.available === false || item.generationReady === false) return
       var type = String(item.entityType || kind)
       if (String(item.personalId || "") !== "")
-        collectionRequested("browse_personal", String(item.personalId))
+        collectionRequested("browse_personal", String(item.personalId), String(item.title || ""))
       else if (type === "track")
         trackPlaybackRequested(Number(item.trackIndex || 0))
       else if (type === "station")
         stationPlaybackRequested(String(item.stationId || ""), String(item.title || "Радиостанция"))
       else if (type === "artist")
-        entityRequested("artist", String(item.id || ""), "", "", "")
+        entityRequested("artist", String(item.id || ""), "", "", "", String(item.name || item.title || ""))
       else if (type === "album")
-        entityRequested("album", String(item.id || ""), "", "", "")
+        entityRequested("album", String(item.id || ""), "", "", "", String(item.title || ""))
       else if (type === "playlist")
         entityRequested("playlist", "", String(item.uuid || ""),
-                        String(item.owner || ""), String(item.kind || ""))
+                        String(item.owner || ""), String(item.kind || ""), String(item.title || ""))
     }
   }
 }

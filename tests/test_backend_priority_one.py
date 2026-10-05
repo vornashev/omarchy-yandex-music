@@ -456,23 +456,6 @@ class PriorityOneTests(unittest.TestCase):
         self.assertEqual(attempts, 1)
         self.assertEqual(player.state["loadingStage"], "audioStream")
 
-    def test_library_loading_can_replace_inflight_track_loading(self):
-        player = self.make_player(radio=False)
-        player.state.update(
-            authenticated=True, loading=True, loadingKind="track",
-            loadingStage="audioStream")
-        calls = []
-
-        with patch.object(
-                backend.threading, "Thread",
-                side_effect=lambda target, daemon: SimpleNamespace(start=target)):
-            player._loading(lambda: calls.append("likes"), "likes")
-            player._loading(lambda: calls.append("playlist"), "playlist")
-
-        self.assertEqual(calls, ["likes"])
-        self.assertTrue(player.state["loading"])
-        self.assertEqual(player.state["loadingKind"], "likes")
-        self.assertEqual(player.state["loadingStage"], "")
 
     def test_audio_url_variants_cycle_through_sorted_alternatives(self):
         player = self.make_player(radio=False)

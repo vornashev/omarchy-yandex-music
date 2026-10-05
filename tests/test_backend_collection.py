@@ -3,6 +3,7 @@ import time
 import unittest
 from collections import OrderedDict
 from types import SimpleNamespace
+from unittest.mock import patch
 
 from backend import backend
 
@@ -163,10 +164,11 @@ class CollectionTests(unittest.TestCase):
         client.current = playlist(rows=[], revision=2, title="Empty")
         client.current.fetch_tracks = lambda: []
         player = self.make_player(client)
-        player._loading = lambda function, kind: function()
         original_queue = list(player.queue)
 
-        player.play_playlist("7")
+        with patch.object(backend.threading, "Thread",
+                          side_effect=lambda target, daemon: SimpleNamespace(start=target)):
+            player.play_playlist("7")
 
         self.assertEqual(player.state["libraryBrowseName"], "Empty")
         self.assertTrue(player.state["libraryEditable"])

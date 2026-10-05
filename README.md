@@ -50,27 +50,42 @@ A native Yandex Music mini-player for the [Omarchy](https://omarchy.org/) shell.
 
 ### Bar
 
-The bar player can show previous, play/pause, and next controls, album artwork, artist, track title, progress, and a volume control to the right of the title. Scroll the mouse wheel over the volume area to adjust the level in 5% steps, click the speaker icon to mute, and click the artwork or track information to open the popup.
+The bar player can show previous, play/pause, and next controls, a Like button, album artwork, artist, track title, elapsed/total time, progress, and a volume control. Scroll over the volume area or track information to change the level in 5% steps; click the speaker to mute, right-click the track information to toggle play/pause, or click the artwork/track information to open the popup. Buttons and the volume wheel area respond over the full bar height, including its edges.
 
-Long artist/title text can be truncated or scrolled as one continuous line. The information width, controls, artwork, progress line, and bar volume control are configurable. Settings → Bar → Show volume hides the bar volume area independently of the popup slider; it is enabled by default.
+The bar and popup use Lucide icons. Paused tracks dim their artwork/text; loading shows a connection spinner, signed-out state offers sign-in, and errors show a red dot with a short message. Buttons have hover, pressed, keyboard-focus, and disabled feedback; Like shows pending, success, or failure, while volume shows drag/wheel feedback.
+
+Long artist/title text can be truncated or scrolled as one continuous line. The information width, controls, artwork, progress line, and bar volume control are configurable. Settings → Bar → Show volume hides the bar volume area independently of the popup slider; it is enabled by default. Show track time (`showTime`) and Like button (`showLike`) independently toggle the time display and heart.
+
+### Navigation
+
+- Now Playing, Library, and Search each keep an independent stack of pages and scroll positions. Artist, album, and playlist links open inside the current tab, without changing playback
+- Switching tabs restores their last page. Clicking the active tab again, or repeating its `1`/`2`/`3` shortcut, returns to its root. Returning to the Search root preserves the input, query, filter, loaded pages, result models, and scroll position
+- Back goes up one page; breadcrumbs jump to an ancestor. Library shortcuts in the Wide rail select Library and reset its stack to the home screen plus the chosen destination; the Library tab and matching shortcut stay highlighted
+- Opening an entity from Now Playing keeps that tab selected. In Wide, the page replaces both the large player and queue above the mini player; Compact also keeps the mini player below the page. Navigation from Mini temporarily expands to Compact without changing the saved layout
+- The queue's source link opens its collection or entity in Library without starting playback. Track selection, artist links, and playlist actions have separate click targets
+- Reopening the current destination does not add a duplicate. Each tab keeps at most eight levels including its root; a longer chain drops the oldest non-root page
+
 
 ### Now Playing
 
 - Drag the seek slider and release to apply it; the real position remains visible while the target time is shown in parentheses
-- Previous, Play/Pause, and Next form a larger centered transport group, with Play/Pause emphasized and Like/Actions symmetrically framing it at the outer edges
-- Mute, the volume slider, and its percentage sit directly under the transport controls in both the regular and expanded cover views; the volume follows a perceptual curve so quiet settings stay audible, while the Actions sheet keeps infrequent commands out of the way
+- In Wide, Previous, Play/Pause, and Next form a larger centered transport group, with Play/Pause emphasized and Like/Actions at the outer edges. Compact places transport, seek, volume, and Actions in one row below the track header
+- Wide places mute, the volume slider, and its percentage below the transport controls; Compact opens them from the speaker button. Volume follows a perceptual curve so quiet settings stay audible, while the centred Actions sheet shows the current track and keeps infrequent commands out of the way
 - Like or unlike with the heart button or `L`; use Actions or `D` to toggle “Do not recommend”, which immediately skips a new dislike in “My Wave”
 - Actions also provides Add current track to playlist, Track Radio, queue mode, and Settings
-- Click the cover to smoothly expand it across the popup while retaining track details, a seekable progress bar, and the same control hierarchy; the mode survives closing and reopening the popup, while another click or `Escape` returns to the regular view
+- Choose Compact (400×640) or Wide (1040×640) in Settings → Playback → Popup view; these are the only options currently offered. The separate Mini layout remains implemented for previously saved preferences, but its selector option is deferred to a future update. This does not remove the persistent mini player below Library, Search, Settings, and deeper pages. Press `W` to switch Compact/Wide; screens too narrow for Wide fall back to Compact. Wide shows a navigation rail, the current track and the queue, lyrics or track info side by side
+- In Wide, the Compact-view button is at the bottom of the navigation rail, next to Settings: a square 37×37 button, borderless at rest, with hover/press feedback, a keyboard-focus accent border, and a tooltip showing `W`. Tab focuses it; Space or Enter activates it
 - Explicit List, Lyrics, and Track Info tabs replace the former cluster of ambiguous queue-header icons
 - The list, lyrics, and track-info areas fit the remaining popup height and scroll internally, keeping the player controls stationary; exceptionally short screens retain outer scrolling so controls stay reachable
 - In Lyrics, synced LRC lines highlight and scroll with playback and clicking a line seeks to it; plain lyrics are used as a fallback, while missing lyrics or loading errors never interrupt playback
 - Track Info shows available album, release date, genre, labels, track number, version, description, and recording credits
 - Select any queue item directly
 - Hover a track row to reveal its playlist action; in the queue it replaces the duration, opens an owned-playlist picker or creates a new private playlist without activating the row, and playlists that already contain the track are marked and cannot receive a duplicate
-- Click an artist or album link to open its page in the Search catalog
+- The picker opens as a bottom sheet in Compact and a popover next to the row in Wide, without dimming the wide player. Membership checking disables mutations; private-playlist creation, results and removal confirmation stay inside the picker. Use ↑/↓ and Enter to choose, Delete to open removal confirmation, and Escape to cancel the form/confirmation or close the picker. Mini temporarily shows Compact while the picker is open
+- Failed additions offer Retry; creation never offers a retry that could create a duplicate playlist. Deletion requires confirmation and clears the selected target after every completed attempt. A revision conflict refreshes the list; select the track again and reconfirm rather than repeating a destructive action
+- Click an artist or album link to open its page inside the current tab
 
-Opening “My Likes” or a personal library playlist does **not** interrupt the current track. A separate list is loaded and playback starts only after you select a track. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Recently opened collections and all pages already fetched for them are restored instantly from a short-lived in-memory cache. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
+Opening “My Likes” or a personal library playlist does **not** interrupt the current track. A dedicated collection page loads a separate list; playback starts only through **Listen**, **Shuffle**, or explicit track selection. Large library collections load in batches of 50 tracks, with the next page fetched automatically when you reach the end of the list. Shuffle includes the full collection, resolving the remaining track metadata lazily rather than restricting playback to the first loaded page. Recently opened collections and all pages already fetched for them are restored from a short-lived in-memory cache. Loading and errors remain local to browsing; unknown total duration is not replaced by the duration of the first page. Lyrics and detailed track information load only on demand and remain in memory for the current and a few recently opened tracks.
 
 ### Audio caching
 
@@ -83,33 +98,37 @@ Files are separated by account, quality, codec, and bitrate in `$XDG_CACHE_HOME/
 ### Library
 
 - Browse “My Likes” and owned playlists without autoplay
+- Wide places Likes, each owned playlist, and Recently Played in a three-column wrapping grid; Compact keeps one column. All playlist cards remain reachable through the page's outer scroll, without a nested playlist scroller
 - Remove a selected track from an owned playlist after confirmation, or open playlist recommendations and add one explicitly
-- Lazily loaded generated mixes: Playlist of the Day, Missed Likes, Premiere, and Deja Vu
+- Artwork cards for Playlist of the Day, Missed Likes, Premiere, and Deja Vu; Wide also shows Podcasts of the Week. Opening the Library loads only their metadata, not tracks or other sections. Unformed mixes are disabled; the refresh button reloads the cards explicitly
 - A Recently Played section whose tracks and listening contexts load in pages of 50 items
 - Favorite albums, artists, and saved third-party playlists linked to the existing catalog pages
 - A searchable catalog of genre, activity, mood, and other stations with automatic scroll pagination; a queue starts only after an explicit station selection
 - Sections and fetched data use bounded memory-only caches cleared on sign-out or backend restart
-- Expand “My Wave” and configure:
+- Wide keeps quick “My Wave” controls on the Library home. Its dedicated screen has a theme-aware radio-glow card with description and Start on the left, mood, selection and language on the right, and the mini player below. Compact stacks the card and settings in one scrollable page. The Wide home play/pause control operates the active wave without replacing its queue; Start or Enter on the wave screen starts a new wave, as does Enter on the Library home. Starting is blocked while settings are saving or the wave is connecting. These settings apply only to My Wave, not track radio
   - mood: any, fun, active, calm, or sad
   - selection: balanced, favorites, popular, or discovery
-  - language: any, Russian, or non-Russian
+  - language: any, Russian, non-Russian, or instrumental
 
 ### Search
 
 Search across tracks, artists, albums, and playlists, or use the sectioned **All** view. Suggestions appear after 300 ms once at least two characters are entered; a spinner inside the field remains visible while they are loading. Use ↑/↓ to highlight one and Enter or a mouse click to search for it. Results load page by page with an explicit load-more action.
 
-Artist, album, and playlist pages open inside the same Search tab without changing playback. Every track row has a separate add-to-playlist action that does not start playback. Back returns to the unchanged query, filter, loaded pages, and result models. Album pages show metadata and tracks; artist pages place popular tracks first, followed by independently paginated Albums and Singles, then up to ten similar artists; playlist pages expose their tracks. Playback starts only when a track row is selected explicitly. When playback starts from an artist’s popular tracks, the queue fetches subsequent 20-track pages in the background and continues past the initially visible list. Catalog lists use their own virtualized scrolling below the fixed tabs and controls. Artwork automatically retries transient CDN failures and shows a fallback glyph if the image remains unavailable.
+Search shows a best result and result counters. Wide artist pages place popular tracks beside albums; the best-matching and opened artist offer Radio as an explicit playback action.
+
+Artist, album, and playlist pages opened from Search stay in that tab without changing playback; the same pages also work inside Now Playing and Library. Every track row has a separate add-to-playlist action that does not start playback. Back restores the unchanged input, query, filter, loaded pages, result models, and scroll position. Album pages show metadata and tracks; artist pages place popular tracks first, followed by independently paginated Albums and Singles, then up to ten similar artists; playlist pages expose their tracks. Playback requires an explicit track selection or playback action such as Radio. When playback starts from an artist’s popular tracks, the queue fetches subsequent 20-track pages in the background and continues past the initially visible list. Catalog lists use their own virtualized scrolling below the fixed tabs and controls. Artwork automatically retries transient CDN failures and shows a fallback icon if the image remains unavailable.
 
 ### Settings
 
-Open Settings from the labeled Actions menu; the Settings page has its own Back control in the top-left corner.
+Open Settings from the labeled Actions menu or the Wide navigation rail. Wide uses two columns; Compact has a denser single column and a Back button in the top-left corner. Compact toggle rows, a bar preview, and selectors with focus, changed, busy, and error feedback keep configuration inside the popup. The header shows the running backend version.
 
 Available options:
 
 - Resume playback after service restart
 - Restore queue, track position, and volume independently
 - Best available or traffic-saving audio quality
-- Show/hide bar controls, volume, artist, title, artwork, and progress independently
+- Compact or Wide popup layout
+- Show/hide bar controls, volume, Like, track time, artist, title, artwork, and progress independently
 - Square, rounded, or circular artwork
 - Compact, normal, or wide track information
 - Truncated or smoothly scrolling long text
@@ -117,6 +136,10 @@ Available options:
 - Sign out with confirmation
 
 Preferences are stored in `~/.config/omarchy-yandex-music/preferences.json` with mode `600`.
+
+### Sign-in
+
+The Device OAuth screen explains the steps and shows a large code with a live expiry countdown. Copy it with `C` or the Copy button and open the authorization page with Enter or Open page. Cancel sign-in stops the current attempt; an expired code offers Get a new code (`R`) rather than a raw error. After success, the screen shows the signed-in login and Plus status and offers My Wave or Library. The browser is only needed for authorization.
 
 ## System media controls
 
@@ -155,17 +178,20 @@ Inside the popup:
 
 Letter shortcuts follow physical QWERTY key positions, so they work with both English and Russian layouts. They are active only while the popup is open and are not intercepted in the search field or settings. The UI keeps the Latin mnemonic labels. There is no separate Stop shortcut: `Space` pauses playback without losing the position.
 
-- `1`, `2`, `3` — Now Playing, Library, Search
+- `1`, `2`, `3` — select Now Playing, Library, Search; repeat the active tab's shortcut to return to its root
 - `Space` — play/pause
 - `N` — next track
 - `P` — previous track
 - `L` — like/unlike
 - `D` — toggle “Do not recommend”
-- `F` — expand or collapse cover mode
+- `W` — switch between Compact and Wide views
 - `C` — copy the Device OAuth code while signing in
-- `Escape` — close Actions, collapse cover mode, return from Settings, or close the popup
+- `Alt+Left`, `Backspace` — Back one page, except while editing a focused nonempty text field
+- `Escape` — close a dialog or Actions first, return from Settings, then go Back; at a tab root, close the popup, including when the Search field has focus
 
 Hardware media keys are handled through MPRIS.
+
+The Search root focuses its input. Leaving an editor for another page returns focus to panel navigation, so a hidden search or station filter cannot consume player shortcuts.
 
 ## Updating
 

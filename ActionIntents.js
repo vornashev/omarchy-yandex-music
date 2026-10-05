@@ -1,16 +1,18 @@
 .pragma library
 
 var specs = {
+  loadLibraryHome: { command: "library_home", arity: 0 },
+  retryLibraryHome: { command: "library_home_refresh", arity: 0 },
   openLibrarySection: { command: "library_section", arity: 1, libraryView: "section" },
   retryLibrarySection: { command: "library_retry", arity: 1, libraryView: "section" },
   returnLibraryHome: { command: "library_back", arity: 0, libraryView: "home" },
   loadMoreLibrarySection: { command: "library_section_more", arity: 0 },
   loadMoreLibraryTracks: { command: "load_more_library", arity: 0, libraryMore: true },
-  openLikes: { command: "likes", arity: 0, loadingKind: "likes" },
-  openOwnedPlaylist: { command: "playlist", arity: 1, loadingKind: "playlist" },
-  openPersonalPlaylist: { command: "browse_personal", arity: 1, loadingKind: "personal" },
+  openLikes: { command: "likes", arity: 0 },
+  openOwnedPlaylist: { command: "playlist", arity: 1 },
+  openPersonalPlaylist: { command: "browse_personal", arity: 1 },
+  openQueueSourceCollection: { command: "browse_queue_source", arity: 0 },
   playStation: { command: "play_station", arity: 2, loadingKind: "station" },
-  closeLibraryQueue: { command: "close_library", arity: 0 },
   searchCatalog: { command: "catalog_search", arity: 2, resetCatalogScroll: true },
   openCatalogArtist: { command: "catalog_artist", arity: 1 },
   openCatalogAlbum: { command: "catalog_album", arity: 1 },
@@ -28,6 +30,7 @@ var specs = {
   startTrackRadio: { command: "track_radio", arity: 0, loadingKind: "radio" },
   cyclePlaybackMode: { command: "mode", arity: 0 },
   authenticate: { command: "auth", arity: 0 },
+  cancelAuthentication: { command: "auth_cancel", arity: 0 },
   logout: { command: "logout", arity: 0 },
   reconnect: { command: "reconnect", arity: 0 }
 }
@@ -36,7 +39,7 @@ var specs = {
 var retryableTransport = {
   pause: true, next: true, previous: true, mute: true, like: true, dislike: true,
   play_queue: true, play_library_track: true, play_library_hub_track: true,
-  play_catalog_track: true
+  play_library_collection: true, play_catalog_track: true
 }
 
 function resolve(intent, payload) {

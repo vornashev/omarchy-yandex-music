@@ -24,7 +24,7 @@ Item {
     volumeChangeRequested(x / Math.max(1, volumeDrag.width) * 100)
   }
 
-  Button {
+  IconButton {
     id: muteButton
     anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
     width: Style.space(30); height: Style.space(28)
@@ -41,11 +41,11 @@ Item {
     anchors.leftMargin: Style.space(8)
     anchors.rightMargin: Style.space(8)
     anchors.verticalCenter: parent.verticalCenter
-    height: Style.space(6); radius: height / 2
-    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
+    height: Style.space(4)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .12)
     Rectangle {
       width: parent.width * root.fillFraction
-      height: parent.height; radius: parent.radius
+      height: parent.height
       color: root.muted ? root.dim : root.foreground
     }
     MouseArea {

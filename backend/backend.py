@@ -21,6 +21,7 @@ import uuid
 from collections import OrderedDict
 from functools import wraps
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any, Callable
 
 import requests
@@ -38,7 +39,7 @@ if __package__:
 else:
     from audio_cache import AudioCache, AudioIdentity, AudioSource, BackgroundBusy, CacheRequest, cache_directory
 
-APP_VERSION = "0.10.0"
+APP_VERSION = "0.11.0"
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"
@@ -55,6 +56,8 @@ DEFAULT_PREFERENCES = {
     "waveLanguage": "any",
     "showControls": True,
     "showVolume": True,
+    "showTime": False,
+    "showLike": False,
     "showArtist": True,
     "showTitle": True,
     "showCover": True,
@@ -63,6 +66,7 @@ DEFAULT_PREFERENCES = {
     "barWidth": "normal",
     "longTitleMode": "scroll",
     "notifications": "off",
+    "popupLayout": "compact",
 }
 RUNTIME = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}"))
 SOCKET = RUNTIME / "omarchy-yandex-music.sock"
@@ -112,6 +116,7 @@ PERSONAL_PLAYLISTS = (
     ("missedLikes", "Тайник"),
     ("recentTracks", "Премьера"),
     ("neverHeard", "Дежавю"),
+    ("podcasts", "Подкасты недели"),
 )
 LIBRARY_HUB_CACHE_TTL = 10 * 60
 LIBRARY_HUB_CACHE_MAX_ENTRIES = len(LIBRARY_HUB_SECTIONS)
@@ -454,6 +459,7 @@ class Player:
         self.queue_generation = 0
         self.queue_revision = 0
         self.queue_collection_key = ""
+        self.queue_collection_shuffled = False
         self.queue_artist_id = ""
         self.queue_artist_page = 0
         self.queue_artist_has_more = False
@@ -499,6 +505,7 @@ class Player:
         self.library_offset = 0
         self.library_generation = 0
         self.active_library_cache_key = ""
+        self.library_origin = ("", "")
         self.collection_cache: dict[str, dict[str, Any]] = {}
         self.liked_ids: set[str] = set()
         self.liked_rows: list[Any] = []
@@ -543,11 +550,15 @@ class Player:
         self.state: dict[str, Any] = {
             "version": APP_VERSION,
             "authenticated": False, "connecting": False, "authPending": False,
-            "authUrl": "", "authCode": "", "error": "", "playing": False,
+            "authUrl": "", "authCode": "", "authExpiresAt": 0.0, "authExpired": False,
+            "authLogin": "", "authPlus": False, "error": "", "playing": False,
             "loading": False, "loadingKind": "", "loadingStage": "",
             "title": "", "trackId": "", "artist": "", "album": "",
             "artUrl": "", "artistId": "", "artists": [], "queueName": "", "artistBrowseName": "",
+            "queueSourceKind": "", "queueSourceName": "", "queueSourceArg": "",
             "libraryBrowseName": "", "libraryPlaylistKind": "", "libraryEditable": False,
+            "libraryBrowseKind": "", "libraryBrowseArg": "", "libraryArtUrl": "",
+            "libraryDuration": -1, "libraryLoading": False, "libraryError": "",
             "libraryTotal": 0,
             "libraryHasMore": False, "libraryLoadingMore": False, "libraryFromCache": False,
             "position": 0.0, "positionObservedAt": 0.0, "duration": 0, "stopped": True,
@@ -725,7 +736,7 @@ class Player:
                         station, track_id, self._float(played), batch_id=batch_id or None))
         self._enqueue_telemetry(*operations)
 
-    def _get_liked_rows(self) -> list[Any]:
+    def _get_liked_rows(self, *, update_loading: bool = True) -> list[Any]:
         def fetch() -> list[Any]:
             with self.lock:
                 fresh = self.liked_rows_at and time.monotonic() - self.liked_rows_at < COLLECTION_CACHE_TTL
@@ -738,7 +749,7 @@ class Player:
                 self.liked_rows = rows
                 self.liked_rows_at = time.monotonic()
             return list(rows)
-        return self._api_call(fetch)
+        return self._api_call(fetch, update_loading=update_loading)
 
     def network_status(self, start: bool = False) -> dict[str, Any]:
         now = self._int(time.time())
@@ -796,18 +807,20 @@ class Player:
         except Exception:
             saved = {}
         bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
-                     "showControls", "showVolume", "showArtist", "showTitle", "showCover", "showProgress")
+                     "showControls", "showVolume", "showTime", "showLike", "showArtist", "showTitle",
+                     "showCover", "showProgress")
         for key in bool_keys: preferences[key] = bool(preferences.get(key, DEFAULT_PREFERENCES[key]))
         allowed = {
             "audioQuality": ("best", "economy"),
             "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
             "waveMood": ("all", "fun", "active", "calm", "sad"),
             "waveDiversity": ("default", "favorite", "popular", "discover"),
-            "waveLanguage": ("any", "russian", "not-russian"),
+            "waveLanguage": ("any", "russian", "not-russian", "without-words"),
             "coverShape": ("square", "rounded", "circle"),
             "barWidth": ("compact", "normal", "wide"),
             "longTitleMode": ("truncate", "scroll"),
             "notifications": ("off", "all"),
+            "popupLayout": ("mini", "compact", "wide"),
         }
         for key, values in allowed.items():
             if preferences.get(key) not in values: preferences[key] = DEFAULT_PREFERENCES[key]
@@ -817,17 +830,19 @@ class Player:
     def set_preference(self, key: str, value: Any) -> None:
         if key not in DEFAULT_PREFERENCES: raise ValueError(f"Неизвестная настройка: {key}")
         bool_keys = ("autoResume", "restoreQueue", "restorePosition", "restoreVolume",
-                     "showControls", "showVolume", "showArtist", "showTitle", "showCover", "showProgress")
+                     "showControls", "showVolume", "showTime", "showLike", "showArtist", "showTitle",
+                     "showCover", "showProgress")
         allowed = {
             "audioQuality": ("best", "economy"),
             "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
             "waveMood": ("all", "fun", "active", "calm", "sad"),
             "waveDiversity": ("default", "favorite", "popular", "discover"),
-            "waveLanguage": ("any", "russian", "not-russian"),
+            "waveLanguage": ("any", "russian", "not-russian", "without-words"),
             "coverShape": ("square", "rounded", "circle"),
             "barWidth": ("compact", "normal", "wide"),
             "longTitleMode": ("truncate", "scroll"),
             "notifications": ("off", "all"),
+            "popupLayout": ("mini", "compact", "wide"),
         }
         if key in bool_keys:
             value = str(value).lower() in ("1", "true", "yes", "on")
@@ -937,13 +952,24 @@ class Player:
             self.state.update(connecting=True, error="")
         threading.Thread(target=self._restore_session_with_retry, daemon=True).start()
 
-    def _connect(self, token: str) -> None:
-        with self.lock: self.state.update(connecting=True, error="")
+    def _connect(self, token: str, *, auth_cancel: threading.Event | None = None,
+                 device_token: Any = None) -> None:
+        with self.lock:
+            if auth_cancel is not None and auth_cancel.is_set(): return
+            self.state.update(connecting=True, error="")
         client = Client(token, request=SessionRequest(self.http)).init()
         with self.lock:
+            if auth_cancel is not None and auth_cancel.is_set(): return
+            if device_token is not None:
+                self._save_token(device_token)
             self.client = client
             self.session_generation += 1
-            self.state.update(authenticated=True, connecting=False, authPending=False, authCode="")
+            account = getattr(getattr(client, "me", None), "account", None)
+            plus = getattr(getattr(client, "me", None), "plus", None)
+            self.state.update(authenticated=True, connecting=False, authPending=False, authCode="",
+                              authExpiresAt=0.0, authExpired=False,
+                              authLogin=self._text(getattr(account, "login", "")),
+                              authPlus=bool(getattr(plus, "has_plus", False)))
         self._load_playlists()
         self._load_liked_ids()
         self._load_disliked_ids()
@@ -951,19 +977,38 @@ class Player:
     def authenticate(self) -> None:
         with self.lock:
             if self.state["authPending"]: return
-            self.state.update(authPending=True, authUrl="", authCode="", error="")
+            cancelled = threading.Event()
+            self.auth_cancel_event = cancelled
+            self.state.update(authPending=True, authUrl="", authCode="", authExpiresAt=0.0,
+                              authExpired=False, error="")
         def worker() -> None:
             try:
                 client = Client(request=SessionRequest(self.http))
                 def got_code(code: Any) -> None:
-                    with self.lock: self.state.update(authUrl=code.verification_url, authCode=code.user_code)
-                token = client.device_auth(on_code=got_code)
-                self._save_token(token)
-                self._connect(token.access_token)
+                    with self.lock:
+                        if cancelled.is_set(): return
+                        self.state.update(authUrl=code.verification_url, authCode=code.user_code,
+                                          authExpiresAt=time.time() + self._int(
+                                              getattr(code, "expires_in", 0)))
+                token = client.device_auth(on_code=got_code, should_cancel=cancelled.is_set)
+                self._connect(token.access_token, auth_cancel=cancelled, device_token=token)
             except Exception as exc:
-                with self.lock: self.state["authPending"] = False
-                self._set_error(f"Ошибка авторизации: {exc}")
+                with self.lock:
+                    if cancelled.is_set(): return
+                    expired = "timed out" in str(exc)
+                    self.state.update(authPending=False, authCode="", authUrl="", authExpiresAt=0.0,
+                                      authExpired=expired)
+                    if not expired:
+                        self._set_error(f"Ошибка авторизации: {exc}")
         threading.Thread(target=worker, daemon=True).start()
+
+    def cancel_authentication(self) -> None:
+        """Stop an in-progress Device OAuth flow; the polling worker ends silently."""
+        with self.lock:
+            cancelled = getattr(self, "auth_cancel_event", None)
+            if cancelled is not None: cancelled.set()
+            self.state.update(authPending=False, connecting=False, authCode="", authUrl="",
+                              authExpiresAt=0.0, authExpired=False, error="")
 
     def logout(self) -> None:
         account = self._cache_account()
@@ -983,6 +1028,7 @@ class Player:
             self.library_source = []; self.library_offset = 0
             self.library_generation += 1; self.library_revision += 1
             self.active_library_cache_key = ""; self.collection_cache = {}
+            self.library_origin = ("", "")
             self.library_hub_generation += 1; self.library_hub_revision += 1
             self.library_hub = self._empty_library_hub(); self.library_hub["revision"] = self.library_hub_revision
             self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
@@ -995,14 +1041,19 @@ class Player:
             self.queue = []; self.queue_source = []; self.queue_extending = False
             self.queue_advance_pending = False; self.queue_generation += 1; self.queue_revision += 1; self.index = -1
             self.queue_collection_key = ""; self.queue_artist_id = ""
+            self.queue_collection_shuffled = False
             self.queue_artist_page = 0; self.queue_artist_has_more = False
             self.queue_advance_automatic = False; self.detached_track = None
             self.radio_station = ""; self.radio_batch_id = ""; self.radio_track_batches = {}
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
+                              authExpiresAt=0.0, authExpired=False, authLogin="", authPlus=False,
                               title="", trackId="", artist="", artistId="", artists=[], album="", artUrl="", queueName="",
                               artistBrowseName="", libraryBrowseName="", libraryPlaylistKind="",
                               libraryEditable=False, libraryTotal=0,
+                              queueSourceKind="", queueSourceName="", queueSourceArg="",
+                              libraryBrowseKind="", libraryBrowseArg="", libraryArtUrl="",
+                              libraryDuration=-1, libraryLoading=False, libraryError="",
                               libraryHasMore=False, libraryLoadingMore=False, libraryFromCache=False,
                               loading=False, loadingKind="", playing=False, stopped=True,
                               position=0.0, positionObservedAt=time.time(),
@@ -1017,6 +1068,7 @@ class Player:
         return {"kind": cls._text(getattr(playlist, "kind", "")),
                 "title": cls._text(getattr(playlist, "title", "")) or "Плейлист",
                 "count": cls._int(getattr(playlist, "track_count", 0)),
+                "artUrl": cls._cover_url(playlist, "100x100"),
                 "owner": cls._text(getattr(owner, "uid", None)
                                    or getattr(playlist, "uid", "")),
                 "uuid": cls._text(getattr(playlist, "playlist_uuid", ""))}
@@ -1078,7 +1130,10 @@ class Player:
         self.library_result_refs = []
         self.library_offset = 0
         self.active_library_cache_key = ""
+        self.library_origin = ("", "")
         self.state.update(libraryBrowseName="", libraryPlaylistKind="", libraryEditable=False,
+                          libraryBrowseKind="", libraryBrowseArg="", libraryArtUrl="",
+                          libraryDuration=-1, libraryLoading=False, libraryError="",
                           libraryTotal=0, libraryHasMore=False,
                           libraryLoadingMore=False, libraryFromCache=False)
         return self.library_generation
@@ -1086,6 +1141,9 @@ class Player:
     def _store_collection_cache_locked(self) -> None:
         key = self.active_library_cache_key
         if not key or not self.library_source or not self.library_results: return
+        if self.library_offset >= len(self.library_source) and len(self.library_results) == len(self.library_source):
+            durations = [self._int(getattr(track, "duration_ms", -1), -1) for track in self.library_results]
+            self.state["libraryDuration"] = sum(durations) // 1000 if all(value >= 0 for value in durations) else -1
         now = time.monotonic()
         self.collection_cache[key] = {
             "source": list(self.library_source),
@@ -1093,8 +1151,11 @@ class Player:
             "resultRefs": list(self.library_result_refs),
             "offset": self.library_offset,
             "title": str(self.state.get("libraryBrowseName", "")),
+            "artUrl": str(self.state.get("libraryArtUrl", "")),
+            "duration": self.state.get("libraryDuration", -1),
             "playlistKind": str(self.state.get("libraryPlaylistKind", "")),
             "editable": bool(self.state.get("libraryEditable", False)),
+            "origin": getattr(self, "library_origin", ("", "")),
             "storedAt": now,
             "accessedAt": now,
         }
@@ -1115,16 +1176,37 @@ class Player:
         self.library_results = list(cached["results"])
         self.library_result_refs = [tuple(value) for value in cached.get("resultRefs", [])]
         self.library_offset = min(self._int(cached["offset"]), len(self.library_source))
+        self.library_origin = tuple(cached.get("origin", ("", "")))
         cached["accessedAt"] = now
         self.library_revision += 1
         self.state.update(libraryBrowseName=str(cached["title"]),
+                          libraryArtUrl=str(cached.get("artUrl", "")),
+                          libraryDuration=cached.get("duration", -1),
                           libraryPlaylistKind=str(cached.get("playlistKind", "")),
                           libraryEditable=bool(cached.get("editable", False)),
                           libraryTotal=len(self.library_source),
                           libraryHasMore=self.library_offset < len(self.library_source),
                           libraryLoadingMore=False, libraryFromCache=True,
-                          loading=False, loadingKind="", error="")
+                          libraryLoading=False, libraryError="")
         return True
+
+    def _browse_error(self, generation: int, message: str) -> None:
+        with self.lock:
+            if generation != self.library_generation: return
+            self.state.update(libraryLoading=False, libraryLoadingMore=False,
+                              libraryError=message)
+            self.library_revision += 1
+
+    @staticmethod
+    def _queue_origin(collection_key: str = "", station: str = "",
+                      artist_id: str = "") -> tuple[str, str]:
+        if collection_key == "likes": return "likes", ""
+        if collection_key.startswith("playlist:"): return "playlist", collection_key[9:]
+        if collection_key.startswith("personal:"): return "browse_personal", collection_key[9:]
+        if station == "user:onyourwave": return "wave", ""
+        if station: return "station", station
+        if artist_id: return "artist", artist_id
+        return "", ""
 
     @staticmethod
     def _track_id(track: Any) -> str:
@@ -1172,7 +1254,7 @@ class Player:
             if source and results:
                 cached.update(source=source, results=results,
                               resultRefs=[self._playlist_track_ref(item) for item in results],
-                              offset=offset, storedAt=time.monotonic(),
+                              offset=offset, duration=-1, storedAt=time.monotonic(),
                               accessedAt=time.monotonic())
             else:
                 self.collection_cache.pop("likes", None)
@@ -1183,7 +1265,7 @@ class Player:
         self.library_result_refs = [self._playlist_track_ref(item)
                                     for item in self.library_results]
         self.library_revision += 1
-        self.state.update(libraryTotal=len(self.library_source),
+        self.state.update(libraryTotal=len(self.library_source), libraryDuration=-1,
                           libraryHasMore=self.library_offset < len(self.library_source),
                           libraryLoadingMore=False, libraryFromCache=False)
         if self.library_source and self.library_results:
@@ -1208,6 +1290,12 @@ class Player:
                 value["queueArtistId"] = self.queue_artist_id
                 value["queueArtistPage"] = self.queue_artist_page
                 value["queueArtistHasMore"] = self.queue_artist_has_more
+                value["queueSourceKind"] = self.state.get("queueSourceKind", "")
+                value["queueSourceName"] = self.state.get("queueSourceName", "")
+                value["queueSourceArg"] = self.state.get("queueSourceArg", "")
+                value["queueRemaining"] = [list(self._playlist_track_ref(row))
+                                           for row in getattr(self, "queue_source", [])]
+                value["queueCollectionShuffled"] = getattr(self, "queue_collection_shuffled", False)
             atomic_json(STATE_FILE, value); self.last_saved_at = time.monotonic()
 
     def _restore_queue(self) -> None:
@@ -1250,6 +1338,17 @@ class Player:
                 self.queue_artist_id = str(saved.get("queueArtistId", ""))
                 self.queue_artist_page = self._int(saved.get("queueArtistPage", 0))
                 self.queue_artist_has_more = bool(saved.get("queueArtistHasMore", False))
+                source_kind, source_arg = self._queue_origin(
+                    collection_key, self.radio_station, self.queue_artist_id)
+                self.state.update(
+                    queueSourceKind=str(saved.get("queueSourceKind") or source_kind),
+                    queueSourceName=str(saved.get("queueSourceName") or queue_name),
+                    queueSourceArg=str(saved.get("queueSourceArg") or source_arg))
+                self.queue_source = [
+                    SimpleNamespace(id=str(row[0]), album_id=str(row[1]))
+                    for row in saved.get("queueRemaining", [])
+                    if isinstance(row, list) and len(row) == 2 and row[0]]
+                self.queue_collection_shuffled = bool(saved.get("queueCollectionShuffled", False))
                 self.queue_advance_automatic = False
                 self.detached_track = None
             should_resume = bool(saved.get("playing", False)) and bool(self.preferences["autoResume"])
@@ -1299,16 +1398,16 @@ class Player:
         with self.lock:
             self.artist_results = []
             generation = self._reset_library_locked()
+            self.state.update(libraryBrowseKind="likes", libraryBrowseArg="", libraryLoading=True)
             self.state["artistBrowseName"] = ""
             if self._activate_collection_cache_locked("likes"): return
         def load() -> None:
             try:
                 assert self.client
-                rows = self._get_liked_rows()
+                rows = self._get_liked_rows(update_loading=False)
                 result_refs: list[tuple[str, str]] = []
                 tracks = self._tracks_from_short_page(
-                    rows[:LIBRARY_PAGE_SIZE], result_refs=result_refs)
-                if not tracks: raise RuntimeError("В списке нет доступных треков")
+                    rows[:LIBRARY_PAGE_SIZE], update_loading=False, result_refs=result_refs)
                 with self.lock:
                     if generation != self.library_generation: return
                     self.liked_ids = {str(getattr(row, "id", "")) for row in rows if getattr(row, "id", "")}
@@ -1321,13 +1420,13 @@ class Player:
                     self.state.update(libraryBrowseName="Мне нравится", libraryTotal=len(rows),
                                       libraryHasMore=self.library_offset < len(rows),
                                       libraryLoadingMore=False, libraryFromCache=False,
-                                      loading=False, loadingKind="", error="")
+                                      libraryLoading=False, libraryError="")
                     self._store_collection_cache_locked()
             except Exception as exc:
                 with self.lock:
                     if generation != self.library_generation: return
-                self._set_error(f"Не удалось загрузить любимые треки: {exc}")
-        self._loading(load, "likes")
+                self._browse_error(generation, f"Не удалось загрузить любимые треки: {self._friendly_error(exc)}")
+        threading.Thread(target=load, daemon=True).start()
 
     def _update_likes_queue_locked(self, track: Any, liked: bool) -> None:
         """Keep a queue started from “My Likes” in sync without stopping playback."""
@@ -1686,16 +1785,17 @@ class Player:
             client = self.client
             self.artist_results = []
             generation = self._reset_library_locked()
+            self.state.update(libraryBrowseKind="playlist", libraryBrowseArg=kind, libraryLoading=True)
             self.state["artistBrowseName"] = ""
             if self._activate_collection_cache_locked(cache_key): return
         def load() -> None:
             try:
                 if not client: return
-                playlist = self._api_call(lambda: client.users_playlists(kind))
-                rows = list(self._api_call(playlist.fetch_tracks))
+                playlist = self._api_call(lambda: client.users_playlists(kind), update_loading=False)
+                rows = list(self._api_call(playlist.fetch_tracks, update_loading=False))
                 result_refs: list[tuple[str, str]] = []
                 tracks = self._tracks_from_short_page(
-                    rows[:LIBRARY_PAGE_SIZE], client, result_refs=result_refs)
+                    rows[:LIBRARY_PAGE_SIZE], client, update_loading=False, result_refs=result_refs)
                 with self.lock:
                     if generation != self.library_generation or self.client is not client: return
                     self.library_source = rows
@@ -1705,19 +1805,20 @@ class Player:
                     self.active_library_cache_key = cache_key
                     self.library_revision += 1
                     self.state.update(libraryBrowseName=playlist.title,
+                                      libraryArtUrl=self._cover_url(playlist),
                                       libraryPlaylistKind=self._text(playlist.kind),
                                       libraryEditable=self._playlist_is_mine(client, playlist),
                                       libraryTotal=len(rows),
                                       libraryHasMore=self.library_offset < len(rows),
                                       libraryLoadingMore=False, libraryFromCache=False,
-                                      loading=False, loadingKind="", error="")
+                                      libraryLoading=False, libraryError="")
                     self._store_collection_cache_locked()
             except Exception as exc:
                 with self.lock:
                     if generation != self.library_generation: return
                     if self.client is not client: return
-                self._set_error(f"Не удалось загрузить плейлист: {exc}")
-        self._loading(load, "playlist")
+                self._browse_error(generation, f"Не удалось загрузить плейлист: {self._friendly_error(exc)}")
+        threading.Thread(target=load, daemon=True).start()
 
     def load_more_library(self) -> None:
         with self.lock:
@@ -1727,12 +1828,12 @@ class Player:
             start = self.library_offset
             rows = list(self.library_source[start:start + LIBRARY_PAGE_SIZE])
             generation = self.library_generation
-            self.state.update(libraryLoadingMore=True, error="")
+            self.state.update(libraryLoadingMore=True, libraryError="")
 
         def load() -> None:
             try:
                 result_refs: list[tuple[str, str]] = []
-                tracks = self._tracks_from_short_page(rows, result_refs=result_refs)
+                tracks = self._tracks_from_short_page(rows, update_loading=False, result_refs=result_refs)
                 with self.lock:
                     if generation != self.library_generation: return
                     self.library_results.extend(tracks)
@@ -1740,13 +1841,13 @@ class Player:
                     self.library_offset = start + len(rows)
                     self.library_revision += 1
                     self.state.update(libraryHasMore=self.library_offset < len(self.library_source),
-                                      libraryLoadingMore=False, libraryFromCache=False, error="")
+                                      libraryLoadingMore=False, libraryFromCache=False, libraryError="")
                     self._store_collection_cache_locked()
             except Exception as exc:
                 with self.lock:
                     if generation != self.library_generation: return
                     self.state["libraryLoadingMore"] = False
-                self._set_error(f"Не удалось загрузить следующую страницу: {exc}")
+                self._browse_error(generation, f"Не удалось загрузить следующую страницу: {self._friendly_error(exc)}")
         threading.Thread(target=load, daemon=True).start()
 
     @staticmethod
@@ -2259,7 +2360,7 @@ class Player:
 
     @staticmethod
     def _empty_library_hub() -> dict[str, Any]:
-        return {"view": "home", "section": "", "loading": False,
+        return {"view": "home", "homeLoaded": False, "section": "", "loading": False,
                 "loadingMore": False, "hasMore": False, "total": 0,
                 "error": "", "warning": "", "items": [], "revision": 0}
 
@@ -2424,22 +2525,44 @@ class Player:
             rows.append(row)
         return rows, tracks, warning
 
+    def _library_hub_cached_locked(self, section: str) -> dict[str, Any] | None:
+        cached = self.library_hub_cache.get(section)
+        if cached and time.monotonic() - self._float(cached.get("storedAt", 0)) > LIBRARY_HUB_CACHE_TTL:
+            self.library_hub_cache.pop(section, None)
+            if section == "personal": self.personal_playlist_models.clear()
+            return None
+        return cached
+
+    def library_home(self, *, force: bool = False) -> None:
+        self._load_library_section("personal", force=force, home=True)
+
     def library_section(self, section: str, *, force: bool = False) -> None:
+        self._load_library_section(section, force=force)
+
+    def _load_library_section(self, section: str, *, force: bool = False,
+                              home: bool = False) -> None:
         section = self._text(section)
         if section not in LIBRARY_HUB_SECTIONS: return
+        view = "home" if home else "section"
+        visible_section = "" if home else section
         with self.lock:
             client = self.client
             if not client: return
+            if (not force and self.library_hub.get("loading")
+                    and self.library_hub.get("view") == view
+                    and self.library_hub.get("section") == visible_section):
+                return
             self.library_hub_generation += 1
             generation = self.library_hub_generation
-            cached = None if force else self.library_hub_cache.get(section)
-            if cached and time.monotonic() - self._float(cached.get("storedAt", 0)) <= LIBRARY_HUB_CACHE_TTL:
+            cached = self._library_hub_cached_locked(section)
+            if not force and cached and cached.get("ready", True):
                 cached["accessedAt"] = time.monotonic()
                 self.library_hub_tracks = list(cached.get("tracks", []))
                 self.library_hub_source = list(cached.get("source", []))
                 self.library_hub_offset = min(self._int(cached.get("offset", 0)),
                                               len(self.library_hub_source))
-                self.library_hub = {"view": "section", "section": section, "loading": False,
+                self.library_hub = {"view": view, "section": visible_section,
+                    "homeLoaded": home, "loading": False,
                     "loadingMore": False,
                     "hasMore": self.library_hub_offset < len(self.library_hub_source),
                     "total": len(self.library_hub_source) if self.library_hub_source
@@ -2448,7 +2571,8 @@ class Player:
                     "items": copy.deepcopy(cached.get("items", [])), "revision": 0}
                 self._library_hub_touch_locked()
                 return
-            self.library_hub = {"view": "section", "section": section, "loading": True,
+            self.library_hub = {"view": view, "section": visible_section,
+                "homeLoaded": False, "loading": True,
                 "loadingMore": False, "hasMore": False, "total": 0,
                 "error": "", "warning": "", "items": [], "revision": 0}
             self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
@@ -2465,6 +2589,8 @@ class Player:
                 if section == "personal":
                     failures = 0
                     for playlist_id, fallback_title in PERSONAL_PLAYLISTS:
+                        with self.lock:
+                            if not self._library_hub_current(client, generation): return
                         try:
                             generated = self._api_call(
                                 lambda value=playlist_id: client.playlists_personal(value),
@@ -2521,27 +2647,39 @@ class Player:
                 items = unique
                 with self.lock:
                     if not self._library_hub_current(client, generation): return
-                    if personal_models: self.personal_playlist_models.update(personal_models)
+                    if section == "personal":
+                        self.personal_playlist_models = personal_models
                     self.library_hub_tracks = tracks
                     self.library_hub_source = source
                     self.library_hub_offset = offset
                     now = time.monotonic()
                     self.library_hub_cache[section] = {"items": copy.deepcopy(items),
                         "tracks": list(tracks), "source": list(source), "offset": offset,
-                        "warning": warning, "storedAt": now, "accessedAt": now}
+                        "warning": warning, "storedAt": now, "accessedAt": now,
+                        # Keep partial rows for Back, but never treat them as a
+                        # complete cache hit on the next metadata request.
+                        "ready": section != "personal" or (not warning and all(
+                            row.get("generationReady", True) for row in items))}
                     self.library_hub_cache.move_to_end(section)
                     while len(self.library_hub_cache) > LIBRARY_HUB_CACHE_MAX_ENTRIES:
                         self.library_hub_cache.popitem(last=False)
-                    self.library_hub.update(loading=False, loadingMore=False,
+                    self.library_hub.update(loading=False, loadingMore=False, homeLoaded=home,
                         items=items, total=len(source) if source else len(items),
                         hasMore=offset < len(source), warning=warning, error="")
                     self._library_hub_touch_locked()
             except Exception as exc:
                 with self.lock:
                     if not self._library_hub_current(client, generation): return
-                    self.library_hub.update(loading=False, loadingMore=False,
+                    error = self._catalog_error(exc, "Раздел медиатеки")
+                    if section == "personal":
+                        now = time.monotonic()
+                        self.library_hub_cache[section] = {
+                            "items": [], "error": error, "ready": False,
+                            "storedAt": now, "accessedAt": now}
+                        self.personal_playlist_models.clear()
+                    self.library_hub.update(loading=False, loadingMore=False, homeLoaded=home,
                         hasMore=False, items=[], warning="",
-                        error=self._catalog_error(exc, "Раздел медиатеки"))
+                        error=error)
                     self._library_hub_touch_locked()
         threading.Thread(target=load, daemon=True).start()
 
@@ -2591,6 +2729,13 @@ class Player:
         with self.lock:
             self.library_hub_generation += 1
             self.library_hub = self._empty_library_hub()
+            cached = self._library_hub_cached_locked("personal")
+            if cached:
+                self.library_hub.update(homeLoaded=True,
+                    items=copy.deepcopy(cached.get("items", [])),
+                    total=len(cached.get("items", [])),
+                    warning=str(cached.get("warning", "")),
+                    error=str(cached.get("error", "")))
             self.library_hub_tracks = []; self.library_hub_source = []; self.library_hub_offset = 0
             self._library_hub_touch_locked()
 
@@ -2603,16 +2748,19 @@ class Player:
             if not client: return
             self.artist_results = []
             generation = self._reset_library_locked()
+            self.state.update(libraryBrowseKind="browse_personal", libraryBrowseArg=playlist_id,
+                              libraryLoading=True)
             self.state["artistBrowseName"] = ""
             if self._activate_collection_cache_locked(cache_key): return
-            playlist = self.personal_playlist_models.get(playlist_id)
+            cached = self._library_hub_cached_locked("personal")
+            playlist = self.personal_playlist_models.get(playlist_id) if cached else None
 
         def load() -> None:
             generation_ready = True
             try:
                 nonlocal playlist
                 if playlist is None:
-                    generated = self._api_call(lambda: client.playlists_personal(playlist_id))
+                    generated = self._api_call(lambda: client.playlists_personal(playlist_id), update_loading=False)
                     ready_value = getattr(generated, "ready", None)
                     generation_ready = ready_value is None or bool(ready_value)
                     playlist = getattr(generated, "data", None)
@@ -2621,10 +2769,10 @@ class Player:
                 if not generation_ready and not rows:
                     raise RuntimeError("personal playlist generation is not ready")
                 if not rows and callable(getattr(playlist, "fetch_tracks", None)):
-                    rows = self._safe_rows(self._api_call(playlist.fetch_tracks))
+                    rows = self._safe_rows(self._api_call(playlist.fetch_tracks, update_loading=False))
                 result_refs: list[tuple[str, str]] = []
                 tracks = self._tracks_from_short_page(
-                    rows[:LIBRARY_PAGE_SIZE], client, result_refs=result_refs)
+                    rows[:LIBRARY_PAGE_SIZE], client, update_loading=False, result_refs=result_refs)
                 if not tracks: raise RuntimeError("В подборке нет доступных треков")
                 with self.lock:
                     if self.client is not client or generation != self.library_generation: return
@@ -2636,9 +2784,10 @@ class Player:
                     self.library_revision += 1
                     self.state.update(libraryBrowseName=self._text(getattr(playlist, "title", ""))
                                       or dict(PERSONAL_PLAYLISTS)[playlist_id],
+                                      libraryArtUrl=self._cover_url(playlist),
                                       libraryTotal=len(rows), libraryHasMore=self.library_offset < len(rows),
                                       libraryLoadingMore=False, libraryFromCache=False,
-                                      loading=False, loadingKind="", error="")
+                                      libraryLoading=False, libraryError="")
                     self._store_collection_cache_locked()
             except Exception as exc:
                 with self.lock:
@@ -2646,11 +2795,11 @@ class Player:
                     if generation != self.library_generation: return
                 if not generation_ready:
                     title = dict(PERSONAL_PLAYLISTS)[playlist_id]
-                    self._set_error(
+                    self._browse_error(generation,
                         f"«{title}» пока не сформирован Яндекс Музыкой. Попробуйте позже.")
                 else:
-                    self._set_error(self._catalog_error(exc, "Персональная подборка"))
-        self._loading(load, "personal")
+                    self._browse_error(generation, self._catalog_error(exc, "Персональная подборка"))
+        threading.Thread(target=load, daemon=True).start()
 
     def play_library_hub_track(self, index: int) -> None:
         with self.lock:
@@ -2665,7 +2814,8 @@ class Player:
                 url = self._url(track, update_loading=False)
                 with self.lock:
                     if not self._library_hub_current(client, generation): return
-                self._set_queue(tracks, title, start_index=index, prepared_url=url)
+                self._set_queue(tracks, title, start_index=index, prepared_url=url,
+                                source_kind="libraryHub", source_arg="history")
             except Exception as exc:
                 with self.lock:
                     if not self._library_hub_current(client, generation): return
@@ -3332,13 +3482,20 @@ class Player:
             entity = self.catalog.get("entity", {})
             tracks = list(self.catalog_search_models.get("tracks", [])) if source == "search" \
                 else list(self.catalog_entity_tracks)
-            name = ("Результаты поиска" if source == "search"
-                    else str(entity.get("title") or entity.get("name") or "Каталог"))
+            query = str(self.catalog.get("search", {}).get("query", ""))
+            name = (f"Поиск: {query}" if source == "search" and query else
+                    "Результаты поиска" if source == "search" else
+                    str(entity.get("title") or entity.get("name") or "Каталог"))
             is_artist = source == "entity" and entity.get("type") == "artist"
             artist_id = str(entity.get("id", "")) if is_artist else ""
             artist_page = self._int(entity.get("popularPage", 0)) if is_artist else 0
             artist_has_more = bool(entity.get("popularHasMore", False)) if is_artist else False
             client = self.client; generation = self.catalog_generation
+            source_kind = "search" if source == "search" else str(entity.get("type", ""))
+            source_arg = query if source == "search" else str(entity.get("id", ""))
+            if source_kind == "playlist":
+                source_kind = "catalog_playlist"
+                source_arg = json.dumps({key: str(entity.get(key, "")) for key in ("uuid", "owner", "kind")})
         if not client or not (0 <= index < len(tracks)): return
         track = tracks[index]
 
@@ -3350,7 +3507,7 @@ class Player:
                 self._set_queue(
                     tracks, name, start_index=index, prepared_url=url,
                     artist_id=artist_id, artist_page=artist_page,
-                    artist_has_more=artist_has_more)
+                    artist_has_more=artist_has_more, source_kind=source_kind, source_arg=source_arg)
             except Exception as exc:
                 with self.lock:
                     if not self._catalog_current(client, generation): return
@@ -3629,9 +3786,6 @@ class Player:
         self._finish_playback_reporting(finished=False)
         with self.lock:
             if not (0 <= index < len(self.queue)): return
-            self.artist_results = []
-            self._reset_library_locked()
-            self.state["artistBrowseName"] = ""
             self.index = index
         self._save_state(True)
         self._play_current()
@@ -3642,13 +3796,82 @@ class Player:
             remaining = list(self.library_source[self.library_offset:])
             name = str(self.state.get("libraryBrowseName", "Медиатека"))
             collection_key = self.active_library_cache_key
+            source_kind, source_arg = getattr(self, "library_origin", ("", ""))
         if 0 <= index < len(tracks):
             self._set_queue(tracks, name, start_index=index, remaining_rows=remaining,
-                            collection_key=collection_key)
+                            collection_key=collection_key, source_kind=source_kind, source_arg=source_arg)
 
-    def close_library(self) -> None:
+    def play_library_collection(self, mode: str) -> None:
+        if mode not in ("order", "shuffle"): return
+        if mode == "order":
+            self.set_preference("playbackMode", "order")
+            self.play_library_track(0)
+            return
         with self.lock:
-            self._reset_library_locked()
+            rows = list(self.library_source)
+            client = self.client
+            generation = self.library_generation
+            name = str(self.state.get("libraryBrowseName", "Медиатека"))
+            collection_key = self.active_library_cache_key
+            source_kind, source_arg = getattr(self, "library_origin", ("", ""))
+        if not rows or not client: return
+        # Перемешиваем лёгкий полный индекс, метаданные по-прежнему грузятся страницами.
+        random.shuffle(rows)
+
+        def load() -> None:
+            try:
+                tracks = []
+                offset = 0
+                while not tracks and offset < len(rows):
+                    tracks = self._tracks_from_short_page(
+                        rows[offset:offset + LIBRARY_PAGE_SIZE], client, update_loading=False)
+                    offset += LIBRARY_PAGE_SIZE
+                with self.lock:
+                    if client is not self.client or generation != self.library_generation: return
+                if not tracks: raise RuntimeError("В списке нет доступных треков")
+                self.set_preference("playbackMode", "shuffle")
+                self._set_queue(tracks, name, remaining_rows=rows[offset:],
+                                collection_key=collection_key, collection_shuffled=True,
+                                source_kind=source_kind, source_arg=source_arg)
+            except Exception as exc:
+                self._browse_error(generation, self._friendly_error(exc))
+        threading.Thread(target=load, daemon=True).start()
+
+    def browse_queue_source(self) -> None:
+        with self.lock:
+            client = self.client
+            if not client or self.state.get("queueSourceKind") != "search": return
+            rows = list(self.queue) + list(self.queue_source)
+            name = str(self.state.get("queueSourceName") or self.state.get("queueName", ""))
+            origin = ("search", str(self.state.get("queueSourceArg", "")))
+            cache_key = f"queueSource:{self.queue_generation}"
+            generation = self._reset_library_locked()
+            self.state.update(libraryBrowseKind="browse_queue_source", libraryBrowseArg="",
+                              libraryBrowseName=name, libraryLoading=True)
+            if self._activate_collection_cache_locked(cache_key): return
+
+        def load() -> None:
+            try:
+                result_refs: list[tuple[str, str]] = []
+                tracks = self._tracks_from_short_page(
+                    rows[:LIBRARY_PAGE_SIZE], client, update_loading=False, result_refs=result_refs)
+                with self.lock:
+                    if self.client is not client or generation != self.library_generation: return
+                    self.library_source = rows
+                    self.library_results = tracks
+                    self.library_result_refs = result_refs
+                    self.library_offset = min(LIBRARY_PAGE_SIZE, len(rows))
+                    self.active_library_cache_key = cache_key
+                    self.library_origin = origin
+                    self.library_revision += 1
+                    self.state.update(libraryTotal=len(rows),
+                                      libraryHasMore=self.library_offset < len(rows),
+                                      libraryArtUrl=self._cover_url(tracks[0]) if tracks else "",
+                                      libraryLoading=False, libraryError="")
+                    self._store_collection_cache_locked()
+            except Exception as exc:
+                self._browse_error(generation, self._friendly_error(exc))
+        threading.Thread(target=load, daemon=True).start()
 
     def play_artist(self, artist_id: str) -> None:
         """Compatibility entry point: artist browsing now lives in Search."""
@@ -3665,7 +3888,8 @@ class Player:
                    start_index: int = 0, remaining_rows: list[Any] | None = None,
                    collection_key: str = "", prepared_url: str = "",
                    artist_id: str = "", artist_page: int = 0,
-                   artist_has_more: bool = False) -> None:
+                   artist_has_more: bool = False, source_kind: str = "", source_arg: str = "",
+                   collection_shuffled: bool = False) -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         self._finish_playback_reporting(finished=False)
         with self.lock:
@@ -3674,14 +3898,15 @@ class Player:
             self.queue_extending = False; self.queue_advance_pending = False
             self.queue_generation += 1; self.queue_revision += 1
             self.queue_collection_key = collection_key
+            self.queue_collection_shuffled = collection_shuffled
             self.queue_artist_id = artist_id
             self.queue_artist_page = artist_page
             self.queue_artist_has_more = artist_has_more
             self.queue_advance_automatic = False
             self.detached_track = None
-            self.artist_results = []
-            self._reset_library_locked()
-            self.state["artistBrowseName"] = ""
+            origin_kind, origin_arg = self._queue_origin(collection_key, station, artist_id)
+            self.state.update(queueSourceKind=source_kind or origin_kind,
+                              queueSourceName=name, queueSourceArg=source_arg or origin_arg)
             self.radio_station = station; self.radio_batch_id = batch_id
             self.radio_track_batches = ({self._track_id(track): batch_id for track in tracks}
                                         if station and batch_id else {})
@@ -3766,6 +3991,8 @@ class Player:
             if self.radio_station: return "radio"
             if self.queue_source: return "collection"
             if self.queue_artist_id and self.queue_artist_has_more: return "artist"
+        if mode == "shuffle" and getattr(self, "queue_collection_shuffled", False):
+            return self.index + 1 if self.index < len(self.queue) - 1 else 0
         if mode == "shuffle" and len(self.queue) > 1:
             candidate = getattr(self, "preload_candidate", None)
             if candidate and candidate["signature"] == self._preload_signature_locked():
@@ -4451,6 +4678,9 @@ class Player:
         with self.lock:
             data = dict(self.state); data["playlists"] = list(self.playlists)
             data["network"] = dict(self.network)
+            data["waveActive"] = getattr(self, "radio_station", "") == "user:onyourwave"
+            data["likesTotal"] = (len(getattr(self, "liked_ids", set()))
+                                  if getattr(self, "liked_rows_at", 0) > 0 else -1)
             data["queueRevision"] = self.queue_revision
             data["libraryRevision"] = self.library_revision
             data["libraryHubRevision"] = self.library_hub_revision
@@ -4460,6 +4690,9 @@ class Player:
             data["queueIndex"] = (self.index + 1
                                   if self.detached_track is None and self.index >= 0 else 0)
             data["queueCount"] = len(self.queue)
+            data["queueTotal"] = (-1 if getattr(self, "radio_station", "")
+                                   or getattr(self, "queue_artist_has_more", False)
+                                   else len(self.queue) + len(getattr(self, "queue_source", [])))
             if include_queue:
                 data["catalog"] = copy.deepcopy(self.catalog)
                 data["libraryHub"] = copy.deepcopy(self.library_hub)
@@ -4493,6 +4726,7 @@ class Player:
         if cmd == "track_info": return self.track_info()
         if cmd == "track_info_refresh": return self.track_info(force=True)
         if cmd == "auth": self.authenticate()
+        elif cmd == "auth_cancel": self.cancel_authentication()
         elif cmd == "reconnect": self.reconnect()
         elif cmd == "logout": self.logout()
         elif cmd == "likes": self.play_likes()
@@ -4502,6 +4736,8 @@ class Player:
         elif cmd == "dislike": self.toggle_dislike()
         elif cmd == "playlist": self.play_playlist(str(req.get("kind", "")))
         elif cmd == "load_more_library": self.load_more_library()
+        elif cmd == "library_home": self.library_home()
+        elif cmd == "library_home_refresh": self.library_home(force=True)
         elif cmd == "library_section": self.library_section(str(req.get("section", "")))
         elif cmd == "library_retry": self.library_section(
             str(req.get("section", "")), force=True)
@@ -4552,7 +4788,8 @@ class Player:
         elif cmd == "play_queue": self.play_queue(self._int(req.get("index", -1), -1))
         elif cmd == "play_library_track": self.play_library_track(
             self._int(req.get("index", -1), -1))
-        elif cmd == "close_library": self.close_library()
+        elif cmd == "play_library_collection": self.play_library_collection(str(req.get("mode", "order")))
+        elif cmd == "browse_queue_source": self.browse_queue_source()
         elif cmd == "artist": self.play_artist(str(req.get("artistId", "")))
         elif cmd == "play_artist_track": self.play_artist_track(
             self._int(req.get("index", -1), -1))

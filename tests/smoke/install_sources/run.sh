@@ -29,7 +29,7 @@ HOME="$home" XDG_RUNTIME_DIR="$runtime" PATH="$probe/bin:$PATH" \
 for name in BarWidget.qml BarPlayer.qml WidgetLogic.qml Panel.qml VolumeControl.qml \
   MusicSession.qml SessionController.qml DetailsReconciler.js TransportIntents.js ActionIntents.js \
   CatalogController.qml CatalogImage.qml CatalogPage.qml LibraryController.qml LibraryPage.qml \
-  CollectionController.qml SkeletonList.qml; do
+  CollectionController.qml PlaylistSheet.qml SkeletonList.qml AuthPage.qml BarButton.qml IconButton.qml LucideIcon.qml LucideIcons.js CompactPlayer.qml MiniBar.qml MusicSegmented.qml MusicSelect.qml NavController.qml NavHeader.qml CollectionPage.qml NowPane.qml OptionTile.qml PageTabs.qml PlayButton.qml RailItem.qml RailPane.qml RoundImage.qml SeekBar.qml SettingRow.qml SettingsPage.qml TrackPane.qml; do
   if [[ ! -f "$plugin/$name" ]] || ! cmp -s "$root/$name" "$plugin/$name"; then
     echo "Installer omitted or changed $name" >&2
     exit 1

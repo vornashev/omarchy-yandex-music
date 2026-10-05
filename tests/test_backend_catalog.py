@@ -507,6 +507,13 @@ class CatalogTests(unittest.TestCase):
         player.library_hub = player._empty_library_hub(); player.library_hub_tracks = []
         player.library_hub_source = []; player.library_hub_offset = 0
         player.library_hub_cache = OrderedDict(); player.personal_playlist_models = {}
+        player.library_hub.update(homeLoaded=True, items=[{"personalId": "daily"}])
+        player.library_hub_cache["personal"] = {
+            "items": [{"personalId": "daily"}], "storedAt": time.monotonic()}
+        player.personal_playlist_models["daily"] = SimpleNamespace(title="Personal")
+        with patch.object(backend.threading, "Thread") as worker:
+            player.library_home(force=True)
+            pending_home = worker.call_args.kwargs["target"]
         player.collection = {**player._empty_collection(), "recommendations": [{"trackId": "private"}]}
         player.collection_recommendation_tracks = [track("private")]
         player.liked_ids = set(); player.liked_rows = []; player.liked_rows_at = 0; player.disliked_ids = set()
@@ -523,6 +530,7 @@ class CatalogTests(unittest.TestCase):
             with (patch.object(backend, "TOKEN_FILE", token_file),
                   patch.object(backend, "STATE_FILE", state_file)):
                 player.logout()
+                pending_home()
             self.assertFalse(token_file.exists())
             self.assertFalse(state_file.exists())
         self.assertEqual(player.catalog_cache, OrderedDict())
@@ -531,6 +539,9 @@ class CatalogTests(unittest.TestCase):
         self.assertEqual(player.library_hub_cache, OrderedDict())
         self.assertEqual(player.library_hub_tracks, [])
         self.assertEqual(player.library_hub["view"], "home")
+        self.assertFalse(player.library_hub["homeLoaded"])
+        self.assertFalse(player.library_hub["loading"])
+        self.assertEqual(player.library_hub["items"], [])
         self.assertEqual(player.personal_playlist_models, {})
         self.assertEqual(player.collection["recommendations"], [])
         self.assertEqual(player.collection_recommendation_tracks, [])

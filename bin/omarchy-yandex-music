@@ -28,6 +28,8 @@ elif request["command"] == "catalog_clear_suggestions":
 elif request["command"] in ("play_search", "play_queue", "play_artist_track", "play_library_track",
                            "play_library_hub_track") and len(args) > 1:
     request["index"] = int(args[1])
+elif request["command"] == "play_library_collection" and len(args) > 1:
+    request["mode"] = args[1]
 elif request["command"] == "play_catalog_track" and len(args) > 2:
     request["source"] = args[1]
     request["index"] = int(args[2])

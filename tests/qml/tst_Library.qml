@@ -7,6 +7,7 @@ TestCase {
   when: windowShown
 
   LibraryController { id: controller }
+  SignalSpy { id: homeSpy; target: controller; signalName: "homeRequested" }
   SignalSpy { id: sectionSpy; target: controller; signalName: "sectionRequested" }
   SignalSpy { id: backSpy; target: controller; signalName: "backRequested" }
   SignalSpy { id: retrySpy; target: controller; signalName: "retryRequested" }
@@ -19,6 +20,10 @@ TestCase {
   function init() {
     sectionSpy.clear(); backSpy.clear(); retrySpy.clear(); loadMoreSpy.clear(); collectionSpy.clear()
     entitySpy.clear(); trackSpy.clear(); stationSpy.clear()
+    homeSpy.clear()
+    controller.homeRequestPending = false
+    controller.homeRequestAttempted = false
+    controller.homeRequestRevision = 0
     controller.ownPlaylists = []
     controller.stationPageSize = 50
     controller.stationVisibleCount = 50
@@ -45,6 +50,136 @@ TestCase {
     controller.activate(findRow("navigation", "section", "history"))
     compare(sectionSpy.count, 1)
     compare(sectionSpy.signalArguments[0][0], "history")
+  }
+
+  function test_home_metadata_is_lazy_and_coalesces_until_ready() {
+    compare(homeSpy.count, 0)
+    controller.requestHome()
+    verify(controller.loading)
+    compare(homeSpy.count, 1)
+    compare(homeSpy.signalArguments[0][0], false)
+    controller.requestHome()
+    controller.requestHome(true)
+    compare(homeSpy.count, 1)
+    controller.applySnapshot({ view: "home", loading: true, homeLoaded: false,
+      items: [], revision: 1 })
+    controller.requestHome()
+    compare(homeSpy.count, 1)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [{ entityType: "playlist", personalId: "daily", title: "Daily",
+        artUrl: "https://example.test/daily.jpg", available: true, generationReady: true }],
+      revision: 2 })
+    verify(!controller.loading)
+    verify(!controller.homeRequestPending)
+    compare(controller.personalItems[0].personalId, "daily")
+    compare(controller.personalItems[0].artUrl, "https://example.test/daily.jpg")
+    controller.requestHome()
+    compare(homeSpy.count, 1)
+    compare(sectionSpy.count, 0)
+    compare(collectionSpy.count, 0)
+    compare(trackSpy.count, 0)
+    compare(stationSpy.count, 0)
+  }
+
+  function test_ready_home_cache_does_not_request_on_first_open() {
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [], revision: 3 })
+    controller.requestHome()
+    compare(homeSpy.count, 0)
+    verify(!controller.loading)
+  }
+
+  function test_home_pending_requires_completed_new_home_response() {
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [], revision: 4 })
+    controller.requestHome(true)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [], revision: 4 })
+    verify(controller.homeRequestPending)
+    controller.applySnapshot({ view: "section", section: "history", loading: false,
+      items: [{ entityType: "track", trackIndex: 0 }], revision: 5 })
+    verify(controller.homeRequestPending)
+    compare(controller.personalItems.length, 0)
+    verify(!controller.loading)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: false,
+      items: [], revision: 6 })
+    verify(controller.homeRequestPending)
+    controller.applySnapshot({ view: "home", loading: true, homeLoaded: false,
+      items: [], revision: 7 })
+    verify(controller.homeRequestPending)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [], revision: 8 })
+    verify(!controller.homeRequestPending)
+    verify(!controller.loading)
+  }
+
+  function test_home_completion_requires_explicit_retry_data() {
+    return [
+      { tag: "empty", error: "", warning: "", items: [] },
+      { tag: "error", error: "Не удалось загрузить", warning: "", items: [] },
+      { tag: "partial", error: "", warning: "Подборка ещё готовится",
+        items: [{ entityType: "playlist", personalId: "daily", generationReady: false }] }
+    ]
+  }
+
+  function test_home_completion_requires_explicit_retry(data) {
+    controller.requestHome()
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      error: data.error, warning: data.warning, items: data.items, revision: 1 })
+    verify(!controller.loading)
+    compare(controller.snapshot.error, data.error)
+    compare(controller.snapshot.warning, data.warning)
+    controller.requestHome()
+    compare(homeSpy.count, 1)
+    controller.applySnapshot({ view: "section", section: "albums", items: [], revision: 2 })
+    controller.requestHome()
+    compare(homeSpy.count, 1)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: false,
+      items: [], revision: 3 })
+    controller.requestHome()
+    compare(homeSpy.count, 1)
+    controller.requestHome(true)
+    compare(homeSpy.count, 2)
+    compare(homeSpy.signalArguments[1][0], true)
+    verify(controller.loading)
+    controller.requestHome(true)
+    compare(homeSpy.count, 2)
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [{ entityType: "playlist", personalId: "daily", generationReady: true }],
+      revision: 4 })
+    verify(!controller.loading)
+    compare(controller.personalItems[0].generationReady, true)
+  }
+
+  function test_leaving_pending_home_allows_request_after_return() {
+    controller.requestHome()
+    controller.openSection("history")
+    compare(sectionSpy.count, 1)
+    verify(!controller.homeRequestPending)
+    controller.applySnapshot({ view: "section", section: "history", items: [], revision: 1 })
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: false,
+      items: [], revision: 2 })
+    controller.requestHome()
+    compare(homeSpy.count, 2)
+    verify(controller.loading)
+  }
+
+  function test_home_personal_cards_browse_only_when_available_and_generated() {
+    controller.applySnapshot({ view: "home", loading: false, homeLoaded: true,
+      items: [
+        { entityType: "playlist", personalId: "daily", available: true, generationReady: true },
+        { entityType: "playlist", personalId: "missedLikes", available: false, generationReady: true },
+        { entityType: "playlist", personalId: "neverHeard", available: true, generationReady: false }
+      ], revision: 1 })
+    compare(collectionSpy.count, 0)
+    for (var i = 0; i < controller.personalItems.length; i++)
+      controller.activate({ kind: "playlist", value: controller.personalItems[i] })
+    compare(collectionSpy.count, 1)
+    compare(collectionSpy.signalArguments[0][0], "browse_personal")
+    compare(collectionSpy.signalArguments[0][1], "daily")
+    compare(entitySpy.count, 0)
+    compare(trackSpy.count, 0)
+    compare(stationSpy.count, 0)
   }
 
   function test_existing_collections_remain_explicit_browse_actions() {
@@ -135,7 +270,6 @@ TestCase {
     controller.setStationQuery("джаз")
     var empty = findRow("empty", "", "")
     verify(empty !== null)
-    compare(empty.title, "Ничего не найдено")
   }
 
   function test_history_load_more_is_explicit_and_shows_loading_state() {
@@ -144,24 +278,47 @@ TestCase {
       error: "", warning: "", items: [{ entityType: "track", trackIndex: 0 }] })
     var row = findRow("loadMore", "", "")
     verify(row !== null)
-    compare(row.title, "Загрузить ещё")
     controller.activate(row)
     compare(loadMoreSpy.count, 1)
     verify(controller.loadingMore)
-    compare(findRow("loadMore", "", "").title, "Загружаем…")
+    controller.activate(findRow("loadMore", "", ""))
+    compare(loadMoreSpy.count, 1)
   }
 
-  function test_partial_error_retry_and_back_are_local() {
+  function test_partial_error_retry_keeps_section_without_embedded_navigation() {
     controller.applySnapshot({ view: "section", section: "artists", loading: false,
       error: "Ошибка раздела", warning: "", items: [] })
     verify(findRow("error", "", "") !== null)
     controller.activate(findRow("retry", "", ""))
     compare(retrySpy.count, 1)
     compare(retrySpy.signalArguments[0][0], "artists")
-    var backRow = findRow("back", "", "")
-    compare(backRow.icon, "󰁍")
-    controller.activate(backRow)
-    compare(backSpy.count, 1)
+    compare(controller.view, "section")
+    compare(controller.section, "artists")
+    verify(findRow("back", "", "") === null)
+    verify(findRow("section", "", "") === null)
+    compare(backSpy.count, 0)
+  }
+
+  function test_history_content_and_loaded_pages_survive_entity_navigation() {
+    var items = [
+      { entityType: "track", trackIndex: 0, title: "Track" },
+      { entityType: "album", id: "8", title: "Album" },
+      { entityType: "artist", id: "9", name: "Artist" }]
+    controller.applySnapshot({ view: "section", section: "history", loading: false,
+      loadingMore: false, hasMore: true, total: 120, items: items })
+    var snapshot = controller.snapshot
+    controller.activate(findRow("album", "", ""))
+    controller.activate(findRow("artist", "", ""))
+    compare(controller.snapshot, snapshot)
+    compare(controller.snapshot.items, items)
+    compare(controller.rows[0].kind, "track")
+    compare(controller.rows[1].value.id, "8")
+    compare(controller.rows[2].value.id, "9")
+    verify(controller.hasMore)
+    compare(trackSpy.count, 0)
+    compare(stationSpy.count, 0)
+    compare(sectionSpy.count, 0)
+    compare(backSpy.count, 0)
   }
 
   function test_unavailable_personal_playlist_ignores_activation() {
