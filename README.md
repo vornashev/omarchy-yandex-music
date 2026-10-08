@@ -149,7 +149,7 @@ To also remove your sign-in, preferences and playback state, add `--purge` when 
 <details>
 <summary>Development</summary>
 
-Run from the repository root; real-audio tests also require `ffmpeg`:
+Run from the repository root; real-audio tests also require `ffmpeg`, and local HTTPS certificate tests require `openssl`:
 
 ```bash
 python -m compileall -q backend tests
@@ -166,6 +166,8 @@ omarchy plugin validate .
 ```
 
 The temporary home and session D-Bus isolate tests from your account and desktop player. To deploy local changes, run `./install.sh --backend-only`, then `omarchy restart shell`. See [audio cache validation](docs/audio-cache-validation.md).
+
+mpv verifies HTTPS certificates and ignores user mpv configuration for this dedicated background player. For the vendored dependency's source correspondence and integrity check (not a security audit), see [wheel verification](vendor/README.md).
 
 </details>
 

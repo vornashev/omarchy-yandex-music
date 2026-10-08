@@ -149,7 +149,7 @@ omarchy-yandex-music status | jq '{version, authenticated, loading, error}'
 <details>
 <summary>Разработка</summary>
 
-Запускайте из корня репозитория; тестам настоящего аудио также нужен `ffmpeg`:
+Запускайте из корня репозитория; тестам настоящего аудио также нужен `ffmpeg`, а локальным HTTPS-тестам сертификатов — `openssl`:
 
 ```bash
 python -m compileall -q backend tests
@@ -166,6 +166,8 @@ omarchy plugin validate .
 ```
 
 Временный домашний каталог и отдельный session D-Bus изолируют тесты от аккаунта и плеера рабочего стола. Для установки локальных изменений выполните `./install.sh --backend-only`, затем `omarchy restart shell`. См. [проверку аудиокэша](docs/audio-cache-validation.md).
+
+mpv проверяет HTTPS-сертификаты и не читает пользовательскую конфигурацию mpv для этого отдельного фонового плеера. Проверка соответствия vendored-зависимости исходникам и её целостности (не аудит безопасности) описана в [документации wheel](vendor/README.ru.md).
 
 </details>
 

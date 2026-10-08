@@ -4088,8 +4088,9 @@ class Player:
             self._ensure_mpv_events()
             return
         MPV_SOCKET.unlink(missing_ok=True)
-        self.mpv = subprocess.Popen(["/usr/bin/mpv", "--idle=yes", "--no-video", "--audio-display=no",
-            "--no-terminal", "--load-scripts=no", "--gapless-audio=yes", "--prefetch-playlist=yes",
+        self.mpv = subprocess.Popen(["/usr/bin/mpv", "--no-config", "--idle=yes", "--no-video", "--audio-display=no",
+            "--no-terminal", "--load-scripts=no", "--tls-verify=yes",
+            "--gapless-audio=yes", "--prefetch-playlist=yes",
             "--audio-client-name=Yandex Music",
             # Reuse one HTTP connection for the range requests mpv makes while opening a stream.
             "--stream-lavf-o=multiple_requests=1",

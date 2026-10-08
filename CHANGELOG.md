@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Enable TLS certificate and hostname verification for HTTPS audio in the background mpv player. Ignore user mpv configuration so profiles cannot disable verification.
+
+### Added
+
+- Real-mpv HTTPS regression checks for trusted, untrusted and wrong-host certificates, and a reproducible vendored-wheel source correspondence and integrity verifier with English/Russian documentation.
+
 ## [0.11.1] - 2026-10-05
 
 ### Changed
