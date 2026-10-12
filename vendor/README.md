@@ -2,24 +2,24 @@
 
 [Русский](README.ru.md)
 
-`yandex_music-3.1.0b2-py3-none-any.whl` is vendored because the required unreleased
-Yandex Music API fixes are not available as a versioned PyPI release.
+`yandex_music-3.2.2-py3-none-any.whl` is vendored to ensure deterministic
+and offline-capable installation of the Yandex Music client library.
 The installer accepts this exact artifact through the hash-pinned
 [`requirements.txt`](../requirements.txt); verification does not change installation.
 
 ## Provenance
 
 - Upstream: <https://github.com/MarshalX/yandex-music-api>
-- Pinned source: [`0fa54f2d32084a9e461bce41890d1c9ab70d91aa`](https://github.com/MarshalX/yandex-music-api/tree/0fa54f2d32084a9e461bce41890d1c9ab70d91aa)
-- Declared distribution/version: `yandex-music` / `3.1.0b2`
-- License: LGPL-3.0; upstream `LICENSE` is included at `yandex_music-3.1.0b2.dist-info/licenses/LICENSE`.
-- Wheel SHA-256: `2f200b887b2be33b37f4eb05a4762703b11fe334205c16d7fac29f24d8a52e31`
-- [Pinned codeload source archive](https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/0fa54f2d32084a9e461bce41890d1c9ab70d91aa) SHA-256: `8f9adb3a49d05c606255357f9c620263c7d1dac1422c9689ed2a083e47c0e5fd`
+- Pinned source: [`9ca132e5c18a72aab779c1fc68c169380a9357d0`](https://github.com/MarshalX/yandex-music-api/tree/9ca132e5c18a72aab779c1fc68c169380a9357d0)
+- Declared distribution/version: `yandex-music` / `3.2.2`
+- License: LGPL-3.0; upstream `LICENSE` is included at `yandex_music-3.2.2.dist-info/licenses/LICENSE`.
+- Wheel SHA-256: `f2e603530c74a4affd2bead6f42e7b17c5e83732a2dda752206ef6c0d3dbf515`
+- [Pinned codeload source archive](https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/9ca132e5c18a72aab779c1fc68c169380a9357d0) SHA-256: `3366340c8b28c6212b00350ba7f79ff684cb2d7a17dee387bfcfa3aaae7b97c9`
 
-[`yandex_music-3.1.0b2.origin.json`](yandex_music-3.1.0b2.origin.json) is pip's
+[`yandex_music-3.2.2.origin.json`](yandex_music-3.2.2.origin.json) is pip's
 cached provenance record containing the requested and resolved VCS revision.
 It is supporting metadata, not a signed attestation or proof of wheel contents.
-The wheel's `WHEEL` metadata declares `Generator: setuptools (84.0.0)`,
+The wheel's `WHEEL` metadata declares `Generator: hatchling 1.32.4`,
 `Root-Is-Purelib: true` and `Tag: py3-none-any`. The original Python version,
 operating system, complete build environment and invocation are not established
 by that metadata.

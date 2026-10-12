@@ -513,6 +513,7 @@ class Player:
         self.disliked_ids: set[str] = set()
         self.radio_station = ""
         self.radio_batch_id = ""
+        self.radio_session_id = ""
         self.radio_track_batches: dict[str, str] = {}
         self.radio_extending = False
         self.radio_advance_pending = False
@@ -642,15 +643,21 @@ class Player:
             finally:
                 self.telemetry_queue.task_done()
 
-    def _report_radio_started(self, station: str, batch_id: str) -> None:
+    def _report_radio_started(self, station: str, batch_id: str, session_id: str = "") -> None:
         with self.lock: client = self.client
         if not client or not station: return
         account_uid = getattr(client, "account_uid", None)
         source = f"mobile-radio-user-{account_uid}" if account_uid else RADIO_REPORT_FROM
-        self._enqueue_telemetry(lambda client=client, station=station, batch_id=batch_id,
-                               source=source:
-            client.rotor_station_feedback_radio_started(
-                station, from_=source, batch_id=batch_id or None))
+        if session_id:
+            self._enqueue_telemetry(lambda client=client, session_id=session_id, batch_id=batch_id,
+                                   source=source:
+                client.rotor_session_feedback_radio_started(
+                    session_id, batch_id=batch_id or None, from_=source))
+        else:
+            self._enqueue_telemetry(lambda client=client, station=station, batch_id=batch_id,
+                                   source=source:
+                client.rotor_station_feedback_radio_started(
+                    station, from_=source, batch_id=batch_id or None))
 
     def _update_playback_clock_locked(self, playing: bool, now: float | None = None) -> None:
         report = self.playback_report
@@ -675,11 +682,13 @@ class Player:
             album_id = str(getattr(albums[0], "id", "")) if albums else ""
             duration = max(0, self._int(getattr(track, "duration_ms", 0)) // 1000)
             station = self.radio_station
+            session_id = self.radio_session_id
             batch_id = self.radio_track_batches.get(track_id, self.radio_batch_id)
             play_id = uuid.uuid4().hex
             self.playback_report = {
                 "client": client, "trackId": track_id, "albumId": album_id,
                 "duration": duration, "station": station, "batchId": batch_id,
+                "sessionId": session_id,
                 "playId": play_id, "playedSeconds": 0.0,
                 "lastTick": now, "playing": True,
             }
@@ -690,7 +699,12 @@ class Player:
                 client.play_audio(track_id, from_=PLAYBACK_REPORT_FROM, album_id=album_id,
                     play_id=play_id, track_length_seconds=0, total_played_seconds=0,
                     end_position_seconds=duration))
-        if station:
+        if session_id:
+            operations.append(lambda client=client, session_id=session_id, track_id=track_id,
+                              batch_id=batch_id:
+                client.rotor_session_feedback_track_started(
+                    session_id, track_id, batch_id=batch_id or None))
+        elif station:
             operations.append(lambda client=client, station=station, track_id=track_id,
                               batch_id=batch_id:
                 client.rotor_station_feedback_track_started(
@@ -713,6 +727,7 @@ class Player:
             play_id = str(report["playId"])
             station = str(report["station"])
             batch_id = str(report["batchId"])
+            session_id = str(report.get("sessionId", ""))
             # The next track usually starts right after this report is queued.
             self.telemetry_hold_until = self._float(report["lastTick"]) + TELEMETRY_SWITCH_HOLD
         operations: list[Callable[[], Any]] = []
@@ -723,7 +738,18 @@ class Player:
                 client.play_audio(track_id, from_=PLAYBACK_REPORT_FROM, album_id=album_id,
                     play_id=play_id, track_length_seconds=duration,
                     total_played_seconds=played, end_position_seconds=end_position))
-        if station:
+        if session_id:
+            if finished:
+                operations.append(lambda client=client, session_id=session_id, track_id=track_id,
+                                  played=played, batch_id=batch_id:
+                    client.rotor_session_feedback_track_finished(
+                        session_id, track_id, self._float(played), batch_id=batch_id or None))
+            else:
+                operations.append(lambda client=client, session_id=session_id, track_id=track_id,
+                                  played=played, batch_id=batch_id:
+                    client.rotor_session_feedback_skip(
+                        session_id, track_id, self._float(played), batch_id=batch_id or None))
+        elif station:
             if finished:
                 operations.append(lambda client=client, station=station, track_id=track_id,
                                   played=played, batch_id=batch_id:
@@ -1044,7 +1070,7 @@ class Player:
             self.queue_collection_shuffled = False
             self.queue_artist_page = 0; self.queue_artist_has_more = False
             self.queue_advance_automatic = False; self.detached_track = None
-            self.radio_station = ""; self.radio_batch_id = ""; self.radio_track_batches = {}
+            self.radio_station = ""; self.radio_batch_id = ""; self.radio_session_id = ""; self.radio_track_batches = {}
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               authExpiresAt=0.0, authExpired=False, authLogin="", authPlus=False,
@@ -1285,7 +1311,8 @@ class Player:
                          "index": self.index, "queueName": self.state["queueName"],
                          "position": self.state["position"], "playing": self.state["playing"],
                          "volume": self.volume, "muted": self.muted,
-                         "radioStation": self.radio_station, "radioBatchId": current_batch}
+                         "radioStation": self.radio_station, "radioBatchId": current_batch,
+                         "radioSessionId": self.radio_session_id}
                 value["queueCollectionKey"] = self.queue_collection_key
                 value["queueArtistId"] = self.queue_artist_id
                 value["queueArtistPage"] = self.queue_artist_page
@@ -1331,6 +1358,7 @@ class Player:
                 self.index = max(0, min(saved_index, len(tracks) - 1))
                 self.radio_station = str(saved.get("radioStation", ""))
                 self.radio_batch_id = str(saved.get("radioBatchId", ""))
+                self.radio_session_id = str(saved.get("radioSessionId", ""))
                 self.radio_track_batches = ({self._track_id(track): self.radio_batch_id for track in tracks}
                                             if self.radio_station and self.radio_batch_id else {})
                 self.state["queueName"] = queue_name
@@ -1346,15 +1374,15 @@ class Player:
                     queueSourceArg=str(saved.get("queueSourceArg") or source_arg))
                 self.queue_source = [
                     SimpleNamespace(id=str(row[0]), album_id=str(row[1]))
-                    for row in saved.get("queueRemaining", [])
-                    if isinstance(row, list) and len(row) == 2 and row[0]]
+                    for row in saved.get("queueRemaining", []) if len(row) >= 2
+                ]
                 self.queue_collection_shuffled = bool(saved.get("queueCollectionShuffled", False))
                 self.queue_advance_automatic = False
                 self.detached_track = None
             should_resume = bool(saved.get("playing", False)) and bool(self.preferences["autoResume"])
             resume_position = int(saved.get("position", 0)) if self.preferences["restorePosition"] else 0
             if should_resume and self.radio_station:
-                self._report_radio_started(self.radio_station, self.radio_batch_id)
+                self._report_radio_started(self.radio_station, self.radio_batch_id, self.radio_session_id)
             self._play_current(resume_position=resume_position, start_paused=not should_resume)
         except Exception as exc: self._set_error(f"Не удалось восстановить очередь: {exc}")
         finally:
@@ -1518,36 +1546,34 @@ class Player:
         except Exception as exc:
             self._set_error(f"Не удалось изменить отметку «Не рекомендовать»: {exc}")
 
+    def _wave_seeds(self) -> list[str]:
+        seeds = ["user:onyourwave"]
+        mood = str(self.preferences.get("waveMood", "all"))
+        if mood and mood != "all":
+            seeds.append(f"settingMoodEnergy:{mood}")
+        diversity = str(self.preferences.get("waveDiversity", "default"))
+        if diversity and diversity != "default":
+            seeds.append(f"settingDiversity:{diversity}")
+        language = str(self.preferences.get("waveLanguage", "any"))
+        if language and language != "any":
+            seeds.append(f"settingLanguage:{language}")
+        return seeds
+
     def play_wave(self) -> None:
         def load() -> None:
             try:
                 assert self.client
                 station = "user:onyourwave"
-                # The current settings2 endpoint requires JSON, while the
-                # unofficial client's helper still submits form data.
-                def update_settings() -> dict[str, Any]:
-                    response = self.http.post(
-                        f"{self.client.base_url}/rotor/station/{station}/settings2",
-                        headers=dict(self.client._request.headers),
-                        proxies=self.client._request.proxies,
-                        json={"moodEnergy": str(self.preferences["waveMood"]),
-                              "diversity": str(self.preferences["waveDiversity"]),
-                              "language": str(self.preferences["waveLanguage"]), "type": "rotor"},
-                        timeout=20, stream=True)
-                    try:
-                        response.raise_for_status()
-                        return read_http_json(response, HTTP_JSON_MAX_BYTES, "wave settings")
-                    finally:
-                        response.close()
-                settings_response = self._api_call(update_settings)
-                if settings_response.get("result") != "ok":
-                    raise RuntimeError("Яндекс не подтвердил настройки волны")
-                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
-                tracks = [row.track for row in (result.sequence if result else [])
-                          if getattr(row, "track", None)]
+                seeds = self._wave_seeds()
+                session = self._api_call(lambda: self.client.rotor_session_new(seeds))
+                if not session:
+                    raise RuntimeError("Яндекс не вернул сессию для «Моей волны»")
+                tracks = [row.track for row in self._safe_rows(getattr(session, "sequence", None))
+                          if getattr(row, "track", None) is not None]
                 if not tracks: raise RuntimeError("Яндекс не вернул треки для «Моей волны»")
-                batch_id = str(result.batch_id or "") if result else ""
-                self._set_queue(tracks, "Моя волна", station, batch_id)
+                session_id = self._text(getattr(session, "radio_session_id", ""))
+                batch_id = self._text(getattr(session, "batch_id", ""))
+                self._set_queue(tracks, "Моя волна", station, batch_id, radio_session_id=session_id)
             except Exception as exc:
                 self._set_error(f"Не удалось запустить «Мою волну»: {exc}")
         self._loading(load, "wave")
@@ -1562,12 +1588,15 @@ class Player:
             try:
                 assert self.client
                 station = f"track:{track_id}"
-                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
-                tracks = [row.track for row in (result.sequence if result else [])
-                          if getattr(row, "track", None)]
+                session = self._api_call(lambda: self.client.rotor_session_new([station]))
+                if not session:
+                    raise RuntimeError("Яндекс не вернул рекомендации для этого трека")
+                tracks = [row.track for row in self._safe_rows(getattr(session, "sequence", None))
+                          if getattr(row, "track", None) is not None]
                 if not tracks: raise RuntimeError("Яндекс не вернул рекомендации для этого трека")
-                batch_id = str(result.batch_id or "") if result else ""
-                self._set_queue(tracks, "Радио по треку", station, batch_id)
+                session_id = self._text(getattr(session, "radio_session_id", ""))
+                batch_id = self._text(getattr(session, "batch_id", ""))
+                self._set_queue(tracks, "Радио по треку", station, batch_id, radio_session_id=session_id)
             except Exception as exc:
                 self._set_error(f"Не удалось запустить радио по треку: {exc}")
         self._loading(load, "radio")
@@ -1592,6 +1621,8 @@ class Player:
                 loading_kind = "wave" if self.radio_station == "user:onyourwave" else "radio"
                 self.state.update(loading=True, loadingKind=loading_kind, loadingStage="", error="")
             station = self.radio_station
+            session_id = self.radio_session_id
+            played_ids = [self._track_id(t) for t in self.queue if self._track_id(t)]
             queue_id = self._track_id(self.queue[-1]) if self.queue else ""
             generation = self.queue_generation
 
@@ -1603,19 +1634,40 @@ class Player:
                 # The radio protocol expects finish/skip feedback before the
                 # request that advances the station sequence.
                 self.telemetry_queue.join()
-                result = self._api_call(
-                    lambda: self.client.rotor_station_tracks(station, queue=queue_id or None))
-                incoming = [row.track for row in (result.sequence if result else [])
-                            if getattr(row, "track", None)]
+                new_session_id = session_id
+                if session_id:
+                    result = self._api_call(
+                        lambda: self.client.rotor_session_tracks(session_id, queue=played_ids))
+                    if result and getattr(result, "unknown_session", False):
+                        seeds = self._wave_seeds() if station == "user:onyourwave" else [station]
+                        session = self._api_call(
+                            lambda: self.client.rotor_session_new(seeds, queue=played_ids))
+                        if session:
+                            new_session_id = str(session.radio_session_id or "")
+                            result = session
+                else:
+                    seeds = self._wave_seeds() if station == "user:onyourwave" else [station]
+                    session = self._api_call(
+                        lambda: self.client.rotor_session_new(seeds, queue=played_ids))
+                    if session:
+                        new_session_id = str(session.radio_session_id or "")
+                        result = session
+                    else:
+                        result = self._api_call(
+                            lambda: self.client.rotor_station_tracks(station, queue=queue_id or None))
+                incoming = [row.track for row in self._safe_rows(getattr(result, "sequence", None))
+                            if getattr(row, "track", None) is not None]
                 with self.lock:
                     if generation != self.queue_generation or station != self.radio_station: return
+                    if new_session_id:
+                        self.radio_session_id = new_session_id
                     existing = {self._track_id(track) for track in self.queue}
                     fresh = [track for track in incoming if self._track_id(track) not in existing]
                     old_length = len(self.queue)
                     self.queue.extend(fresh)
                     if fresh: self.queue_revision += 1
                     if result:
-                        self.radio_batch_id = str(result.batch_id or "")
+                        self.radio_batch_id = str(getattr(result, "batch_id", "") or "")
                         for track in fresh:
                             self.radio_track_batches[self._track_id(track)] = self.radio_batch_id
                     should_advance = self.radio_advance_pending and bool(fresh) and self.index >= old_length - 1
@@ -2830,12 +2882,15 @@ class Player:
         def load() -> None:
             try:
                 assert self.client
-                result = self._api_call(lambda: self.client.rotor_station_tracks(station))
-                tracks = [row.track for row in self._safe_rows(getattr(result, "sequence", None))
+                session = self._api_call(lambda: self.client.rotor_session_new([station]))
+                if not session:
+                    raise RuntimeError("Яндекс не вернул треки радиостанции")
+                tracks = [row.track for row in self._safe_rows(getattr(session, "sequence", None))
                           if getattr(row, "track", None) is not None]
                 if not tracks: raise RuntimeError("Яндекс не вернул треки радиостанции")
-                batch_id = self._text(getattr(result, "batch_id", ""))
-                self._set_queue(tracks, title, station, batch_id)
+                session_id = self._text(getattr(session, "radio_session_id", ""))
+                batch_id = self._text(getattr(session, "batch_id", ""))
+                self._set_queue(tracks, title, station, batch_id, radio_session_id=session_id)
             except Exception as exc:
                 self._set_error(self._catalog_error(exc, "Радиостанция"))
         self._loading(load, "station")
@@ -3889,7 +3944,7 @@ class Player:
                    collection_key: str = "", prepared_url: str = "",
                    artist_id: str = "", artist_page: int = 0,
                    artist_has_more: bool = False, source_kind: str = "", source_arg: str = "",
-                   collection_shuffled: bool = False) -> None:
+                   collection_shuffled: bool = False, radio_session_id: str = "") -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
         self._finish_playback_reporting(finished=False)
         with self.lock:
@@ -3908,11 +3963,12 @@ class Player:
             self.state.update(queueSourceKind=source_kind or origin_kind,
                               queueSourceName=name, queueSourceArg=source_arg or origin_arg)
             self.radio_station = station; self.radio_batch_id = batch_id
+            self.radio_session_id = radio_session_id
             self.radio_track_batches = ({self._track_id(track): batch_id for track in tracks}
                                         if station and batch_id else {})
             self.radio_extending = False; self.radio_advance_pending = False
             self.state.update(queueName=name, loading=False, loadingKind="")
-        if station: self._report_radio_started(station, batch_id)
+        if station: self._report_radio_started(station, batch_id, radio_session_id)
         self._save_state(True); self._play_current(initial_url=prepared_url)
 
     def _metadata(self, track: Any) -> dict[str, Any]:

@@ -1,4 +1,4 @@
 # Runtime dependency inputs. Regenerate requirements.txt with pip-compile --generate-hashes.
 dbus-next==0.2.3
-# Built and reviewed from upstream commit 0fa54f2d32084a9e461bce41890d1c9ab70d91aa.
-./vendor/yandex_music-3.1.0b2-py3-none-any.whl
+# Built and reviewed from upstream commit 9ca132e5c18a72aab779c1fc68c169380a9357d0.
+./vendor/yandex_music-3.2.2-py3-none-any.whl

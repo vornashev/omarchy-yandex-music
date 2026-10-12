@@ -207,6 +207,6 @@ urllib3==2.7.0 \
     --hash=sha256:231e0ec3b63ceb14667c67be60f2f2c40a518cb38b03af60abc813da26505f4c \
     --hash=sha256:9fb4c81ebbb1ce9531cce37674bbc6f1360472bc18ca9a553ede278ef7276897
     # via requests
-./vendor/yandex_music-3.1.0b2-py3-none-any.whl \
-    --hash=sha256:2f200b887b2be33b37f4eb05a4762703b11fe334205c16d7fac29f24d8a52e31
+./vendor/yandex_music-3.2.2-py3-none-any.whl \
+    --hash=sha256:f2e603530c74a4affd2bead6f42e7b17c5e83732a2dda752206ef6c0d3dbf515
     # via -r requirements.in

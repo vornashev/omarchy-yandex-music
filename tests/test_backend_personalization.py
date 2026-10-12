@@ -94,6 +94,12 @@ class FakePersonalizationClient:
         self.calls.append(("stations",))
         return self.stations
 
+    def rotor_session_new(self, seeds, **kwargs):
+        self.calls.append(("session_new", seeds))
+        if isinstance(self.station_tracks, Exception):
+            raise self.station_tracks
+        return self.station_tracks
+
     def rotor_station_tracks(self, station):
         self.calls.append(("station_tracks", station))
         if isinstance(self.station_tracks, Exception):
@@ -146,6 +152,7 @@ class PersonalizationTests(unittest.TestCase):
         player.queue_advance_automatic = False
         player.detached_track = None
         player.radio_station = ""
+        player.radio_session_id = ""
         player.radio_batch_id = ""
         player.radio_track_batches = {}
         player.radio_extending = False
@@ -654,7 +661,7 @@ class PersonalizationTests(unittest.TestCase):
         )
         client.stations = [SimpleNamespace(station=station, explanation="Энергичная музыка")]
         station_tracks = SimpleNamespace(
-            sequence=[SimpleNamespace(track=track(9))], batch_id="batch-1")
+            sequence=[SimpleNamespace(track=track(9))], batch_id="batch-1", radio_session_id="session-1")
         client.station_tracks = station_tracks
         player = self.make_player(client)
         set_queue = Mock()
@@ -668,7 +675,7 @@ class PersonalizationTests(unittest.TestCase):
         player.play_station("genre:rock", "Рок")
         self.wait_until(lambda: set_queue.call_count == 1)
         set_queue.assert_called_once_with(
-            [station_tracks.sequence[0].track], "Рок", "genre:rock", "batch-1")
+            [station_tracks.sequence[0].track], "Рок", "genre:rock", "batch-1", radio_session_id="session-1")
 
     def test_station_failure_is_friendly_and_hides_raw_response(self):
         client = FakePersonalizationClient()

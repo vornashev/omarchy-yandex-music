@@ -140,30 +140,30 @@ class SecurityBoundaryTests(unittest.TestCase):
         self.assertTrue(post.call_args.kwargs["stream"])
         self.assertTrue(response.closed)
 
-    def test_wave_settings_stream_json_before_using_result(self):
-        response = FakeResponse([b'{"result":', b'"ok"}'])
+    def test_wave_session_creates_queue_with_configured_seeds(self):
         track = object()
-        station_result = SimpleNamespace(
-            sequence=[SimpleNamespace(track=track)], batch_id="batch"
+        session_result = SimpleNamespace(
+            sequence=[SimpleNamespace(track=track)],
+            batch_id="batch",
+            radio_session_id="session-42",
         )
         player = cast(Any, backend.Player.__new__(backend.Player))
+        calls = []
         player.client = SimpleNamespace(
-            base_url="https://example.test",
-            _request=SimpleNamespace(headers={}, proxies={}),
-            rotor_station_tracks=lambda station: station_result,
+            rotor_session_new=lambda seeds: calls.append(seeds) or session_result,
         )
-        player.preferences = {"waveMood": "all", "waveDiversity": "default", "waveLanguage": "any"}
+        player.preferences = {"waveMood": "fun", "waveDiversity": "discover", "waveLanguage": "not-russian"}
         player._api_call = lambda function: function()
         player._loading = lambda function, kind: function()
         player._set_error = lambda error: self.fail(error)
+        player._text = str
+        player._safe_rows = lambda rows: rows or []
         queue_calls = []
-        player._set_queue = lambda *args: queue_calls.append(args)
-        post = MagicMock(return_value=response)
-        player.http = SimpleNamespace(post=post)
+        player._set_queue = lambda *args, **kwargs: queue_calls.append((args, kwargs))
         player.play_wave()
-        self.assertTrue(post.call_args.kwargs["stream"])
-        self.assertTrue(response.closed)
-        self.assertEqual(queue_calls[0], ([track], "Моя волна", "user:onyourwave", "batch"))
+        self.assertEqual(calls[0], ["user:onyourwave", "settingMoodEnergy:fun", "settingDiversity:discover", "settingLanguage:not-russian"])
+        self.assertEqual(queue_calls[0][0], ([track], "Моя волна", "user:onyourwave", "batch"))
+        self.assertEqual(queue_calls[0][1], {"radio_session_id": "session-42"})
 
     def test_notification_cover_streams_with_a_hard_limit(self):
         response = FakeResponse([b"1234", b"56"])
@@ -278,14 +278,14 @@ class SecurityBoundaryTests(unittest.TestCase):
             self.assertTrue((home / ".config/omarchy-yandex-music").exists())
 
     def test_vendored_yandex_music_wheel_matches_lock(self):
-        wheel = ROOT / "vendor/yandex_music-3.1.0b2-py3-none-any.whl"
+        wheel = ROOT / "vendor/yandex_music-3.2.2-py3-none-any.whl"
         digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
-        self.assertEqual(digest, "2f200b887b2be33b37f4eb05a4762703b11fe334205c16d7fac29f24d8a52e31")
+        self.assertEqual(digest, "f2e603530c74a4affd2bead6f42e7b17c5e83732a2dda752206ef6c0d3dbf515")
         self.assertIn(digest, (ROOT / "requirements.txt").read_text())
-        provenance = json.loads((ROOT / "vendor/yandex_music-3.1.0b2.origin.json").read_text())
+        provenance = json.loads((ROOT / "vendor/yandex_music-3.2.2.origin.json").read_text())
         self.assertEqual(
             provenance["vcs_info"]["commit_id"],
-            "0fa54f2d32084a9e461bce41890d1c9ab70d91aa",
+            "9ca132e5c18a72aab779c1fc68c169380a9357d0",
         )
 
     def test_cli_bounds_service_response(self):

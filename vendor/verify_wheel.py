@@ -17,16 +17,16 @@ import urllib.request
 import zipfile
 
 
-COMMIT = "0fa54f2d32084a9e461bce41890d1c9ab70d91aa"
-WHEEL_NAME = "yandex_music-3.1.0b2-py3-none-any.whl"
-WHEEL_SHA256 = "2f200b887b2be33b37f4eb05a4762703b11fe334205c16d7fac29f24d8a52e31"
+COMMIT = "9ca132e5c18a72aab779c1fc68c169380a9357d0"
+WHEEL_NAME = "yandex_music-3.2.2-py3-none-any.whl"
+WHEEL_SHA256 = "f2e603530c74a4affd2bead6f42e7b17c5e83732a2dda752206ef6c0d3dbf515"
 SOURCE_URL = f"https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/{COMMIT}"
-SOURCE_SHA256 = "8f9adb3a49d05c606255357f9c620263c7d1dac1422c9689ed2a083e47c0e5fd"
+SOURCE_SHA256 = "3366340c8b28c6212b00350ba7f79ff684cb2d7a17dee387bfcfa3aaae7b97c9"
 SOURCE_ROOT = f"yandex-music-api-{COMMIT}"
-DIST_INFO = "yandex_music-3.1.0b2.dist-info/"
+DIST_INFO = "yandex_music-3.2.2.dist-info/"
 RECORD = DIST_INFO + "RECORD"
 METADATA_FILES = {DIST_INFO + name for name in (
-    "licenses/LICENSE", "METADATA", "WHEEL", "top_level.txt", "RECORD",
+    "licenses/LICENSE", "METADATA", "WHEEL", "RECORD",
 )}
 MAX_ARCHIVE_BYTES = 32 * 1024 * 1024
 
@@ -118,28 +118,25 @@ def check_metadata(files):
     parser = BytesParser(policy=policy.default)
     metadata = parser.parsebytes(files[DIST_INFO + "METADATA"])
     require(not metadata.defects, "malformed METADATA")
-    for name, value in (("Name", "yandex-music"), ("Version", "3.1.0b2"),
-                        ("License-File", "LICENSE")):
+    for name, value in (("Name", "yandex-music"), ("Version", "3.2.2")):
         require(metadata.get_all(name) == [value], f"unexpected METADATA {name}")
     wheel = parser.parsebytes(files[DIST_INFO + "WHEEL"])
     require(not wheel.defects, "malformed WHEEL metadata")
     expected = {
         "Wheel-Version": "1.0",
-        "Generator": "setuptools (84.0.0)",
+        "Generator": "hatchling 1.32.4",
         "Root-Is-Purelib": "true",
         "Tag": "py3-none-any",
     }
     require(set(wheel.keys()) == expected.keys(), "unexpected WHEEL metadata fields")
     for name, value in expected.items():
         require(wheel.get_all(name) == [value], f"unexpected WHEEL {name}")
-    require(files[DIST_INFO + "top_level.txt"] == b"tests\nyandex_music\n",
-            "unexpected top-level packages")
 
 
 def verify(wheel_data, source_data):
     files = read_wheel(wheel_data)
     source = read_source(source_data)
-    payload = {name for name in source if name.startswith(("yandex_music/", "tests/"))}
+    payload = {name for name in source if name.startswith("yandex_music/")}
     require(payload, "source contains no package/test payload")
     expected = payload | METADATA_FILES
     require(files.keys() == expected,
@@ -153,15 +150,14 @@ def verify(wheel_data, source_data):
     hashed = check_record(files)
     check_metadata(files)
     package_count = sum(name.startswith("yandex_music/") for name in payload)
-    test_count = sum(name.startswith("tests/") for name in payload)
     print(f"Payload: {len(payload)} byte-identical upstream files "
-          f"({package_count} package, {test_count} tests)")
+          f"({package_count} package)")
     print("License: byte-identical upstream LICENSE")
     print(f"RECORD: {len(files)} members covered, {hashed} SHA-256 hashes/sizes valid; "
           "RECORD self-entry unhashed")
-    print("Metadata: yandex-music 3.1.0b2; purelib=true; py3-none-any; "
-          "generator=setuptools (84.0.0)")
-    print("Extras: only LICENSE, METADATA, WHEEL, top_level.txt and RECORD; "
+    print("Metadata: yandex-music 3.2.2; purelib=true; py3-none-any; "
+          "generator=hatchling 1.32.4")
+    print("Extras: only LICENSE, METADATA, WHEEL and RECORD; "
           "no unexplained payload")
 
 

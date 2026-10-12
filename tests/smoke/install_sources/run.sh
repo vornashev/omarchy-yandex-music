@@ -12,7 +12,7 @@ unit="$home/.config/systemd/user/omarchy-yandex-music.service"
 mkdir -p "$app/venv/bin" "$home/.local/bin" "$(dirname "$unit")" "$runtime" "$probe/bin"
 printf '%s\n' "$(jq -r .version "$root/manifest.json")" >"$app/.installed-version"
 printf '%s\n' "$(sha256sum "$root/requirements.txt" \
-  "$root/vendor/yandex_music-3.1.0b2-py3-none-any.whl" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)" \
+  "$root/vendor/yandex_music-3.2.2-py3-none-any.whl" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)" \
   >"$app/.installed-dependencies"
 printf '#!/bin/sh\nexit 0\n' >"$app/venv/bin/python"
 chmod +x "$app/venv/bin/python"
