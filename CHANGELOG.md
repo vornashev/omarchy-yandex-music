@@ -9,10 +9,27 @@ All notable changes to this project are documented here. The format follows [Kee
 ### Fixed
 
 - Enable TLS certificate and hostname verification for HTTPS audio in the background mpv player. Ignore user mpv configuration so profiles cannot disable verification.
+- Preserve the bar's like, mute and volume hit areas with optional lyrics and hidden track labels. Accumulate rapid wheel seeks, retain fractional LRC timestamps, and discard queued seeks for an old track. Keep lyrics vertically centered after first-load font layout and line transitions.
+- Keep automatic lyric loading opt-in, surface transient errors with a local retry, and avoid persisting failed or missing lyrics. Bound streamed LRCLIB responses, disk reads, the eight-track memory LRU and the 128-file private disk cache; clear disk lyrics on logout.
+- Show readable lyric-loading errors for service outages, timeouts and connection failures without exposing request URLs or upstream response details. Wrap and bound the error message in Wide and Compact so the retry button remains accessible.
+- Keep the enabled bar lyric/decorative-wave slot at its selected width (400 scaled px in Auto), including loading, errors, plain and missing lyrics. Keep metadata width stable too, and reject old-track text during QML binding updates.
+- Retry transient LRCLIB failures at most twice with interruptible 1/2-second delays and a shared exact/search budget. Use a bounded, TLS-verified curl transfer that is terminated on track changes, logout, shutdown or cancellation of automatic loading. Preserve SDK serialization and reject cancelled/stale results.
+- Consult LRCLIB when Yandex returns text without timestamps; recheck legacy plain caches and avoid persisting plain fallback after a failed synchronized lookup.
+- Avoid flashing the sign-in page before the popup's first details response: reuse the bar's known session state and distinguish unknown/restoring sessions from confirmed sign-out.
+- Keep the player popup accessible with hidden artwork and mouse gestures enabled: show an audio-lines button with standard bar-button hover feedback. Highlight the entire information region, including artwork, like, time and subtitles, when hovering any part; keep transport and volume outside the background. Preserve artwork's own popup tooltip/action, text gestures and wheel seeking.
+- Restore artwork's local button-style hover and pressed feedback on top of the shared information highlight, matching the heart button's colors and hover timing in both mouse-control modes.
 
 ### Added
 
 - Real-mpv HTTPS regression checks for trusted, untrusted and wrong-host certificates, and a reproducible vendored-wheel source correspondence and integrity verifier with English/Russian documentation.
+- Optional synchronized bar lyrics, independent mouse gestures, configurable subtitle width, LRCLIB fallback and current/next-track lyric preparation. Artwork remains the popup anchor; empty lyric lines display a decorative wave, not an audio spectrum.
+- Scroll overflowing bar lyrics once within their timestamp interval, independently of track-title marquee. Preserve fixed slot width, pause/seek synchronization, repeated-line resets and short-line stability; use track duration for the final line.
+- Behavioral regressions for queued commands, fractional/rapid seeks, real bar pointer hit areas, lyric privacy opt-in and cache/network boundaries.
+
+### Changed
+
+- Redesign Settings into **General** and **Top bar** tabs. Top bar starts with a clickable live preview of the bar player: click any element to hide or show it, and hovering an element highlights it in both the preview and the list. Bar elements follow their left-to-right order, every option is an inline segmented control, and restore-on-start options are toggle tiles. Compact uses the same tabs with a three-column element grid.
+- Set the track-information and subtitle widths separately in pixels with **−/+** steppers (10 px per click; hold or scroll to repeat). Existing width modes migrate to their pixel values. The track-information width now also applies while subtitles are shown, and the subtitle width control is disabled while subtitles are off.
 
 ## [0.11.1] - 2026-10-05
 

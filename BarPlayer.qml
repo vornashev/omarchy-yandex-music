@@ -32,11 +32,80 @@ Item {
   readonly property string coverShape: String(preferences.coverShape || "rounded")
   readonly property bool showProgress: preferences.showProgress === undefined ? true : Boolean(preferences.showProgress)
   readonly property string longTitleMode: String(preferences.longTitleMode || "truncate")
-  readonly property real informationWidth: {
-    var mode = String(preferences.barWidth || "normal")
-    if (mode === "compact") return Style.space(170)
-    if (mode === "wide") return Style.space(310)
-    return Style.space(230)
+  readonly property bool showBarLyrics: Boolean(preferences.showBarLyrics)
+  readonly property bool barMouseControls: Boolean(preferences.barMouseControls)
+  // Pixel widths (10 px steps); legacy width modes cover older snapshots.
+  function widthPreference(key, legacyKey, legacy, fallback) {
+    var value = Number(preferences[key])
+    if (!isFinite(value) || value <= 0) value = legacy[String(preferences[legacyKey] || "")] || fallback
+    return Style.space(value)
+  }
+  readonly property real informationWidth: widthPreference("barInfoWidth", "barWidth",
+    { compact: 170, normal: 230, wide: 310 }, 230)
+  // The public bar facade has no free-space geometry, so the lyric slot always
+  // takes its configured width instead of guessing a monitor center.
+  readonly property real lyricsMaxWidth: widthPreference("barLyricsWidth", "lyricsWidthMode",
+    { auto: 400, compact: 240, normal: 400, wide: 600, full: 1200 }, 400)
+  readonly property real lyricsWidth: root.showBarLyrics ? root.lyricsMaxWidth : 0
+  readonly property Item coverItem: cover.visible ? cover : (labelSlot.visible ? labelSlot : root)
+
+  property double positionClockMs: Date.now()
+  readonly property real displayPosition: {
+    var pos = Number(logic && logic.snapshot ? logic.snapshot.position || 0 : 0)
+    var observedAt = Number(logic && logic.snapshot ? logic.snapshot.positionObservedAt || 0 : 0)
+    if (root.playing && observedAt > 0) {
+      var elapsed = Math.max(0, positionClockMs / 1000 - observedAt)
+      pos += Math.min(3, elapsed)
+    }
+    var dur = Number(logic && logic.snapshot ? logic.snapshot.duration || 0 : 0)
+    return Math.max(0, dur > 0 ? Math.min(dur, pos) : pos)
+  }
+
+  Timer {
+    id: positionTimer
+    interval: lyricLabel.visible && lyricLabel.implicitWidth > lyricsSlot.width ? 16 : 80
+    running: root.playing && root.hasTrack && lyricsSlot.visible
+    repeat: true
+    onTriggered: root.positionClockMs = Date.now()
+  }
+
+  readonly property var lyricsData: (logic && logic.snapshot && logic.snapshot.lyrics) ? logic.snapshot.lyrics : null
+  readonly property var lyricsLines: (lyricsData && lyricsData.lines) ? lyricsData.lines : []
+  readonly property bool lyricsAvailable: lyricsData && lyricsData.available === true && lyricsLines.length > 0 && String(lyricsData.trackId || "") === String(logic.snapshot.trackId || "")
+  readonly property bool syncedLyricsAvailable: lyricsAvailable && lyricsData.synced === true
+
+  function currentLyricsIndex() {
+    if (!syncedLyricsAvailable) return -1
+    var pos = root.displayPosition
+    var current = -1
+    for (var i = 0; i < lyricsLines.length; i++) {
+      var t = Number(lyricsLines[i].time || 0)
+      if (t <= pos) current = i
+      else break
+    }
+    return current
+  }
+
+  readonly property int activeLyricIndex: currentLyricsIndex()
+  readonly property real lyricScrollProgress: {
+    if (!syncedLyricsAvailable || activeLyricIndex < 0) return 0
+    var start = Number(lyricsLines[activeLyricIndex].time)
+    var end = activeLyricIndex + 1 < lyricsLines.length
+      ? Number(lyricsLines[activeLyricIndex + 1].time)
+      : Number(logic && logic.snapshot ? logic.snapshot.duration || 0 : 0)
+    var span = end - start
+    if (!isFinite(span) || span <= 0) return 0
+    // Reserve reading time at both ends, proportionally shorter for quick lines.
+    var hold = Math.min(0.3, span * 0.1)
+    return Math.max(0, Math.min(1, (displayPosition - start - hold) / (span - 2 * hold)))
+  }
+  readonly property string targetLyricText: {
+    if (!syncedLyricsAvailable) return ""
+    var idx = activeLyricIndex
+    if (idx >= 0 && idx < lyricsLines.length) {
+      return String(lyricsLines[idx].text || "").trim()
+    }
+    return ""
   }
   readonly property color foreground: bar ? bar.barForeground : Color.foreground
   readonly property string fontFamily: bar ? bar.fontFamily : Style.font.family
@@ -82,6 +151,8 @@ Item {
 
   Row {
     id: controls
+    // Keep real buttons above the shared information hit area.
+    z: 1
     anchors.centerIn: parent
     height: root.height
     spacing: Style.space(5)
@@ -165,23 +236,23 @@ Item {
       Item { width: Style.space(6); height: 1 }
     }
 
-    Item {
-      visible: !root.showCover && !labelSlot.visible && !root.signedOut && !root.errorState
-      width: Style.space(24); height: root.implicitHeight
-      LucideIcon {
-        anchors.centerIn: parent
-        name: "audio-lines"; color: Color.accent; size: Style.space(16)
-      }
-      MouseArea {
-        anchors.fill: parent; hoverEnabled: true; cursorShape: Qt.PointingHandCursor
-        onClicked: if (root.logic) root.logic.toggle()
-        onEntered: if (root.bar) root.bar.showTooltip(parent, "Открыть Яндекс Музыку")
-        onExited: if (root.bar) root.bar.hideTooltip(parent)
-      }
+    BarButton {
+      id: popupButton
+      objectName: "barPopupButton"
+      visible: !root.showCover && (root.barMouseControls || !labelSlot.visible)
+        && !root.signedOut && !root.errorState
+      bar: root.bar
+      foreground: root.foreground
+      name: "audio-lines"
+      iconColor: Color.accent
+      tooltip: "Открыть Яндекс Музыку"
+      onClicked: if (root.logic) root.logic.toggle()
+      onWheel: function(wheel) { infoArea.handleWheel(wheel, false) }
     }
 
     BorderSurface {
       id: cover
+      objectName: "barCover"
       visible: root.showCover && !root.signedOut && !root.errorState
       width: Style.space(20); height: Style.space(20)
       anchors.verticalCenter: parent.verticalCenter
@@ -255,12 +326,30 @@ Item {
         glyph: "󰀪"; color: Color.urgent
         fontFamily: root.fontFamily; size: Style.font.caption
       }
+      MouseArea {
+        id: coverMouse
+        x: -Style.space(4)
+        y: (cover.height - root.height) / 2
+        width: cover.width + Style.space(8)
+        height: root.height
+        enabled: root.barMouseControls
+        hoverEnabled: true
+        acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
+        cursorShape: Qt.PointingHandCursor
+        onClicked: if (root.logic) root.logic.toggle()
+        onWheel: function(wheel) { infoArea.handleWheel(wheel, false) }
+        onEntered: if (root.bar) root.bar.showTooltip(cover, "Открыть Яндекс Музыку")
+        onExited: if (root.bar) root.bar.hideTooltip(cover)
+      }
     }
 
     Item {
       id: labelSlot
+      objectName: "barTrackInfo"
       visible: (root.showArtist || root.showTitle) && !root.signedOut && !root.errorState
-      width: root.showTitle ? root.informationWidth : Math.min(root.informationWidth, Style.space(105))
+      width: {
+        return root.showTitle ? root.informationWidth : Math.min(root.informationWidth, Style.space(105))
+      }
       height: root.implicitHeight
       clip: true
       opacity: root.dimmed ? .5 : 1
@@ -309,18 +398,9 @@ Item {
       }
     }
 
-    Text {
-      textFormat: Text.PlainText
-      visible: root.showTime && root.hasTrack && !root.signedOut && !root.errorState
-      anchors.verticalCenter: parent.verticalCenter
-      text: formatTime(Number(root.logic ? root.logic.snapshot.position || 0 : 0)) + " / "
-        + formatTime(Number(root.logic ? root.logic.snapshot.duration || 0 : 0))
-      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .55)
-      font.family: root.fontFamily; font.pixelSize: Style.font.caption
-    }
-
     BarButton {
       id: likeButton
+      objectName: "barLike"
       visible: root.showLike && root.hasTrack && !root.signedOut && !root.errorState
       anchors.verticalCenter: parent.verticalCenter
       bar: root.bar; foreground: root.foreground
@@ -334,6 +414,218 @@ Item {
       errorDot: root.likeError
       tooltip: shownLiked ? "Убрать из любимого (L)" : "Нравится (L)"
       onClicked: root.toggleLike()
+    }
+
+    Text {
+      id: showTimeText
+      textFormat: Text.PlainText
+      visible: root.showTime && root.hasTrack && !root.signedOut && !root.errorState
+      anchors.verticalCenter: parent.verticalCenter
+      text: formatTime(Number(root.logic ? root.logic.snapshot.position || 0 : 0)) + " / "
+        + formatTime(Number(root.logic ? root.logic.snapshot.duration || 0 : 0))
+      color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .55)
+      font.family: root.fontFamily; font.pixelSize: Style.font.caption
+    }
+
+    Item {
+      id: separatorItem
+      visible: root.showBarLyrics && !root.signedOut && !root.errorState
+      width: Style.space(8)
+      height: root.implicitHeight
+
+      Text {
+        textFormat: Text.PlainText
+        anchors.centerIn: parent
+        text: "│"
+        color: root.foreground
+        opacity: 0.25
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+      }
+    }
+
+    Item {
+      id: lyricsSlot
+      objectName: "barLyrics"
+      visible: root.showBarLyrics && !root.signedOut && !root.errorState
+      width: root.lyricsWidth
+      height: root.implicitHeight
+      clip: true
+
+      property string currentDisplayedText: ""
+      property string pendingText: {
+        var snapshot = root.logic ? root.logic.snapshot : null
+        var lyrics = snapshot ? snapshot.lyrics : null
+        if (!lyrics || lyrics.available !== true || lyrics.synced !== true
+            || String(lyrics.trackId || "") !== String(snapshot.trackId || "")) return ""
+        return root.targetLyricText
+      }
+      readonly property string displayTrackId: String(root.logic && root.logic.snapshot
+        ? root.logic.snapshot.trackId || "" : "")
+      onDisplayTrackIdChanged: {
+        lyricTransition.stop()
+        currentDisplayedText = ""
+        // Snapshot-derived bindings settle after the track identity notification.
+        Qt.callLater(function() {
+          lyricTransition.stop()
+          lyricsSlot.currentDisplayedText = lyricsSlot.pendingText
+        })
+        lyricLabel.opacity = 1
+        lyricLabel.verticalOffset = 0
+      }
+
+      onPendingTextChanged: {
+        if (pendingText === currentDisplayedText) return
+        if (lyricTransition.running) lyricTransition.stop()
+        if (currentDisplayedText === "") {
+          currentDisplayedText = pendingText
+          lyricLabel.opacity = 1
+          lyricLabel.verticalOffset = 0
+        } else {
+          lyricTransition.restart()
+        }
+      }
+
+      Item {
+        id: waveHolder
+        objectName: "barLyricWave"
+        anchors.left: parent.left
+        anchors.verticalCenter: parent.verticalCenter
+        width: lyricsSlot.width
+        height: Style.space(20)
+        visible: !root.syncedLyricsAvailable || lyricsSlot.currentDisplayedText === ""
+          || lyricsSlot.currentDisplayedText === "♪"
+
+        Canvas {
+          id: waveCanvas
+          anchors.fill: parent
+          antialiasing: true
+
+          property real phase: 0
+          readonly property real waveAmp: root.playing ? 1.0 : 0.15
+
+          Timer {
+            interval: 25
+            running: root.playing && lyricsSlot.visible && waveHolder.visible
+            repeat: true
+            onTriggered: {
+              waveCanvas.phase += 0.07
+              waveCanvas.requestPaint()
+            }
+          }
+
+          function topY(x, w, h) {
+            var baseLine = h - Style.space(2)
+            var taperRight = x > (w - Style.space(16)) ? Math.max(0, (w - x) / Style.space(16)) : 1.0
+            var waveH = (
+              Math.sin(x * 0.038 + waveCanvas.phase) * Style.space(4.5) +
+              Math.sin(x * 0.082 + waveCanvas.phase * 1.5) * Style.space(2.8) +
+              Math.sin(x * 0.016 - waveCanvas.phase * 0.7) * Style.space(2.0)
+            ) * waveAmp * taperRight
+            return Math.max(Style.space(2), baseLine - Style.space(3) - Math.max(-Style.space(1), waveH))
+          }
+
+          function waveFill(ctx, targetX, h, fillStyle) {
+            var base = h - Style.space(2)
+            var step = 4
+            ctx.beginPath()
+            ctx.moveTo(0, base)
+            ctx.lineTo(0, topY(0, targetX, h))
+            for (var x = step; x <= targetX; x += step) {
+              ctx.lineTo(x, topY(x, targetX, h))
+            }
+            ctx.lineTo(targetX, base)
+            ctx.closePath()
+            ctx.fillStyle = fillStyle
+            ctx.fill()
+          }
+
+          onPaint: {
+            var ctx = getContext("2d")
+            var w = width
+            var h = height
+            if (w <= 0 || h <= 0) return
+            ctx.clearRect(0, 0, w, h)
+
+            var col = Color.accent
+            var r = Math.round(col.r * 255)
+            var g = Math.round(col.g * 255)
+            var b = Math.round(col.b * 255)
+            var targetX = w - Style.space(2)
+
+            // Solid filled wave silhouette exactly matching screenshot
+            var waveStyle = "rgba(" + r + "," + g + "," + b + ", 0.70)"
+            waveFill(ctx, targetX, h, waveStyle)
+
+            // Crisp top crest line for sharpness
+            ctx.beginPath()
+            ctx.lineWidth = Style.space(1.5)
+            ctx.strokeStyle = "rgba(" + r + "," + g + "," + b + ", 0.95)"
+            ctx.lineCap = "round"
+            ctx.lineJoin = "round"
+            var step = 4
+            for (var x2 = 0; x2 <= targetX; x2 += step) {
+              var y2 = topY(x2, targetX, h)
+              if (x2 === 0) ctx.moveTo(x2, y2)
+              else ctx.lineTo(x2, y2)
+            }
+            ctx.stroke()
+          }
+        }
+      }
+
+      Text {
+        textFormat: Text.PlainText
+        id: lyricLabel
+        objectName: "barLyricText"
+        property real verticalOffset: 0
+        visible: root.syncedLyricsAvailable && lyricsSlot.currentDisplayedText !== ""
+          && lyricsSlot.currentDisplayedText !== "♪"
+        y: (parent.height - implicitHeight) / 2 + verticalOffset
+        width: implicitWidth
+        x: text === root.targetLyricText
+          ? -Math.max(0, width - lyricsSlot.width) * root.lyricScrollProgress : 0
+        text: lyricsSlot.currentDisplayedText
+        color: Color.accent
+        opacity: 1.0
+        font.family: root.fontFamily
+        font.pixelSize: Style.font.bodySmall
+        font.weight: Font.Medium
+        elide: Text.ElideNone
+      }
+
+
+      SequentialAnimation {
+        id: lyricTransition
+        ParallelAnimation {
+          NumberAnimation {
+            target: lyricLabel; property: "opacity"; to: 0; duration: 120; easing.type: Easing.InQuad
+          }
+          NumberAnimation {
+            target: lyricLabel; property: "verticalOffset"
+            to: -Style.space(6)
+            duration: 120; easing.type: Easing.InQuad
+          }
+        }
+        ScriptAction {
+          script: {
+            lyricsSlot.currentDisplayedText = lyricsSlot.pendingText
+            lyricLabel.verticalOffset = Style.space(6)
+          }
+        }
+        ParallelAnimation {
+          NumberAnimation {
+            target: lyricLabel; property: "opacity"
+            to: lyricsSlot.currentDisplayedText !== "" ? 1.0 : 0.4
+            duration: 220; easing.type: Easing.OutCubic
+          }
+          NumberAnimation {
+            target: lyricLabel; property: "verticalOffset"
+            to: 0
+            duration: 220; easing.type: Easing.OutCubic
+          }
+        }
+      }
     }
 
     Item {
@@ -357,6 +649,7 @@ Item {
 
       BarButton {
         id: volumeButton
+        objectName: "barMute"
         anchors.left: parent.left; anchors.verticalCenter: parent.verticalCenter
         bar: root.bar; foreground: root.foreground
         iconColor: volumeSlot.muted ? Color.accent : Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .7)
@@ -379,6 +672,7 @@ Item {
 
       Item {
         id: volumeTrackArea
+        objectName: "barVolumeTrack"
         anchors.left: volumeButton.right; anchors.leftMargin: Style.space(6)
         anchors.verticalCenter: parent.verticalCenter
         width: Style.space(64); height: parent.height
@@ -446,37 +740,159 @@ Item {
     }
   }
 
+  HoverHandler {
+    id: informationHover
+    blocking: false
+  }
   Rectangle {
-    visible: infoArea.containsMouse && infoArea.visible
-    x: infoArea.x; y: infoArea.y; width: infoArea.width; height: infoArea.height
+    objectName: "barInfoHover"
+    readonly property real startX: cover.visible ? cover.x
+      : (popupButton.visible ? popupButton.x
+        : (labelSlot.visible ? labelSlot.x
+          : (likeButton.visible ? likeButton.x
+            : (showTimeText.visible ? showTimeText.x : lyricsSlot.x))))
+    readonly property real endX: lyricsSlot.visible ? lyricsSlot.x + lyricsSlot.width
+      : (showTimeText.visible ? showTimeText.x + showTimeText.width
+        : (likeButton.visible ? likeButton.x + likeButton.width
+          : (labelSlot.visible ? labelSlot.x + labelSlot.width
+            : (cover.visible ? cover.x + cover.width : popupButton.x + popupButton.width))))
+    x: controls.x + startX - Style.space(4)
+    y: 0
+    width: Math.max(0, endX - startX) + Style.space(8)
+    height: root.height
+    visible: !root.signedOut && !root.errorState
+      && (cover.visible || popupButton.visible || labelSlot.visible || likeButton.visible
+        || showTimeText.visible || lyricsSlot.visible)
+      && informationHover.hovered
+      && informationHover.point.position.x >= x
+      && informationHover.point.position.x < x + width
     color: Style.hoverFillFor(root.foreground, Color.accent)
+  }
+  Rectangle {
+    objectName: "barCoverHover"
+    x: controls.x + cover.x - Style.space(4)
+    y: 0
+    width: cover.width + Style.space(8)
+    height: root.height
+    radius: Style.cornerRadius
+    visible: cover.visible
+    readonly property bool hovered: informationHover.hovered
+      && informationHover.point.position.x >= x
+      && informationHover.point.position.x < x + width
+    readonly property bool pressed: hovered
+      && (root.barMouseControls ? coverMouse.pressed : infoArea.pressed)
+    color: pressed ? Qt.rgba(Color.accent.r, Color.accent.g, Color.accent.b, .2)
+      : (hovered ? Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .08)
+        : "transparent")
+    Behavior on color {
+      enabled: !(root.barMouseControls ? coverMouse.pressed : infoArea.pressed)
+      ColorAnimation { duration: 120; easing.type: Easing.OutQuad }
+    }
   }
   MouseArea {
     id: infoArea
-    visible: (cover.visible || labelSlot.visible) && !root.signedOut && !root.errorState
-    x: controls.x + (cover.visible ? cover.x : labelSlot.x) - Style.space(4)
+    readonly property bool includesCover: cover.visible && !root.barMouseControls
+    visible: (includesCover || labelSlot.visible || showTimeText.visible || lyricsSlot.visible)
+      && !root.signedOut && !root.errorState
+    readonly property real startX: includesCover ? cover.x
+      : (labelSlot.visible ? labelSlot.x : (showTimeText.visible ? showTimeText.x : lyricsSlot.x))
+    x: controls.x + startX - Style.space(4)
     y: 0
-    width: (cover.visible && labelSlot.visible
-      ? labelSlot.x + labelSlot.width - cover.x
-      : (cover.visible ? cover.width : labelSlot.width)) + Style.space(8)
+    width: {
+      var endX = lyricsSlot.visible ? (lyricsSlot.x + lyricsSlot.width)
+        : (showTimeText.visible ? (showTimeText.x + showTimeText.width)
+          : (likeButton.visible ? (likeButton.x + likeButton.width)
+            : (labelSlot.visible ? (labelSlot.x + labelSlot.width) : (cover.x + cover.width))))
+      return Math.max(0, endX - startX) + Style.space(8)
+    }
     height: root.height
-    z: 10
     hoverEnabled: true
-    acceptedButtons: Qt.LeftButton | Qt.RightButton
+    acceptedButtons: Qt.LeftButton | Qt.RightButton | Qt.MiddleButton
     cursorShape: Qt.PointingHandCursor
     onClicked: function(mouse) {
       if (!root.logic) return
-      if (mouse.button === Qt.RightButton) {
-        if (root.hasTrack) root.logic.transport("togglePlayback")
-      } else root.logic.toggle()
+      if (root.barMouseControls) {
+        if (mouse.button === Qt.LeftButton) {
+          if (root.hasTrack) root.logic.transport("togglePlayback")
+        } else if (mouse.button === Qt.RightButton) {
+          if (root.hasTrack) { root.navigating(); root.logic.transport("nextTrack") }
+        } else if (mouse.button === Qt.MiddleButton) {
+          if (root.hasTrack) { root.navigating(); root.logic.transport("previousTrack") }
+        }
+      } else {
+        if (mouse.button === Qt.RightButton) {
+          if (root.hasTrack) root.logic.transport("togglePlayback")
+        } else {
+          root.logic.toggle()
+        }
+      }
     }
-    onWheel: function(wheel) {
+    function isOverLyrics(xPos) {
+      if (!lyricsSlot.visible || !root.syncedLyricsAvailable) return false
+      var lyricsStartX = controls.x + lyricsSlot.x
+      var currentX = infoArea.x + xPos
+      return currentX >= lyricsStartX
+    }
+
+    onWheel: function(wheel) { handleWheel(wheel, isOverLyrics(wheel.x)) }
+    function handleWheel(wheel, overLyrics) {
       if (!root.logic || wheel.angleDelta.y === 0) return
-      root.changeVolumeFromWheel(wheel.angleDelta.y)
       wheel.accepted = true
+      if (root.barMouseControls) {
+        if (!root.hasTrack) return
+        var pos = root.displayPosition
+        var dur = Number(root.logic.snapshot.duration || 0)
+
+        if (wheel.angleDelta.y > 0) {
+          // Scroll Up:
+          // If over synced lyrics -> seek to next lyric line
+          if (overLyrics && root.lyricsLines.length > 0) {
+            var nextTime = -1
+            for (var i = 0; i < root.lyricsLines.length; i++) {
+              var t = Number(root.lyricsLines[i].time || 0)
+              if (t > pos) { nextTime = t; break }
+            }
+            if (nextTime >= 0) {
+              root.logic.transport("seek", nextTime)
+              return
+            }
+          }
+          // Otherwise (over title, cover, or rest of bar) -> seek +5s
+          var targetForward = Math.min(dur > 0 ? dur : pos + 5, pos + 5)
+          root.logic.transport("seek", targetForward)
+        } else {
+          // Scroll Down:
+          // If over synced lyrics -> seek to previous lyric line
+          if (overLyrics && root.lyricsLines.length > 0) {
+            var prevTime = -1
+            for (var j = root.lyricsLines.length - 1; j >= 0; j--) {
+              var pt = Number(root.lyricsLines[j].time || 0)
+              if (pt < pos) { prevTime = pt; break }
+            }
+            if (prevTime >= 0) {
+              root.logic.transport("seek", prevTime)
+              return
+            }
+          }
+          // Otherwise (over title, cover, or rest of bar) -> seek -5s
+          var targetBack = Math.max(0, pos - 5)
+          root.logic.transport("seek", targetBack)
+        }
+      } else {
+        root.changeVolumeFromWheel(wheel.angleDelta.y)
+      }
     }
-    onEntered: if (root.bar) root.bar.showTooltip(root,
-      root.hasTrack ? "ЛКМ — плеер · ПКМ — пауза · колесо — громкость" : root.label)
+    onEntered: if (root.bar) {
+      if (root.barMouseControls && root.hasTrack) {
+        var tip = root.label
+        if (root.targetLyricText !== "") tip += "\n[Текст] " + root.targetLyricText
+        tip += "\nЛКМ: пауза · ПКМ: след. · СКМ: пред. · колесо: ±5 сек (над текстом: по строкам)"
+        root.bar.showTooltip(root, tip)
+      } else {
+        root.bar.showTooltip(root,
+          root.hasTrack ? "ЛКМ — плеер · ПКМ — пауза · колесо — громкость" : root.label)
+      }
+    }
     onExited: if (root.bar) root.bar.hideTooltip(root)
   }
 
@@ -511,16 +927,28 @@ Item {
   }
 
   Rectangle {
-    visible: root.hasTrack && root.showProgress && infoArea.visible
-    x: infoArea.x; width: infoArea.width
+    id: progressBarContainer
+    visible: root.hasTrack && root.showProgress
+    x: controls.x + (cover.visible ? cover.x : labelSlot.x)
     anchors.bottom: parent.bottom
-    height: Style.space(2); color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
+    width: {
+      var startX = cover.visible ? cover.x : labelSlot.x
+      var endX = separatorItem.visible
+        ? separatorItem.x
+        : (showTimeText.visible ? (showTimeText.x + showTimeText.width)
+          : (likeButton.visible ? (likeButton.x + likeButton.width) : (labelSlot.x + labelSlot.width)))
+      return Math.max(Style.space(40), endX - startX)
+    }
+    height: Style.space(2)
+    color: Qt.rgba(root.foreground.r, root.foreground.g, root.foreground.b, .15)
     opacity: root.dimmed ? .5 : 1
+
     Rectangle {
       width: parent.width * (root.logic
-        ? Math.min(1, Number(root.logic.snapshot.position || 0) / Math.max(1, Number(root.logic.snapshot.duration || 1)))
+        ? Math.min(1, root.displayPosition / Math.max(1, Number(root.logic.snapshot.duration || 1)))
         : 0)
-      height: parent.height; color: Color.accent
+      height: parent.height
+      color: Color.accent
     }
   }
 }

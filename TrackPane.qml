@@ -393,12 +393,14 @@ Item {
       visible: panel.lyricsOpen && !panel.lyricsLoading
         && (!panel.lyricsData.available || panel.lyricsLines.length === 0)
       anchors.centerIn: parent
-      width: parent.width - Style.space(32)
+      width: Math.max(0, parent.width - Style.space(32))
       spacing: Style.space(10)
       Text {
         textFormat: Text.PlainText
         width: parent.width
-        horizontalAlignment: Text.AlignHCenter; wrapMode: Text.WordWrap
+        horizontalAlignment: Text.AlignHCenter; wrapMode: Text.Wrap
+        maximumLineCount: 4
+        elide: Text.ElideRight
         text: String(panel.lyricsData.error || "") !== ""
           ? String(panel.lyricsData.error) : "Текст этой песни недоступен"
         color: String(panel.lyricsData.error || "") !== "" ? Color.urgent : root.dim

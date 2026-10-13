@@ -15,6 +15,7 @@ Item {
   property color dim: Qt.darker(foreground, 1.5)
   property string fontFamily: Style.font.family
   property int cellHeight: Style.space(30)
+  property int fontSize: Style.font.bodySmall
 
   signal changed(string value)
 
@@ -37,14 +38,36 @@ Item {
         color: selected ? Style.selectedFillFor(root.foreground, Color.accent)
           : (cellMouse.containsMouse ? Style.hoverFillFor(root.foreground, Color.accent) : "transparent")
         borderSpec: Border.controlSpec(selected ? "selected" : "normal", root.foreground, Color.accent)
-        Text {
+        Row {
           id: label
-          textFormat: Text.PlainText
           anchors.centerIn: parent
-          text: String(cell.modelData.label)
-          color: cell.selected ? root.foreground : root.dim
-          font.family: root.fontFamily; font.pixelSize: Style.font.bodySmall
-          font.bold: cell.selected
+          spacing: Style.space(7)
+          // Optional Lucide `icon` or cover `shape` swatch before the label.
+          LucideIcon {
+            visible: String(cell.modelData.icon || "") !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            name: String(cell.modelData.icon || "")
+            color: cell.selected ? Color.accent : root.dim
+            size: Style.space(13)
+          }
+          Rectangle {
+            readonly property string shape: String(cell.modelData.shape || "")
+            visible: shape !== ""
+            anchors.verticalCenter: parent.verticalCenter
+            width: Style.space(10); height: width
+            radius: shape === "circle" ? width / 2 : (shape === "rounded" ? Style.space(3) : 0)
+            color: "transparent"
+            border.width: Math.max(1, Style.space(1.5))
+            border.color: cell.selected ? root.foreground : root.dim
+          }
+          Text {
+            anchors.verticalCenter: parent.verticalCenter
+            textFormat: Text.PlainText
+            text: String(cell.modelData.label)
+            color: cell.selected ? root.foreground : root.dim
+            font.family: root.fontFamily; font.pixelSize: root.fontSize
+            font.bold: cell.selected
+          }
         }
         MouseArea {
           id: cellMouse

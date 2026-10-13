@@ -124,6 +124,84 @@ ShellRoot {
     clickText("Мне нравится", page)
     route(1, "collection")
   }
+  function lyricsErrors() {
+    clickText(mode === "wide" ? "ТЕКСТ" : "Текст")
+    until(function() { return p.lyricsOpen && !p.lyricsLoading && p.lyricsData.error !== "" },
+          "lyrics failure shown")
+    var message = text(p.lyricsData.error)
+    check(!!message && !!text("Повторить"), "readable error and retry are visible")
+    shot(mode === "wide" ? "LyricsErrorWide" : "LyricsErrorCompact")
+    var legacyError = "Не удалось загрузить текст: 503 Server Error for url: https://example.invalid/"
+      + "track_name=%D0%90".repeat(80)
+    p.lyricsData = Object.assign({}, p.lyricsData, { error: legacyError })
+    input.wait(120)
+    message = text(legacyError)
+    check(!!message && message.paintedWidth <= message.width + 1,
+          "unbroken legacy error wraps inside the message width")
+    var area = message.parent.parent
+    var position = message.mapToItem(area, 0, 0)
+    check(position.x >= 0 && position.y >= 0
+          && position.x + message.width <= area.width + 1
+          && position.y + message.height <= area.height + 1, "error stays inside lyrics area")
+    var retry = text("Повторить")
+    position = retry.mapToItem(area, 0, 0)
+    check(position.y >= 0 && position.y + retry.height <= area.height + 1,
+          "retry stays inside lyrics area")
+    click(retry, "retry lyrics after failure")
+    until(function() { return p.lyricsData.synced && p.lyricsData.error === ""
+          && p.lyricsLines[0].time === 10.47 }, "retry replaces error with timed lyrics")
+    clickText(mode === "wide" ? "ОЧЕРЕДЬ" : "Очередь")
+    check(!p.lyricsOpen, "queue restored after lyrics recovery")
+  }
+
+  function settingsTabs() {
+    var wide = mode === "wide"
+    p.openSettings()
+    until(function() { return p.settingsOpen && !!text("ВОСПРОИЗВЕДЕНИЕ") }, "settings open on Основные")
+    check(!!text("ВОССТАНАВЛИВАТЬ ПРИ ЗАПУСКЕ") && !!text("Выйти"), "general tab shows restore and account")
+    shot(wide ? "SettingsWideGeneral" : "SettingsCompactGeneral")
+    clickText("Верхний бар")
+    until(function() { return !!text("ПРЕДПРОСМОТР") || !!text("ЭЛЕМЕНТЫ") }, "tab opens Верхний бар")
+    check(!text("ВОСПРОИЗВЕДЕНИЕ"), "general content hidden on bar tab")
+    var likeLabel = wide ? "Кнопка «Нравится»" : "Нравится"
+    check(p.preference("showLike", false) === false, "like starts hidden")
+    clickText(likeLabel)
+    until(function() { return p.preference("showLike", false) === true && !p.settingsBusy }, "element toggles on")
+    clickText(likeLabel)
+    until(function() { return p.preference("showLike", false) === false && !p.settingsBusy }, "element toggles off")
+    var preview = named(wide ? "settingsBarPreview" : "settingsBarPreviewCompact")
+    check(onScreen(preview), "bar preview visible")
+    var prefix = wide ? "wide" : "compact"
+    var lyricsPlus = named(prefix + "LyricsWidthPlus")
+    var infoPlus = named(prefix + "InfoWidthPlus")
+    check(onScreen(lyricsPlus) && onScreen(infoPlus), "width steppers visible")
+    click(lyricsPlus, "disabled lyrics width plus")
+    input.wait(700)
+    check(p.preference("barLyricsWidth", 400) === 400, "lyrics width is locked while subtitles are off")
+    click(infoPlus, "info width plus")
+    click(infoPlus, "info width plus again")
+    check(named(prefix + "InfoWidthValue").text === "250", "stepper shows pending value at once")
+    until(function() { return p.preference("barInfoWidth", 0) === 250 && !p.settingsBusy },
+          "two rapid steps store +20 px")
+    clickText(wide ? "Субтитры" : "Субтитры")
+    until(function() { return p.preference("showBarLyrics", false) === true && !p.settingsBusy }, "subtitles on")
+    click(named(prefix + "LyricsWidthMinus"), "lyrics width minus")
+    until(function() { return p.preference("barLyricsWidth", 0) === 390 && !p.settingsBusy },
+          "lyrics stepper enabled with subtitles")
+    shot(wide ? "SettingsWideBar" : "SettingsCompactBar")
+    click(named(prefix + "LyricsWidthPlus"), "lyrics width restore")
+    click(named(prefix + "InfoWidthMinus"), "info width restore")
+    click(named(prefix + "InfoWidthMinus"), "info width restore again")
+    until(function() { return p.preference("barInfoWidth", 0) === 230
+      && p.preference("barLyricsWidth", 0) === 400 && !p.settingsBusy }, "widths restored")
+    clickText("Субтитры")
+    until(function() { return p.preference("showBarLyrics", true) === false && !p.settingsBusy }, "subtitles off")
+    clickText("Основные")
+    until(function() { return !!text("ВОСПРОИЗВЕДЕНИЕ") }, "tab returns to Основные")
+    key(Qt.Key_Escape)
+    until(function() { return !p.settingsOpen && p.opened }, "Escape closes settings first")
+  }
+
   function scenarios() {
     until(function() { return p && p.authenticated && card && p.queueDisplay.length === 50 && !p.busy }, "full Panel fake CLI ready")
     check(p.popupLayout === mode, "fixture chooses saved layout")
@@ -142,6 +220,8 @@ ShellRoot {
       return
     }
     var wide = mode === "wide"
+    settingsTabs()
+    lyricsErrors()
     var prefix = wide ? "X" : "Y"
     tab(1)
     route(1, "libraryHome")
@@ -342,6 +422,7 @@ ShellRoot {
     stdout: StdioCollector {}
     stderr: StdioCollector {}
   }
+  SessionController { id: startupSession }
   Window {
     visible: true; width: 1100; height: 700; color: "#0b0b10"
     Item { id: host; anchors.fill: parent }
@@ -359,6 +440,18 @@ ShellRoot {
         item.settings = ({})
         item.anchorItem = host
         item.hostWidget = host
+        item.session = startupSession
+        shell.check(!item.showAuth, "unknown initial session does not offer sign-in")
+        var savedSnapshot = startupSession.snapshot
+        startupSession.snapshot = ({ authenticated: true,
+          preferences: { popupLayout: shell.mode } })
+        shell.check(item.authenticated && !item.showAuth,
+          "known bar session reaches popup before first details response")
+        startupSession.snapshot = ({ authenticated: false, connecting: true })
+        shell.check(!item.showAuth, "session restoration does not offer sign-in")
+        startupSession.snapshot = ({ authenticated: false, connecting: false })
+        shell.check(item.showAuth, "confirmed signed-out session offers sign-in")
+        startupSession.snapshot = savedSnapshot
         item.session = Qt.binding(function() { return musicLoader.item })
         item.open()
       }

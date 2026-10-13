@@ -499,7 +499,7 @@ class CatalogTests(unittest.TestCase):
         player.stop = Mock()
         player._publish_mpris = Mock()
         player.playlists = []; player.artist_results = []; player.library_results = []
-        player.lyrics_cache = OrderedDict(); player.lyrics_loading = set(); player.lyrics_generation = 0
+        player.lyrics_cache = OrderedDict(); player.lyrics_loading = {}; player.lyrics_generation = 0
         player.track_info_cache = OrderedDict(); player.track_info_loading = set(); player.track_info_generation = 0
         player.library_source = []; player.library_offset = 0; player.library_generation = 0; player.library_revision = 0
         player.active_library_cache_key = ""; player.collection_cache = {}

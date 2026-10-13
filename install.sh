@@ -24,10 +24,10 @@ case "${1:-}" in
   ;;
 esac
 
-for command in python mpv systemctl jq flock sha256sum; do
+for command in python mpv curl systemctl jq flock sha256sum; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing dependency: $command" >&2
-    echo "On Omarchy, install missing packages with: omarchy pkg add python mpv jq util-linux coreutils" >&2
+    echo "On Omarchy, install missing packages with: omarchy pkg add python mpv curl jq util-linux coreutils" >&2
     exit 1
   fi
 done

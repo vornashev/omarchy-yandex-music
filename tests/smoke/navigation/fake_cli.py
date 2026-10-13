@@ -140,13 +140,22 @@ def execute(state, command, args):
         state["collection"] = {}
         bump(state, "collectionRevision")
     elif command == "setting":
-        state["preferences"][args[0]] = args[1]
+        value = args[1]
+        # Mirror backend coercion of boolean preferences.
+        state["preferences"][args[0]] = (value == "true" if value in ("true", "false")
+                                         else int(value) if value.isdigit() else value)
+    elif command in ("lyrics", "lyrics_refresh"):
+        recovered = command == "lyrics_refresh"
+        return {"trackId": state["trackId"], "loading": False, "available": recovered,
+                "synced": recovered, "format": "LRC" if recovered else "", "writers": [],
+                "lines": [{"time": 10.47, "text": "Synthetic lyric"}] if recovered else [],
+                "error": "" if recovered else "Сервис текстов временно недоступен. Попробуйте позже."}
     elif command.startswith("play_") or command in ("wave", "pause", "next", "previous", "stop"):
         bump(state, "testPlaybackCount")
         if command == "play_library_track":
             selected = state["libraryTracks"][int(args[0])]
             state.update(title=selected["title"], trackId=selected["trackId"], playing=True)
-    elif command not in ("network", "lyrics", "track_info"):
+    elif command not in ("network", "track_info"):
         raise ValueError(f"Unsupported synthetic CLI command: {command}")
     return copy.deepcopy(state)
 

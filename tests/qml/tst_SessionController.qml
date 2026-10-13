@@ -30,22 +30,26 @@ TestCase {
   }
   function cleanup() { session.destroy(); session = null }
 
-  function test_status_and_actions_are_single_flight() {
+  function test_status_is_single_flight_and_actions_drain_fifo() {
     verify(session.requestStatus())
     verify(!session.requestStatus())
     compare(statusSpy.count, 1)
-    verify(session.action("play_station", ["station:1", "Title"]))
-    verify(!session.action("next"))
-    compare(session.lastCommand, "play_station")
-    compare(session.lastArgument[1], "Title")
+    verify(session.transport("togglePlayback"))
+    verify(session.transport("nextTrack"))
+    verify(session.transport("previousTrack"))
+    verify(session.transport("toggleLike"))
     compare(actionSpy.count, 1)
-    compare(actionSpy.signalArguments[0][0], "play_station")
-    compare(actionSpy.signalArguments[0][1][0], "station:1")
     session.completeStatus(0, '{"title":"Track","playing":true}')
     compare(session.snapshot.title, "Track")
-    session.completeAction(0, "", "")
-    compare(actionDoneSpy.count, 1)
-    verify(session.action("next"))
+    var expected = ["pause", "next", "previous", "like"]
+    for (var i = 0; i < expected.length; i++) {
+      compare(actionSpy.count, i + 1, "only one command starts per completion")
+      compare(actionSpy.signalArguments[i][0], expected[i])
+      session.completeAction(0, "", "")
+    }
+    compare(actionDoneSpy.count, 4)
+    compare(actionSpy.count, 4)
+    compare(session.actionRunning, false)
   }
 
   function test_action_and_bootstrap_completion_settle_status() {
@@ -111,50 +115,143 @@ TestCase {
     compare(actionSpy.signalArguments[1][1], "artist-new")
   }
 
-  function test_action_revision_changes_only_for_started_commands() {
-    compare(session.actionRevision, 0)
-    verify(session.action("pause"))
-    compare(session.actionRevision, 1)
-    verify(!session.action("next"))
-    compare(session.actionRevision, 1)
+  function test_seeks_coalesce_without_reordering_discrete_actions() {
+    session.transport("togglePlayback")
+    session.transport("seek", 10.125)
+    session.transport("seek", 15.375)
+    session.transport("toggleLike")
+    session.transport("seek", 20.625)
+    session.transport("seek", 25.875)
+    compare(actionSpy.count, 1)
     session.completeAction(0, "", "")
-    verify(session.action("next"))
-    compare(session.actionRevision, 2)
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "seek")
+    compare(actionSpy.signalArguments[1][1], 15.375)
+    session.completeAction(0, "", "")
+    compare(actionSpy.signalArguments[2][0], "like")
+    session.completeAction(0, "", "")
+    compare(actionSpy.signalArguments[3][0], "seek")
+    compare(actionSpy.signalArguments[3][1], 25.875)
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 4)
+    compare(session.actionRunning, false)
   }
 
-  function test_transport_intents_emit_existing_commands_and_preserve_arguments() {
-    var cases = [
-      ["togglePlayback", undefined, "pause", undefined],
-      ["nextTrack", undefined, "next", undefined],
-      ["previousTrack", undefined, "previous", undefined],
-      ["toggleMute", undefined, "mute", undefined],
-      ["toggleLike", undefined, "like", undefined],
-      ["dislikeTrack", undefined, "dislike", undefined],
-      ["playQueueTrack", 0, "play_queue", 0],
-      ["playLibraryTrack", 4, "play_library_track", 4],
-      ["playLibraryHubTrack", 7, "play_library_hub_track", 7],
-      ["playCatalogTrack", ["entity", 2], "play_catalog_track", ["entity", 2]]
+  function test_invalid_intents_neither_start_nor_enter_busy_queue() {
+    var invalid = [
+      ["unrecognized", undefined], ["toggleLike", 1],
+      ["playQueueTrack", -1], ["playQueueTrack", true],
+      ["playQueueTrack", " "], ["playQueueTrack", 1.25],
+      ["playCatalogTrack", ["invalid", 0]],
+      ["seek", -0.25], ["seek", NaN], ["seek", Infinity],
+      ["seek", "1.25"], ["seek", null], ["seek", undefined]
     ]
-    for (var i = 0; i < cases.length; i++) {
-      verify(session.transport(cases[i][0], cases[i][1]), cases[i][0])
-      compare(actionSpy.signalArguments[i][0], cases[i][2])
-      compare(JSON.stringify(actionSpy.signalArguments[i][1]), JSON.stringify(cases[i][3]))
+    for (var busy = 0; busy < 2; busy++) {
+      if (busy) verify(session.transport("togglePlayback"))
+      for (var i = 0; i < invalid.length; i++)
+        verify(!session.transport(invalid[i][0], invalid[i][1]))
+      compare(actionSpy.count, busy)
+    }
+    verify(session.transport("seek", 0))
+    verify(session.transport("seek", 0.125))
+    compare(actionSpy.count, 1)
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "seek")
+    compare(actionSpy.signalArguments[1][1], 0.125)
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 2)
+    compare(session.actionRunning, false)
+  }
+
+  function test_rapid_seeks_accumulate_until_a_post_command_status() {
+    session.snapshot = { trackId: "a", position: 10.125, positionObservedAt: 1 }
+    session.requestStatus()
+    for (var i = 0; i < 4; i++)
+      session.transport("seek", session.snapshot.position + 5)
+    compare(session.snapshot.position, 30.125)
+    compare(session.snapshot.positionObservedAt, 0)
+    compare(actionSpy.count, 1)
+    session.completeStatus(0, '{"trackId":"a","position":11,"positionObservedAt":2}')
+    compare(session.snapshot.position, 30.125)
+    session.completeAction(0, "", "")
+    compare(actionSpy.signalArguments[1][1], 30.125)
+    session.requestStatus()
+    session.completeAction(0, "", "")
+    session.completeStatus(0, '{"trackId":"a","position":15.125}')
+    compare(session.snapshot.position, 30.125, "in-flight status cannot undo latest seek")
+    session.requestStatus()
+    session.completeStatus(0, '{"trackId":"a","position":30.25,"positionObservedAt":3}')
+    compare(session.snapshot.position, 30.25)
+    compare(session.snapshot.positionObservedAt, 3)
+    session.transport("seek", session.snapshot.position + 5)
+    compare(actionSpy.signalArguments[2][1], 35.25)
+  }
+
+  function test_track_change_drops_old_track_seeks_but_keeps_fifo_actions() {
+    session.snapshot = { trackId: "a", position: 10 }
+    session.transport("toggleLike")
+    session.transport("seek", 15)
+    session.transport("toggleMute")
+    session.snapshot = { trackId: "b", position: 1 }
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "mute")
+    session.transport("seek", session.snapshot.position + 5)
+    session.completeAction(0, "", "")
+    compare(actionSpy.signalArguments[2][1], 6)
+  }
+
+  function test_navigation_does_not_seek_new_track_using_old_track_position() {
+    session.snapshot = { trackId: "a", position: 80 }
+    session.transport("nextTrack")
+    session.transport("seek", 85)
+    session.transport("toggleLike")
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "like")
+    compare(session.snapshot.position, 80)
+  }
+
+  function test_failures_reset_pending_position_and_drop_queued_seeks_data() {
+    return [
+      { tag: "command", failure: "command" },
+      { tag: "status", failure: "status" },
+      { tag: "malformed-status", failure: "malformed" }
+    ]
+  }
+  function test_failures_reset_pending_position_and_drop_queued_seeks(data) {
+    session.snapshot = { trackId: "a", position: 4.25 }
+    session.transport("seek", 9.25)
+    session.transport("seek", 14.25)
+    session.transport("toggleLike")
+    if (data.failure === "command") session.completeAction(1, "", "Seek failed")
+    else {
+      session.requestStatus()
+      session.completeStatus(data.failure === "status" ? 1 : 0, "not json")
       session.completeAction(0, "", "")
     }
-    compare(actionSpy.count, cases.length)
+    compare(session.snapshot.position, 4.25)
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "like")
+    session.transport("seek", session.snapshot.position + 5)
+    session.completeAction(0, "", "")
+    compare(actionSpy.signalArguments[2][1], 9.25)
   }
 
-  function test_transport_rejects_unknown_and_invalid_without_taking_action_slot() {
-    verify(!session.transport("unrecognized"))
-    verify(!session.transport("playQueueTrack", -1))
-    verify(!session.transport("playQueueTrack", true))
-    verify(!session.transport("playQueueTrack", " "))
-    verify(!session.transport("playCatalogTrack", ["invalid", 0]))
-    compare(actionSpy.count, 0)
-    compare(session.actionRevision, 0)
-    verify(session.transport("togglePlayback"))
-    verify(!session.transport("nextTrack"))
-    compare(actionSpy.count, 1)
-    compare(session.actionRevision, 1)
+  function test_completion_consumer_cannot_overtake_queued_actions() {
+    var enqueue = function() { session.transport("toggleMute") }
+    session.transport("togglePlayback")
+    session.transport("toggleLike")
+    session.actionFinished.connect(enqueue)
+    session.completeAction(0, "", "")
+    session.actionFinished.disconnect(enqueue)
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "like")
+    session.completeAction(0, "", "")
+    compare(actionSpy.count, 3)
+    compare(actionSpy.signalArguments[2][0], "mute")
+    session.completeAction(0, "", "")
+    compare(session.actionRunning, false)
   }
 }

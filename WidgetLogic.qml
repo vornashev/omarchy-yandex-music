@@ -23,7 +23,7 @@ Item {
     if (!target) return
     target.bar = root.bar
     target.settings = root.settings
-    target.anchorItem = root.anchorItem
+    target.anchorItem = (root.anchorItem && root.anchorItem.coverItem) ? root.anchorItem.coverItem : root.anchorItem
     target.hostWidget = root.hostWidget
     target.session = session
   }

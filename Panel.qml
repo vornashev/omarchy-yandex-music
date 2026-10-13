@@ -50,13 +50,14 @@ Panel {
   property bool authDone: false
   property bool authFlowActive: false
   property string lastAuthCode: ""
-  readonly property bool showAuth: !authenticated || authDone
+  readonly property bool showAuth: authDone
+    || (data.authenticated === false && data.connecting !== true)
   readonly property bool settingsBusy: settingsProcess.running
   readonly property bool lyricsRefreshing: lyricsProcess.running
   readonly property bool trackInfoRefreshing: trackInfoProcess.running
   property string copiedAuthCode: ""
   readonly property string cli: Quickshell.env("HOME") + "/.local/bin/omarchy-yandex-music"
-  property var data: ({ authenticated: false, playlists: [], searchResults: [] })
+  property var data: ({ playlists: [], searchResults: [] })
   property var catalogDisplay: ({ view: "search", revision: 0,
     search: { fieldText: "", query: "", filter: "all", loading: false,
       loadingMore: false, error: "", sections: {
@@ -1025,6 +1026,13 @@ Panel {
     }
   }
 
+  // The bar already polls while the popup is closed. Reuse that snapshot
+  // until details arrive; unknown/restoring is not a signed-out session.
+  function seedSessionStatus() {
+    if (!hasLoadedStatus && session) data = session.snapshot
+  }
+  onSessionChanged: seedSessionStatus()
+
   Process {
     id: statusProcess; command: []
     stdout: StdioCollector { id: statusOut; waitForEnd: true }
@@ -1096,6 +1104,7 @@ Panel {
   }
   Connections {
     target: root.session
+    function onSnapshotChanged() { root.seedSessionStatus() }
     function onActionFinished(exitCode, stdoutText, stderrText) {
       if (!root.opened) return
       if (exitCode !== 0) {
@@ -1197,9 +1206,19 @@ Panel {
   }
 
 
+  Item {
+    id: leftAlignedAnchor
+    parent: (root.anchorItem && root.anchorItem.coverItem) ? root.anchorItem.coverItem : (root.anchorItem || root)
+    x: 0
+    y: 0
+    width: panel.contentWidth
+    height: parent ? parent.height : 0
+    visible: false
+  }
+
   KeyboardPanel {
     id: panel
-    anchorItem: root.anchorItem
+    anchorItem: leftAlignedAnchor
     owner: root.hostWidget || root
     bar: root.bar
     open: root.opened
@@ -1293,6 +1312,16 @@ Panel {
           panel: root
           anchors.fill: parent
           z: 150
+        }
+
+        Text {
+          visible: !root.authenticated && !root.showAuth
+          anchors.centerIn: parent
+          text: root.data.connecting === true
+            ? "Подключаемся к Яндекс Музыке…" : "Проверяем состояние сервиса…"
+          color: root.dim
+          font.family: root.fontFamily
+          font.pixelSize: Style.font.caption
         }
 
         // ── wide ──────────────────────────────────────────────────────────

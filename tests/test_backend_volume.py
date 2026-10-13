@@ -99,6 +99,33 @@ class VolumePreferenceTests(unittest.TestCase):
                     player.set_preference("popupLayout", "huge")
                 self.assertEqual(player.preferences["popupLayout"], "compact")
 
+    def test_bar_widths_migrate_from_modes_and_step_by_ten_pixels(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            preferences_file = Path(temporary) / "preferences.json"
+            preferences_file.write_text(json.dumps({"barWidth": "wide", "lyricsWidthMode": "compact"}))
+            with patch.object(backend, "PREFERENCES_FILE", preferences_file):
+                player = backend.Player.__new__(backend.Player)
+                player.lock = threading.RLock()
+                player.preferences = player._load_preferences()
+                player.state = {}
+
+                self.assertEqual(player.preferences["barInfoWidth"], 310)
+                self.assertEqual(player.preferences["barLyricsWidth"], 240)
+                player.set_preference("barInfoWidth", "264")
+                self.assertEqual(player.state["preferences"]["barInfoWidth"], 260)
+                player.set_preference("barLyricsWidth", "5000")
+                player.set_preference("barInfoWidth", "-40")
+                saved = player._load_preferences()
+                self.assertEqual((saved["barInfoWidth"], saved["barLyricsWidth"]), (100, 1200))
+                for value in ("wide", "nan", "inf"):
+                    with self.subTest(value=value), self.assertRaises(ValueError):
+                        player.set_preference("barLyricsWidth", value)
+                self.assertEqual(player.preferences["barLyricsWidth"], 1200)
+
+                preferences_file.write_text(json.dumps({"barInfoWidth": "oops", "barLyricsWidth": 433}))
+                saved = player._load_preferences()
+                self.assertEqual((saved["barInfoWidth"], saved["barLyricsWidth"]), (230, 430))
+
 
 if __name__ == "__main__":
     unittest.main()

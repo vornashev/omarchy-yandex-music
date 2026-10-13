@@ -18,7 +18,7 @@ BarWidget {
     if (!logic) return
     logic.bar = root.bar
     logic.settings = root.settings
-    logic.anchorItem = playerLoader.item
+    logic.anchorItem = playerLoader.item && playerLoader.item.coverItem ? playerLoader.item.coverItem : playerLoader.item
     logic.hostWidget = root
   }
   function open() { if (logic) logic.open() }
