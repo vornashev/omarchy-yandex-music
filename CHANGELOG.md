@@ -6,9 +6,12 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+## [0.12.0] - 2026-10-13
+
 ### Fixed
 
 - Enable TLS certificate and hostname verification for HTTPS audio in the background mpv player. Ignore user mpv configuration so profiles cannot disable verification.
+- Restore My Wave, track radio and catalog stations through the Rotor Sessions API, including radio feedback, queue continuation and session restoration.
 - Preserve the bar's like, mute and volume hit areas with optional lyrics and hidden track labels. Accumulate rapid wheel seeks, retain fractional LRC timestamps, and discard queued seeks for an old track. Keep lyrics vertically centered after first-load font layout and line transitions.
 - Keep automatic lyric loading opt-in, surface transient errors with a local retry, and avoid persisting failed or missing lyrics. Bound streamed LRCLIB responses, disk reads, the eight-track memory LRU and the 128-file private disk cache; clear disk lyrics on logout.
 - Show readable lyric-loading errors for service outages, timeouts and connection failures without exposing request URLs or upstream response details. Wrap and bound the error message in Wide and Compact so the retry button remains accessible.
@@ -28,6 +31,7 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ### Changed
 
+- Upgrade the hash-pinned, vendored Yandex Music SDK to 3.2.2 and verify its payload against the pinned upstream source.
 - Redesign Settings into **General** and **Top bar** tabs. Top bar starts with a clickable live preview of the bar player: click any element to hide or show it, and hovering an element highlights it in both the preview and the list. Bar elements follow their left-to-right order, every option is an inline segmented control, and restore-on-start options are toggle tiles. Compact uses the same tabs with a three-column element grid.
 - Set the track-information and subtitle widths separately in pixels with **−/+** steppers (10 px per click; hold or scroll to repeat). Existing width modes migrate to their pixel values. The track-information width now also applies while subtitles are shown, and the subtitle width control is disabled while subtitles are off.
 
@@ -344,7 +348,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
-[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.1...HEAD
+[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.12.0...HEAD
+[0.12.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...v0.11.0
 [0.10.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.9.0...v0.10.0

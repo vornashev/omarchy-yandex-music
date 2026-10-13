@@ -38,10 +38,10 @@ python3 -B vendor/verify_wheel.py
 
 ```bash
 curl --fail --location --proto '=https' --proto-redir '=https' \
-  'https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/0fa54f2d32084a9e461bce41890d1c9ab70d91aa' \
-  --output /tmp/yandex-music-api-0fa54f2d32084a9e461bce41890d1c9ab70d91aa.tar.gz
+  'https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/9ca132e5c18a72aab779c1fc68c169380a9357d0' \
+  --output /tmp/yandex-music-api-9ca132e5c18a72aab779c1fc68c169380a9357d0.tar.gz
 python3 -B vendor/verify_wheel.py \
-  --source-archive /tmp/yandex-music-api-0fa54f2d32084a9e461bce41890d1c9ab70d91aa.tar.gz
+  --source-archive /tmp/yandex-music-api-9ca132e5c18a72aab779c1fc68c169380a9357d0.tar.gz
 ```
 
 Только явная команда `curl` записывает архив, вне репозитория.
@@ -59,14 +59,14 @@ python3 -B vendor/verify_wheel.py \
 - Точные закреплённые SHA-256 wheel и архива исходников.
 - Дубликаты и небезопасные пути, зашифрованные ZIP-записи и нестандартные типы
   файлов в архивах, включая ссылки; каталоги в архиве исходников разрешены.
-- Полное совпадение набора путей и байтов **526 файлов**: **308** в
-  `yandex_music/` и **218** в `tests/`, а также upstream-лицензии.
-- Ровно пять объяснённых файлов упаковки: `licenses/LICENSE`, `METADATA`,
-  `WHEEL`, `top_level.txt` и `RECORD`, все в ожидаемом каталоге `.dist-info`.
+- Полное совпадение набора путей и байтов **341 файла** в
+  `yandex_music/`, а также upstream-лицензии.
+- Ровно четыре объяснённых файла упаковки: `licenses/LICENSE`, `METADATA`,
+  `WHEEL` и `RECORD`, все в ожидаемом каталоге `.dist-info`.
   Иные файлы, entry points, `.pth` hooks, байткод, нативные библиотеки и скрипты
   не допускаются.
-- `RECORD` покрывает все **531** файл wheel ровно по одному разу; **530** хешей
-  SHA-256 и размеров совпадают, а собственная строка `RECORD` содержит требуемые
+- `RECORD` покрывает все **345** файлов wheel ровно по одному разу; **344** хеша
+  SHA-256 и размера совпадают, а собственная строка `RECORD` содержит требуемые
   пустые поля хеша и размера.
 - Заявленные имя, версия, файл лицензии, статус purelib, wheel tag, генератор
   и пакеты верхнего уровня.

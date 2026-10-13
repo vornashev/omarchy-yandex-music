@@ -39,10 +39,10 @@ For offline verification, obtain the exact archive beforehand:
 
 ```bash
 curl --fail --location --proto '=https' --proto-redir '=https' \
-  'https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/0fa54f2d32084a9e461bce41890d1c9ab70d91aa' \
-  --output /tmp/yandex-music-api-0fa54f2d32084a9e461bce41890d1c9ab70d91aa.tar.gz
+  'https://codeload.github.com/MarshalX/yandex-music-api/tar.gz/9ca132e5c18a72aab779c1fc68c169380a9357d0' \
+  --output /tmp/yandex-music-api-9ca132e5c18a72aab779c1fc68c169380a9357d0.tar.gz
 python3 -B vendor/verify_wheel.py \
-  --source-archive /tmp/yandex-music-api-0fa54f2d32084a9e461bce41890d1c9ab70d91aa.tar.gz
+  --source-archive /tmp/yandex-music-api-9ca132e5c18a72aab779c1fc68c169380a9357d0.tar.gz
 ```
 
 Only the explicit `curl` command writes an archive, outside the repository.
@@ -59,13 +59,13 @@ hashes and concrete counts. For this artifact it checks:
 - Exact wheel and source archive SHA-256 pins.
 - Duplicate and unsafe paths, encrypted ZIP entries, and non-regular archive
   members (including links); source directories are permitted.
-- Complete path-set and byte correspondence of **526 files**: **308** under
-  `yandex_music/` and **218** under `tests/`, plus the upstream license.
-- Exactly five explained packaging files: `licenses/LICENSE`, `METADATA`,
-  `WHEEL`, `top_level.txt` and `RECORD`, all under the expected `.dist-info`
+- Complete path-set and byte correspondence of **341 files** under
+  `yandex_music/`, plus the upstream license.
+- Exactly four explained packaging files: `licenses/LICENSE`, `METADATA`,
+  `WHEEL` and `RECORD`, all under the expected `.dist-info`
   directory. No other payload, entry-point files, `.pth` hooks, bytecode,
   native libraries or scripts are allowed.
-- `RECORD` covers all **531** wheel members exactly once; **530** SHA-256
+- `RECORD` covers all **345** wheel members exactly once; **344** SHA-256
   hashes and sizes match, and its own row has the required empty hash/size.
 - Declared name/version/license file, purelib status, wheel tag, generator and
   top-level packages.
