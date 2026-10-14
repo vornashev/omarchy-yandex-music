@@ -21,7 +21,7 @@ The first launch sets up the Python environment and background service automatic
 <details>
 <summary>System requirements</summary>
 
-Internet access, Python 3 (`python`), `mpv`, `jq`, `util-linux` (`flock`) and `coreutils` (`sha256sum`).
+Internet access, Python 3 (`python`), `mpv`, `curl`, `wl-clipboard` (`wl-paste`), `jq`, `util-linux` (`flock`) and `coreutils` (`sha256sum`).
 
 </details>
 
@@ -121,6 +121,8 @@ LRCLIB uses a **3-second timeout per HTTP request** and at most **two retries, a
 | `C` | Copy the sign-in code |
 
 Player shortcuts work while the popup is open, outside text fields and settings. Letter shortcuts also work with the Russian keyboard layout; hardware media keys work through MPRIS.
+
+Text fields support Ctrl+V, Shift+Insert, middle-click primary selection and a context menu. Clipboard reads run outside the shell with a **16 KiB** total byte limit and a **1-second** transfer deadline. Oversized, stalled or invalid UTF-8 transfers are rejected without changing the field.
 
 ## Reference
 

@@ -6,6 +6,14 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+
+- Replace native clipboard intake in catalog search, station filtering and playlist creation with an asynchronous, byte- and deadline-bounded Wayland reader. Clipboard changes never request text payloads; keyboard, primary-selection and context-menu paste share the same limits. Failed or stale transfers leave the field unchanged.
+
+### Added
+
+- English/Russian executable-payload review notes for the exact vendored SDK 3.2.2, separating whole-package AST inventory and targeted source inspection from source correspondence, residual risks and marketplace approval.
+
 ## [0.12.0] - 2026-10-13
 
 ### Fixed

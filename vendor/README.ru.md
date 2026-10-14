@@ -80,6 +80,78 @@ Git-коммита, не полный аудит исходников или б�
 метаданные упаковки проверяются описанным способом, но не создаются заново
 независимой сборкой. Другие зависимости и поведение приложения не входят в проверку.
 
+## Ревью исполняемого содержимого — 2026-10-14
+
+Ревью относится к **3.2.2 и точным хешам выше**, не к старому wheel
+3.1.0b2 из первоначального запроса Marketplace. Это материалы source review
+для maintainer, **не одобрение Marketplace и не аудит безопасности**.
+
+Покрытие и метод:
+
+- Все **340 Python-файлов** разобраны AST-парсером стандартной библиотеки:
+  инвентаризированы импорты, module-level statements, декораторы и **2539 мест
+  вызова**, рассмотрены границы динамического исполнения, сети, десериализации,
+  файловых операций и логирования. Оставшийся файл пакета — `py.typed`.
+  Инструменты ревью не импортировали, не устанавливали и не исполняли зависимость.
+- Вручную рассмотрены общие sync/async request layers, Device OAuth,
+  построение моделей/разрешение типов, обработка JSON/XML, download/file helpers
+  и необязательный Ynison transport; прослежены вызовы синхронных
+  `Client`/`SessionRequest` и Device OAuth из плагина. Семейства endpoint/model
+  инвентаризированы структурно, корректность каждого отдельно не доказана.
+- Два дополнительных раздельных **AI-assisted статических source-review
+  прохода** рассмотрели executable bodies/imports/decorators/aliases всех
+  **57 Python-модулей ядра/client/Device OAuth** и восемь вспомогательных
+  utility-модулей, а отдельно — transport, direct-link XML, получение текстов,
+  model/file helpers и необязательные Ynison paths. Они подтвердили указанные
+  ниже остаточные риски; дополнительных подтверждённых блокеров в этих
+  границах не установлено. Повторяющаяся документация endpoint и части крупных
+  model/Ynison state modules не прочитаны исчерпывающе. Это не внешние human audits.
+- В инвентаре не найдены прямые `eval`/`exec`, shell/subprocess execution,
+  pickle loading, installer hooks или import-time network/download calls.
+  `base.py` разрешает **заданные пакетом** аннотации типов через `get_type_hints`;
+  это не исполнение строки исходного кода из API.
+- API по умолчанию использует `https://api.music.yandex.net`, Device OAuth —
+  `https://oauth.yandex.ru`; media URLs приходят из API/CDN. Request layers
+  сохраняют стандартную проверку сертификатов HTTP-библиотек.
+  API-методы добавляют OAuth headers; raw `retrieve()` не добавляет эти
+  API-заголовки автоматически. File helpers записывают **заданный вызывающим
+  кодом filename**; плагин не вызывает SDK media file-writing helpers,
+  `ClientAsync` и Ynison. При этом он **использует** SDK
+  [`DownloadInfo.get_direct_link()`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/download_info.py#L58-L88)
+  (получение/разбор XML) и
+  [`TrackLyrics.fetch_lyrics()`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/track/track_lyrics.py#L36-L43)
+  (получение текста). Эти используемые пути разделяют описанные ниже HTTP-риски.
+
+Остаточные риски, **не исправленные и не снятые этим ревью**:
+
+1. **Ресурсные пределы ответов (условный medium).** SDK transports собирают
+   ответы целиком перед разбором:
+   [`utils/request.py:46–82`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/utils/request.py#L46-L82)
+   и [`utils/request_async.py:68–106`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/utils/request_async.py#L68-L106).
+   `backend/backend.py::SessionRequest._request_wrapper` плагина также возвращает
+   `resp.content` без byte cap. Синхронный HTTP timeout ограничивает ожидание
+   очередной порции, а не всё время передачи; slow-drip ответ может надолго
+   занять сериализованный API worker. Async SDK, напротив, задаёт
+   `aiohttp.ClientTimeout(total=...)`, но также не ограничивает размер ответа.
+   Злонамеренный/скомпрометированный доверенный API/CDN может исчерпать память
+   или занять worker. Контроль такого ответа обычным атакующим **не доказан**;
+   новые clipboard limits не защищают эту отдельную сетевую границу.
+   Разбор XML/JSON наследует этот ресурсный риск.
+2. **Секреты при явно включённом DEBUG (условный low).**
+   [`_client/__init__.py:12–25`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/_client/__init__.py#L12-L25)
+   логирует результаты методов, в том числе декорированных Device OAuth;
+   async-декоратор делает то же самое. `OAuthToken` наследует строковое
+   представление полного словаря модели с access/refresh tokens.
+   Плагин не включает DEBUG logging. **Не включать SDK DEBUG logging
+   и не публиковать неочищенные журналы во время авторизации.**
+
+Это ограниченное статическое ревью, не исчерпывающая построчная проверка,
+не fuzzing, не подтверждение воспроизводимой сборки и не ревью транзитивных
+зависимостей. Сетевые адреса/redirects и получаемое содержимое по-прежнему
+требуют доверия к upstream/CDN. До одобрения maintainer Marketplace должен
+оценить находки и проверить **новый точный коммит приложения**; одного
+побайтового соответствия недостаточно для закрытия dependency review.
+
 ## Обновление закреплённой версии
 
 При обновлении upstream соберите и проверьте новый wheel и его исходники,

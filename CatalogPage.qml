@@ -408,7 +408,7 @@ Item {
       anchors.leftMargin: root.pad; anchors.rightMargin: root.pad
       anchors.top: parent.top; anchors.topMargin: Style.space(root.wide ? 24 : 12)
       height: Style.space(40)
-      TextField {
+      BoundedTextField {
         id: searchField
         anchors.fill: parent
         leftPadding: Style.space(38)

@@ -24,10 +24,10 @@ case "${1:-}" in
   ;;
 esac
 
-for command in python mpv curl systemctl jq flock sha256sum; do
+for command in python mpv curl wl-paste systemctl jq flock sha256sum; do
   if ! command -v "$command" >/dev/null; then
     echo "Missing dependency: $command" >&2
-    echo "On Omarchy, install missing packages with: omarchy pkg add python mpv curl jq util-linux coreutils" >&2
+    echo "On Omarchy, install missing packages with: omarchy pkg add python mpv curl wl-clipboard jq util-linux coreutils" >&2
     exit 1
   fi
 done
@@ -55,6 +55,7 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
     "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
     "$ROOT/VolumeControl.qml" \
+    "$ROOT/BoundedTextField.qml" \
     "$ROOT/MusicSession.qml" "$ROOT/SessionController.qml" "$ROOT/DetailsReconciler.js" \
     "$ROOT/TransportIntents.js" "$ROOT/ActionIntents.js" \
     "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/CatalogPage.qml" \
@@ -74,6 +75,7 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   install -m 755 "$ROOT/backend/backend.py" "$PLUGIN_DIR/backend/backend.py"
   install -m 644 "$ROOT/backend/audio_cache.py" "$PLUGIN_DIR/backend/audio_cache.py"
   install -m 755 "$ROOT/bin/omarchy-yandex-music" "$PLUGIN_DIR/bin/omarchy-yandex-music"
+  install -m 755 "$ROOT/bin/read-clipboard.py" "$PLUGIN_DIR/bin/read-clipboard.py"
   install -m 644 "$ROOT/systemd/omarchy-yandex-music.service" \
     "$PLUGIN_DIR/systemd/omarchy-yandex-music.service"
 fi

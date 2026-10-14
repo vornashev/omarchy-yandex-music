@@ -21,7 +21,7 @@ omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enabl
 <details>
 <summary>Системные требования</summary>
 
-Интернет, Python 3 (`python`), `mpv`, `jq`, `util-linux` (`flock`) и `coreutils` (`sha256sum`).
+Интернет, Python 3 (`python`), `mpv`, `curl`, `wl-clipboard` (`wl-paste`), `jq`, `util-linux` (`flock`) и `coreutils` (`sha256sum`).
 
 </details>
 
@@ -121,6 +121,8 @@ omarchy plugin add https://github.com/vornashev/omarchy-yandex-music.git --enabl
 | `C` | Скопировать код входа |
 
 Команды плеера работают при открытом попапе вне текстовых полей и настроек. Буквенные клавиши работают и в русской раскладке; аппаратные медиаклавиши — через MPRIS.
+
+В текстовых полях работают Ctrl+V, Shift+Insert, вставка primary selection средней кнопкой и контекстное меню. Буфер читается вне Shell с общим пределом **16 КиБ** и лимитом времени передачи **1 секунда**. Слишком большой, зависший или некорректный UTF-8 буфер отклоняется без изменения поля.
 
 ## Справка
 

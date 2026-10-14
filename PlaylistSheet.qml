@@ -268,7 +268,7 @@ Rectangle {
       Text { textFormat: Text.PlainText; text: "НОВЫЙ ПРИВАТНЫЙ ПЛЕЙЛИСТ"; color: root.dim; font.family: root.fontFamily; font.pixelSize: Style.space(9); font.letterSpacing: .6 }
       Row {
         width: parent.width; spacing: Style.space(8)
-        TextField {
+        BoundedTextField {
           id: titleField
           width: parent.width - createButton.width - parent.spacing; height: Style.space(34)
           placeholderText: "Название плейлиста"; foreground: root.foreground; font.family: root.fontFamily

@@ -78,6 +78,78 @@ proof that upstream is safe, or a byte-reproducible wheel build. Generated
 packaging metadata is checked as described, not independently regenerated.
 Other dependencies and application behavior are outside this check.
 
+## Executable-payload review — 2026-10-14
+
+This review concerns **3.2.2 and the exact hashes above**, not the older
+3.1.0b2 wheel in the original marketplace request. It is source-review
+evidence for a maintainer, **not marketplace approval or a security audit**.
+
+Coverage and method:
+
+- Parsed all **340 Python members** with the standard-library AST parser,
+  inventoried imports, module-level statements, decorators and **2,539 call
+  sites**, and inspected dynamic execution, network, deserialization,
+  filesystem and logging boundaries. The remaining package file is `py.typed`.
+  Review tooling did not import, install or execute dependency code.
+- Manually inspected the shared sync/async request layers, Device OAuth,
+  model construction/type resolution, JSON/XML handling, download/file-writing
+  helpers and optional Ynison transport; traced the plugin's synchronous
+  `Client`/`SessionRequest` and Device OAuth call sites. Endpoint/model families
+  were structurally inventoried, not individually proven correct.
+- Two additional, separately scoped **AI-assisted static source-review passes**
+  read executable bodies/imports/decorators/aliases across the **57 core/client/
+  Device OAuth Python modules**, with eight supporting utility modules, and
+  separately inspected transport, direct-link XML, lyric retrieval, model/file
+  helpers and optional Ynison paths. They confirmed the residual risks below;
+  no additional confirmed blocker was established within those scopes.
+  Repetitive endpoint documentation and parts of the larger model/Ynison state
+  modules were not exhaustively read. These are not external human audits.
+- No direct `eval`/`exec`, shell/subprocess execution, pickle loading, installer
+  hook or import-time network/download call was found in that inventory.
+  `base.py` resolves **package-defined** type annotations with `get_type_hints`;
+  this is not evaluation of an API-provided source string.
+- API defaults use `https://api.music.yandex.net`, Device OAuth uses
+  `https://oauth.yandex.ru`; media URLs come from API/CDN responses. Request
+  layers retain their HTTP libraries' certificate-verification defaults.
+  API methods attach OAuth headers; raw `retrieve()` does not automatically
+  attach those API headers. File helpers write the **caller-supplied filename**;
+  the plugin does not call SDK media file-writing helpers, `ClientAsync` or Ynison.
+  It **does** use SDK
+  [`DownloadInfo.get_direct_link()`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/download_info.py#L58-L88)
+  (XML retrieval/parsing) and
+  [`TrackLyrics.fetch_lyrics()`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/track/track_lyrics.py#L36-L43)
+  (text retrieval). These used paths share the HTTP response risks below.
+
+Residual risks, **not fixed or waived by this review**:
+
+1. **Response resource limits (conditional medium).** SDK transports collect
+   complete bodies before parsing:
+   [`utils/request.py:46–82`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/utils/request.py#L46-L82)
+   and [`utils/request_async.py:68–106`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/utils/request_async.py#L68-L106).
+   The plugin's `backend/backend.py::SessionRequest._request_wrapper` likewise
+   returns `resp.content` without a byte cap. Its synchronous HTTP timeout
+   limits inactivity, not the total transfer duration; a slow-drip responder
+   can keep the serialized API worker occupied. The async SDK instead sets
+   `aiohttp.ClientTimeout(total=...)`, but still has no response byte ceiling.
+   A malicious/compromised trusted API/CDN could exhaust
+   memory or occupy a worker. Ordinary attacker control of such a response
+   was **not demonstrated**; the new clipboard limits do not protect this
+   separate network boundary. XML/JSON parsing inherits this resource risk.
+2. **Secrets in opt-in DEBUG logs (conditional low).**
+   [`_client/__init__.py:12–25`](https://github.com/MarshalX/yandex-music-api/blob/9ca132e5c18a72aab779c1fc68c169380a9357d0/yandex_music/_client/__init__.py#L12-L25)
+   logs method results, including decorated Device OAuth results; the async
+   decorator does the same. `OAuthToken` inherits the model's full dictionary
+   string representation, including access/refresh tokens. The plugin does
+   not configure DEBUG logging. **Do not enable SDK DEBUG logging or share
+   unredacted logs during authorization.**
+
+This is a bounded static review, not exhaustive line-by-line verification,
+fuzzing, a rebuild attestation, or a review of transitive dependencies.
+Network destinations/redirects and downloaded content still require trust in
+upstream/CDN behavior. A marketplace maintainer must assess these findings
+and review the **new exact application commit** before approval; checksum
+correspondence alone does not close the dependency-review requirement.
+
 ## Updating the pin
 
 When updating upstream, build and review a new wheel and its source, replace the

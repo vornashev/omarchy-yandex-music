@@ -443,7 +443,7 @@ Item {
       }
     }
 
-    TextField {
+    BoundedTextField {
       id: stationSearchField
       visible: root.controller.stationMode
       anchors.top: historyHero.bottom; anchors.topMargin: visible ? Style.space(14) : 0
