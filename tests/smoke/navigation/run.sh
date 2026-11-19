@@ -14,9 +14,7 @@ done
 mkdir -p "$probe/harness/Ui"
 cp "$root/tests/smoke/navigation/shell.qml" "$root/tests/smoke/navigation/Reg.js" "$probe/harness/"
 # Keep production components live; only the compositor-specific host is replaced.
-for source in "$root"/*.qml "$root"/*.js; do
-  ln -s "$source" "$probe/harness/$(basename "$source")"
-done
+bash "$root/tests/smoke/link_qml.sh" "$root" "$probe/harness"
 for source in "$shell_root/Ui/"*; do
   ln -s "$source" "$probe/harness/Ui/$(basename "$source")"
 done

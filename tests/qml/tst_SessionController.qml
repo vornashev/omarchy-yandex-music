@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import "../.."
+import "../../qml/controllers"
 
 TestCase {
   id: testRoot
@@ -61,6 +61,20 @@ TestCase {
     session.action("pause")
     session.completeAction(0, "", "")
     tryCompare(statusSpy, "count", 2, 200)
+  }
+
+  function test_backend_error_is_reported_and_queued_actions_continue() {
+    session.action("play_catalog_track", ["entity", -1])
+    session.action("pause")
+    session.completeAction(0, '{"error":"Некорректный индекс трека каталога"}', "")
+    compare(actionDoneSpy.count, 1)
+    compare(actionDoneSpy.signalArguments[0][0], 1)
+    compare(actionDoneSpy.signalArguments[0][2], "Некорректный индекс трека каталога")
+    compare(actionSpy.count, 2)
+    compare(actionSpy.signalArguments[1][0], "pause")
+    session.completeAction(0, '{"ok":true}', "")
+    compare(actionDoneSpy.signalArguments[1][0], 0)
+    compare(session.actionRunning, false)
   }
 
   function test_rapid_volume_changes_keep_latest_value() {

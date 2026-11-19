@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import "../../DetailsReconciler.js" as Details
+import "../../qml/controllers/DetailsReconciler.js" as Details
 
 TestCase {
   name: "DetailsReconciler"
@@ -19,7 +19,7 @@ TestCase {
         libraryBrowseName: "", libraryTracks: library },
       queueDisplay: queue, libraryHubDisplay: hub, catalogDisplay: catalog,
       collectionDisplay: collection, catalogInitialized: true,
-      previousQueueIndex: 1, nowRoot: true
+      previousQueueIndex: 1, nowRoot: true, hasLoadedStatus: true
     }
   }
 
@@ -62,6 +62,37 @@ TestCase {
     compare(result.intents.queueViewport, "none")
     compare(result.intents.libraryViewport, "none")
     compare(result.intents.catalogViewport, "none")
+  }
+
+  function test_first_details_loads_models_after_compact_status_seed() {
+    var state = oldState()
+    var incoming = incomingFrom(state)
+    state.hasLoadedStatus = false
+    state.queueDisplay = []
+    state.data.libraryTracks = []
+    state.libraryHubDisplay = {}
+    state.catalogDisplay = {}
+    state.collectionDisplay = {}
+    state.catalogInitialized = false
+    var result = reconcile(incoming, state)
+    verify(result.changed.queue)
+    verify(result.queueDisplay === incoming.queueTracks)
+    verify(result.data.libraryTracks === incoming.libraryTracks)
+    verify(result.libraryHubDisplay === incoming.libraryHub)
+    verify(result.catalogDisplay === incoming.catalog)
+    verify(result.collectionDisplay === incoming.collection)
+    verify(result.initializeCatalog)
+  }
+
+  function test_first_details_accepts_empty_models_at_zero_revision() {
+    var state = oldState()
+    state.hasLoadedStatus = false
+    var incoming = incomingFrom(state)
+    incoming.queueRevision = state.data.queueRevision = 0
+    incoming.queueTracks = []
+    var result = reconcile(incoming, state)
+    verify(result.changed.queue)
+    compare(result.queueDisplay.length, 0)
   }
 
   function test_queue_extension_keeps_scroll_but_browse_does_not_move_queue() {

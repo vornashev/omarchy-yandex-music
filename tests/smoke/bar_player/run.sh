@@ -8,14 +8,14 @@ mkdir -p "$probe/harness" "$probe/home/.local/bin" \
   "$probe/home/.config/omarchy/plugins/vornashev.yandex-music" "$probe/runtime" "$probe/config"
 chmod 700 "$probe/runtime"
 cp "$root/tests/smoke/bar_player/shell.qml" "$probe/harness/shell.qml"
-cp "$root/tests/smoke/bar_player/Panel.qml" "$probe/harness/Panel.qml"
 cp "$root/tests/smoke/bar_player/fake_cli.sh" "$probe/home/.local/bin/omarchy-yandex-music"
 chmod 755 "$probe/home/.local/bin/omarchy-yandex-music"
 printf '#!/bin/sh\nexit 0\n' >"$probe/home/.config/omarchy/plugins/vornashev.yandex-music/bootstrap.sh"
 chmod 755 "$probe/home/.config/omarchy/plugins/vornashev.yandex-music/bootstrap.sh"
-for name in BarWidget.qml WidgetLogic.qml MusicSession.qml SessionController.qml TransportIntents.js BarPlayer.qml BarButton.qml LucideIcon.qml LucideIcons.js; do
-  ln -s "$root/$name" "$probe/harness/$name"
-done
+bash "$root/tests/smoke/link_qml.sh" "$root" "$probe/harness"
+rm "$probe/harness/qml/Panel.qml"
+cp "$root/tests/smoke/bar_player/Panel.qml" "$probe/harness/qml/Panel.qml"
+
 for name in Commons Ui; do
   ln -s "/usr/share/omarchy/shell/$name" "$probe/harness/$name"
 done

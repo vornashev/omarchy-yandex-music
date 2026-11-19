@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import "qml/components"
 
 ShellRoot {
   id: shell

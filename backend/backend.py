@@ -38,11 +38,13 @@ from yandex_music.utils.request import Request
 from yandex_music._client.device_auth import _DEFAULT_CLIENT_ID, _DEFAULT_CLIENT_SECRET, _OAUTH_BASE_URL
 
 if __package__:
+    from .features import Features
     from .audio_cache import AudioCache, AudioIdentity, AudioSource, BackgroundBusy, CacheRequest, cache_directory
 else:
+    from features import Features
     from audio_cache import AudioCache, AudioIdentity, AudioSource, BackgroundBusy, CacheRequest, cache_directory
 
-APP_VERSION = "0.12.0"
+APP_VERSION = "0.13.0"
 CONFIG = Path.home() / ".config/omarchy-yandex-music"
 TOKEN_FILE = CONFIG / "token.json"
 STATE_FILE = CONFIG / "state.json"
@@ -148,7 +150,7 @@ PERSONAL_PLAYLISTS = (
 )
 LIBRARY_HUB_CACHE_TTL = 10 * 60
 LIBRARY_HUB_CACHE_MAX_ENTRIES = len(LIBRARY_HUB_SECTIONS)
-COLLECTION_SOURCES = ("queue", "library", "libraryHub", "catalogSearch", "catalogEntity", "recommendation")
+COLLECTION_SOURCES = ("queue", "library", "libraryHub", "catalogSearch", "catalogEntity", "recommendation", "feature")
 IPC_REQUEST_MAX_BYTES = 64 * 1024
 IPC_RESPONSE_MAX_BYTES = 8 * 1024 * 1024
 MPV_RESPONSE_MAX_BYTES = 1024 * 1024
@@ -375,19 +377,19 @@ class MprisPlayer(ServiceInterface):
     def MaximumRate(self) -> "d": return 1.0
 
     @dbus_property(access=PropertyAccess.READ)
-    def CanGoNext(self) -> "b": return bool(self.player.queue)
+    def CanGoNext(self) -> "b": return bool(self.player.queue) and not bool(getattr(self.player, "stream_station", ""))
 
     @dbus_property(access=PropertyAccess.READ)
-    def CanGoPrevious(self) -> "b": return bool(self.player.queue)
+    def CanGoPrevious(self) -> "b": return bool(self.player.queue) and not bool(getattr(self.player, "stream_station", ""))
 
     @dbus_property(access=PropertyAccess.READ)
-    def CanPlay(self) -> "b": return bool(self.player.queue)
+    def CanPlay(self) -> "b": return bool(self.player.queue) or bool(getattr(self.player, "stream_station", ""))
 
     @dbus_property(access=PropertyAccess.READ)
-    def CanPause(self) -> "b": return bool(self.player.queue)
+    def CanPause(self) -> "b": return bool(self.player.queue) or bool(getattr(self.player, "stream_station", ""))
 
     @dbus_property(access=PropertyAccess.READ)
-    def CanSeek(self) -> "b": return bool(self.player.queue)
+    def CanSeek(self) -> "b": return bool(self.player.queue) and not bool(getattr(self.player, "stream_station", ""))
 
     @dbus_property(access=PropertyAccess.READ)
     def CanControl(self) -> "b": return True
@@ -563,6 +565,7 @@ class Player:
         self.liked_rows_at = 0.0
         self.disliked_ids: set[str] = set()
         self.radio_station = ""
+        self.radio_seeds: list[str] = []
         self.radio_batch_id = ""
         self.radio_session_id = ""
         self.radio_track_batches: dict[str, str] = {}
@@ -618,6 +621,9 @@ class Player:
             "liked": False, "disliked": False, "restoring": False,
             "preferences": dict(self.preferences),
         }
+        self.features = Features(self)
+        self.entity_features = Features(self)
+        self.rail_pins = Features(self)
         self.mpris = MprisBridge(self)
         threading.Thread(target=self._telemetry_worker, daemon=True).start()
         threading.Thread(target=self._restore, daemon=True).start()
@@ -893,7 +899,7 @@ class Player:
                      "showCover", "showProgress", "showBarLyrics", "barMouseControls")
         for key in bool_keys: preferences[key] = bool(preferences.get(key, DEFAULT_PREFERENCES[key]))
         allowed = {
-            "audioQuality": ("best", "economy"),
+            "audioQuality": ("best", "economy", "lossless"),
             "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
             "waveMood": ("all", "fun", "active", "calm", "sad"),
             "waveDiversity": ("default", "favorite", "popular", "discover"),
@@ -923,7 +929,7 @@ class Player:
                      "showControls", "showVolume", "showTime", "showLike", "showArtist", "showTitle",
                      "showCover", "showProgress", "showBarLyrics", "barMouseControls")
         allowed = {
-            "audioQuality": ("best", "economy"),
+            "audioQuality": ("best", "economy", "lossless"),
             "playbackMode": ("order", "shuffle", "repeatQueue", "repeatTrack"),
             "waveMood": ("all", "fun", "active", "calm", "sad"),
             "waveDiversity": ("default", "favorite", "popular", "discover"),
@@ -1118,6 +1124,9 @@ class Player:
 
     def logout(self) -> None:
         account = self._cache_account()
+        if getattr(self, "features", None): self.features.clear()
+        if getattr(self, "entity_features", None): self.entity_features.clear()
+        if getattr(self, "rail_pins", None): self.rail_pins.clear()
         self.stop()
         with self.lock:
             self.session_generation = getattr(self, "session_generation", 0) + 1
@@ -1154,7 +1163,7 @@ class Player:
             self.queue_collection_shuffled = False
             self.queue_artist_page = 0; self.queue_artist_has_more = False
             self.queue_advance_automatic = False; self.detached_track = None
-            self.radio_station = ""; self.radio_batch_id = ""; self.radio_session_id = ""; self.radio_track_batches = {}
+            self.radio_station = ""; self.radio_seeds = []; self.radio_batch_id = ""; self.radio_session_id = ""; self.radio_track_batches = {}
             self.radio_extending = False; self.playback_report = None
             self.state.update(authenticated=False, authPending=False, authUrl="", authCode="",
                               authExpiresAt=0.0, authExpired=False, authLogin="", authPlus=False,
@@ -1384,6 +1393,7 @@ class Player:
             self.collection_cache.pop("likes", None)
 
     def _save_state(self, force: bool = False) -> None:
+        if getattr(self, "stream_station", "") or getattr(self, "stream_starting", False): return
         # Snapshot and write under one lock so an older snapshot can never land last.
         with self.save_lock:
             if not force and time.monotonic() - self.last_saved_at < 5: return
@@ -1396,7 +1406,8 @@ class Player:
                          "position": self.state["position"], "playing": self.state["playing"],
                          "volume": self.volume, "muted": self.muted,
                          "radioStation": self.radio_station, "radioBatchId": current_batch,
-                         "radioSessionId": self.radio_session_id}
+                         "radioSessionId": self.radio_session_id,
+                         "radioSeeds": list(getattr(self, "radio_seeds", []))}
                 value["queueCollectionKey"] = self.queue_collection_key
                 value["queueArtistId"] = self.queue_artist_id
                 value["queueArtistPage"] = self.queue_artist_page
@@ -1441,6 +1452,8 @@ class Player:
                 self.queue_revision += 1
                 self.index = max(0, min(saved_index, len(tracks) - 1))
                 self.radio_station = str(saved.get("radioStation", ""))
+                raw_seeds = saved.get("radioSeeds", [])
+                self.radio_seeds = [v for v in raw_seeds[:10] if isinstance(v, str) and len(v) < 1024] if isinstance(raw_seeds, list) else []
                 self.radio_batch_id = str(saved.get("radioBatchId", ""))
                 self.radio_session_id = str(saved.get("radioSessionId", ""))
                 self.radio_track_batches = ({self._track_id(track): self.radio_batch_id for track in tracks}
@@ -1568,6 +1581,7 @@ class Player:
         self.queue_revision += 1
 
     def toggle_like(self) -> None:
+        if getattr(self, "stream_station", ""): return
         try:
             assert self.client
             with self.lock:
@@ -1598,6 +1612,7 @@ class Player:
             self._set_error(f"Не удалось изменить отметку «Мне нравится»: {exc}")
 
     def toggle_dislike(self) -> None:
+        if getattr(self, "stream_station", ""): return
         try:
             assert self.client
             with self.lock:
@@ -1643,6 +1658,15 @@ class Player:
             seeds.append(f"settingLanguage:{language}")
         return seeds
 
+    def current_wave_seeds(self) -> list[str]:
+        station = getattr(self, "radio_station", "")
+        if not station or getattr(self, "stream_station", "") or self.state.get("stopped"):
+            return []
+        seeds = getattr(self, "radio_seeds", None)
+        if not seeds:
+            seeds = self._wave_seeds() if station == "user:onyourwave" else [station]
+        return Features.wave_pin_seeds(seeds) or []
+
     def play_wave(self) -> None:
         def load() -> None:
             try:
@@ -1657,10 +1681,71 @@ class Player:
                 if not tracks: raise RuntimeError("Яндекс не вернул треки для «Моей волны»")
                 session_id = self._text(getattr(session, "radio_session_id", ""))
                 batch_id = self._text(getattr(session, "batch_id", ""))
-                self._set_queue(tracks, "Моя волна", station, batch_id, radio_session_id=session_id)
+                self._set_queue(tracks, "Моя волна", station, batch_id,
+                                radio_session_id=session_id, radio_seeds=seeds)
             except Exception as exc:
                 self._set_error(f"Не удалось запустить «Мою волну»: {exc}")
         self._loading(load, "wave")
+
+    def play_wave_seeds(self, seeds: list[str]) -> None:
+        client = self.client
+        def load():
+            try:
+                session = self._api_call(lambda: client.rotor_session_new(seeds))
+                tracks = [r.track for r in self._safe_rows(getattr(session, "sequence", None)) if getattr(r, "track", None)]
+                with self.control_lock:
+                    if self.client is not client: return
+                    self._set_queue(tracks, "Моя волна", seeds[0],
+                        self._text(getattr(session, "batch_id", "")),
+                        radio_session_id=self._text(getattr(session, "radio_session_id", "")), radio_seeds=seeds)
+            except Exception: self._set_error("Не удалось включить волну. Повторите позже.")
+        self._loading(load, "wave")
+
+    @playback_control
+    def play_stream(self, station: str, title: str) -> None:
+        if station not in ("generative:focus", "generative:energy", "generative:calm", "generative:relax"):
+            raise ValueError("Неизвестный поток")
+        client = self.client
+        if not getattr(self, "stream_station", ""):
+            self.stream_resume_position = int(self.state.get("position", 0))
+            self.stream_resume_origin = {k:self.state.get(k, "") for k in ("queueName", "queueSourceKind", "queueSourceName", "queueSourceArg")}
+            self._save_state(True)
+        self.stream_starting = True
+        self.stop()
+        with self.lock:
+            self.stream_starting = False
+            self.stream_station = station
+            self.queue_revision += 1
+            generation = self.play_generation
+            self.state.update(loading=True, loadingKind="stream", error="", duration=0, trackId="",
+                              title=title, artist="Генеративный поток", artists=[], album="", artUrl="", audioFormat="", albumId="", artistId="",
+                              liked=False, disliked=False, queueSourceKind="", queueSourceName="")
+        def load():
+            try:
+                result = self._api_call(lambda: client.rotor_station_stream(station))
+                url = str(getattr(getattr(result, "stream", None), "url", ""))
+                if not url.startswith("https://"): raise ValueError("Поток недоступен")
+                with self.control_lock:
+                    if self.client is not client or self.play_generation != generation: return
+                    self._mpv_command(["loadfile", url, "replace"])
+                    self._mpv_command(["set_property", "pause", False])
+                    with self.lock: self.state.update(playing=True, stopped=False, loading=False, loadingKind="", error="")
+                    self.stream_id = self._text(getattr(getattr(result, "stream", None), "id", ""))
+                    self._stream_feedback("streamStarted")
+                    self._stream_feedback("streamPlay")
+            except Exception:
+                with self.lock:
+                    if self.play_generation == generation:
+                        self.state.update(playing=False, stopped=True, loading=False, loadingKind="", error="Не удалось подключиться к потоку")
+        threading.Thread(target=load, daemon=True).start()
+
+    def _stream_feedback(self, kind: str) -> None:
+        client = self.client
+        station = getattr(self, "stream_station", "")
+        stream_id = getattr(self, "stream_id", "")
+        callback = getattr(client, "rotor_station_stream_feedback", None)
+        if not station or not stream_id or not callable(callback): return
+        self._enqueue_telemetry(lambda: callback(station, kind, stream_id=stream_id) if self.client is client else None)
 
     def play_track_radio(self) -> None:
         with self.lock:
@@ -1723,14 +1808,14 @@ class Player:
                     result = self._api_call(
                         lambda: self.client.rotor_session_tracks(session_id, queue=played_ids))
                     if result and getattr(result, "unknown_session", False):
-                        seeds = self._wave_seeds() if station == "user:onyourwave" else [station]
+                        seeds = getattr(self, "radio_seeds", None) or (self._wave_seeds() if station == "user:onyourwave" else [station])
                         session = self._api_call(
                             lambda: self.client.rotor_session_new(seeds, queue=played_ids))
                         if session:
                             new_session_id = str(session.radio_session_id or "")
                             result = session
                 else:
-                    seeds = self._wave_seeds() if station == "user:onyourwave" else [station]
+                    seeds = getattr(self, "radio_seeds", None) or (self._wave_seeds() if station == "user:onyourwave" else [station])
                     session = self._api_call(
                         lambda: self.client.rotor_session_new(seeds, queue=played_ids))
                     if session:
@@ -2019,6 +2104,7 @@ class Player:
     def _collection_track_locked(self, source: str, index: int,
                                  expected_track_id: str, expected_album_id: str) -> Any | None:
         sources = {
+            "feature": self.features.models if getattr(self, "features", None) else [],
             "queue": self.queue,
             "library": self.library_results,
             "libraryHub": self.library_hub_tracks,
@@ -3617,6 +3703,8 @@ class Player:
             self.catalog_entity_offset = 0; self._catalog_touch_locked()
 
     def play_catalog_track(self, source: str, index: int) -> None:
+        if source not in ("search", "entity"):
+            raise ValueError("Некорректный источник трека каталога")
         with self.lock:
             entity = self.catalog.get("entity", {})
             tracks = list(self.catalog_search_models.get("tracks", [])) if source == "search" \
@@ -3635,7 +3723,9 @@ class Player:
             if source_kind == "playlist":
                 source_kind = "catalog_playlist"
                 source_arg = json.dumps({key: str(entity.get(key, "")) for key in ("uuid", "owner", "kind")})
-        if not client or not (0 <= index < len(tracks)): return
+        if not (0 <= index < len(tracks)):
+            raise ValueError("Некорректный индекс трека каталога. Откройте список заново")
+        if not client: return
         track = tracks[index]
 
         def prepare() -> None:
@@ -4044,6 +4134,7 @@ class Player:
             self._start_lyrics_locked(track_id, prefetch=True)
 
     def lyrics(self, *, force: bool = False) -> dict[str, Any]:
+        if getattr(self, "stream_station", ""): return self._lyrics_response("", {}, loading=False)
         """Return current lyrics or start one cancellable, bounded lookup."""
         with self.lock:
             track = self._current_track_locked()
@@ -4157,6 +4248,7 @@ class Player:
             self.track_info_cache.popitem(last=False)
 
     def track_info(self, *, force: bool = False) -> dict[str, Any]:
+        if getattr(self, "stream_station", ""): return self._track_info_response("", {}, loading=False)
         """Return current track details or start an isolated on-demand load."""
         with self.lock:
             track = self._current_track_locked()
@@ -4205,9 +4297,10 @@ class Player:
             name = str(self.state.get("libraryBrowseName", "Медиатека"))
             collection_key = self.active_library_cache_key
             source_kind, source_arg = getattr(self, "library_origin", ("", ""))
-        if 0 <= index < len(tracks):
-            self._set_queue(tracks, name, start_index=index, remaining_rows=remaining,
-                            collection_key=collection_key, source_kind=source_kind, source_arg=source_arg)
+        if not (0 <= index < len(tracks)):
+            raise ValueError("Некорректный индекс трека медиатеки. Откройте список заново")
+        self._set_queue(tracks, name, start_index=index, remaining_rows=remaining,
+                        collection_key=collection_key, source_kind=source_kind, source_arg=source_arg)
 
     def play_library_collection(self, mode: str) -> None:
         if mode not in ("order", "shuffle"): return
@@ -4297,8 +4390,11 @@ class Player:
                    collection_key: str = "", prepared_url: str = "",
                    artist_id: str = "", artist_page: int = 0,
                    artist_has_more: bool = False, source_kind: str = "", source_arg: str = "",
-                   collection_shuffled: bool = False, radio_session_id: str = "") -> None:
+                   collection_shuffled: bool = False, radio_session_id: str = "",
+                   radio_seeds: list[str] | None = None) -> None:
         if not tracks: raise RuntimeError("В списке нет доступных треков")
+        self._stream_feedback("streamPause")
+        self.stream_station = ""
         self._finish_playback_reporting(finished=False)
         with self.lock:
             self.queue = tracks; self.index = max(0, min(start_index, len(tracks) - 1))
@@ -4317,6 +4413,7 @@ class Player:
                               queueSourceName=name, queueSourceArg=source_arg or origin_arg)
             self.radio_station = station; self.radio_batch_id = batch_id
             self.radio_session_id = radio_session_id
+            self.radio_seeds = list(radio_seeds or [])
             self.radio_track_batches = ({self._track_id(track): batch_id for track in tracks}
                                         if station and batch_id else {})
             self.radio_extending = False; self.radio_advance_pending = False
@@ -4343,6 +4440,19 @@ class Player:
     def _audio_source(self, track: Any, *, variant: int = 0, update_loading: bool = True,
                       quality: str | None = None, background: bool = False) -> AudioSource:
         quality = quality or self.preferences["audioQuality"]
+        if quality == "lossless" and variant == 0:
+            try:
+                if background:
+                    raise BackgroundBusy("lossless is resolved on demand")
+                result = self._api_call(lambda: track.get_file_info(quality="lossless", transport="raw"), update_loading=update_loading)
+                info = getattr(result, "download_info", None)
+                if info and info.url and info.transport == "raw":
+                    return AudioSource(info.url, str(info.codec), int(info.bitrate or 0))
+                if info and info.url and info.transport == "encraw" and info.key:
+                    return AudioSource(info.url, str(info.codec), int(info.bitrate or 0), str(info.key))
+            except BackgroundBusy: raise
+            except Exception:
+                pass  # A subscription/format failure falls back to the normal endpoint.
         if background:
             # Do not wait behind foreground calls or retry 429 while holding api_lock.
             if not self.api_lock.acquire(blocking=False):
@@ -4374,7 +4484,15 @@ class Player:
         return AudioSource(url, str(info.codec), int(info.bitrate_in_kbps or 0))
 
     def _url(self, track: Any, *, variant: int = 0, update_loading: bool = True) -> str:
-        return self._audio_source(track, variant=variant, update_loading=update_loading).url
+        source = self._audio_source(track, variant=variant, update_loading=update_loading)
+        if source.key:
+            generation = self.play_generation
+            request = CacheRequest(self._cache_identity(track), lambda: source,
+                lambda: generation == self.play_generation, lambda path: None)
+            path = self.audio_cache._download(request, threading.Event())
+            if path is None: raise RuntimeError("Не удалось подготовить защищённое аудио. Выберите «Лучшее».")
+            return str(path)
+        return source.url
 
     def _cache_account(self) -> str:
         client = self.client
@@ -4420,6 +4538,7 @@ class Player:
         except Exception: pass
 
     def _schedule_preload(self) -> None:
+        if getattr(self, "stream_station", ""): return
         if not getattr(self, "audio_cache", None): return
         with self.control_lock:
             ready_path = None
@@ -4493,10 +4612,17 @@ class Player:
                 self._mpv_file_loaded(prepared["id"])
         except Exception: pass
 
-    def _ensure_mpv(self) -> None:
-        if self.mpv and self.mpv.poll() is None and MPV_SOCKET.exists():
-            self._ensure_mpv_events()
-            return
+    def _ensure_mpv(self, *, restart: bool = False) -> None:
+        if self.mpv and self.mpv.poll() is None:
+            if not restart and MPV_SOCKET.exists():
+                self._ensure_mpv_events()
+                return
+            self.mpv.terminate()
+            try:
+                self.mpv.wait(timeout=2)
+            except subprocess.TimeoutExpired:
+                self.mpv.kill()
+                self.mpv.wait()
         MPV_SOCKET.unlink(missing_ok=True)
         self.mpv = subprocess.Popen(["/usr/bin/mpv", "--no-config", "--idle=yes", "--no-video", "--audio-display=no",
             "--no-terminal", "--load-scripts=no", "--tls-verify=yes",
@@ -4515,19 +4641,36 @@ class Player:
         raise RuntimeError("Не удалось запустить mpv")
 
     def _mpv_command(self, command: list[Any], start: bool = True) -> Any:
-        if start:
-            with self.control_lock: self._ensure_mpv()
-        elif not self.mpv or self.mpv.poll() is not None or not MPV_SOCKET.exists(): return None
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as sock:
-            sock.settimeout(3); sock.connect(str(MPV_SOCKET))
-            sock.sendall((json.dumps({"command": command, "request_id": 1}) + "\n").encode())
-            with sock.makefile("rb") as stream:
-                while True:
-                    data = stream.readline(MPV_RESPONSE_MAX_BYTES + 1)
-                    if not data.endswith(b"\n") or len(data) > MPV_RESPONSE_MAX_BYTES:
-                        raise RuntimeError("mpv IPC: invalid or oversized response")
-                    response = json.loads(data)
-                    if response.get("request_id") == 1: break
+            sock.settimeout(3)
+            if start:
+                with self.control_lock:
+                    self._ensure_mpv()
+                    try:
+                        sock.connect(str(MPV_SOCKET))
+                    except (ConnectionRefusedError, FileNotFoundError):
+                        # The path may survive after its IPC listener disappears.
+                        # Reconnect before sending anything, including loadfile.
+                        self._ensure_mpv(restart=True)
+                        with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as replacement:
+                            replacement.settimeout(3)
+                            replacement.connect(str(MPV_SOCKET))
+                            return self._send_mpv_command(replacement, command)
+            else:
+                if not self.mpv or self.mpv.poll() is not None or not MPV_SOCKET.exists(): return None
+                sock.connect(str(MPV_SOCKET))
+            return self._send_mpv_command(sock, command)
+
+    @staticmethod
+    def _send_mpv_command(sock: socket.socket, command: list[Any]) -> Any:
+        sock.sendall((json.dumps({"command": command, "request_id": 1}) + "\n").encode())
+        with sock.makefile("rb") as stream:
+            while True:
+                data = stream.readline(MPV_RESPONSE_MAX_BYTES + 1)
+                if not data.endswith(b"\n") or len(data) > MPV_RESPONSE_MAX_BYTES:
+                    raise RuntimeError("mpv IPC: invalid or oversized response")
+                response = json.loads(data)
+                if response.get("request_id") == 1: break
         if response.get("error") != "success": raise RuntimeError(response.get("error", "mpv error"))
         return response.get("data")
 
@@ -4609,6 +4752,10 @@ class Player:
             self._activate_track(prepared["track"], generation)
 
     def _mpv_end_file(self, event: dict[str, Any]) -> None:
+        if getattr(self, "stream_station", ""):
+            if event.get("reason") in ("eof", "error"):
+                with self.lock: self.state.update(playing=False, stopped=True, error="Поток прервался. Запустите его снова.")
+            return
         with self.control_lock:
             with self.lock:
                 entry_id = event.get("playlist_entry_id")
@@ -4716,6 +4863,10 @@ class Player:
 
     def _play_current(self, resume_position: int = 0, start_paused: bool = False,
                       initial_url: str = "") -> None:
+        if getattr(self, "stream_station", ""):
+            self._stream_feedback("streamPause")
+            self.queue_revision += 1
+        self.stream_station = ""
         control = getattr(self, "control_lock", self.lock)
         with control:
             self._reset_preload()
@@ -4868,6 +5019,8 @@ class Player:
 
     @playback_control
     def pause(self) -> None:
+        if getattr(self, "stream_station", "") and self.state.get("stopped"):
+            self.play_stream(self.stream_station, self.state.get("title", "Поток")); return
         try:
             idle = bool(self._mpv_command(["get_property", "idle-active"]))
             if idle:
@@ -4883,11 +5036,13 @@ class Player:
                                   positionObservedAt=time.time())
                 self._update_playback_clock_locked(paused)
                 track = self._current_track_locked() if paused and not self.playback_report else None
-            if track is not None: self._begin_playback_reporting(track)
+            if getattr(self, "stream_station", ""): self._stream_feedback("streamPlay" if paused else "streamPause")
+            if track is not None and not getattr(self, "stream_station", ""): self._begin_playback_reporting(track)
             self._publish_mpris(); self._save_state(True)
         except Exception as exc: self._set_error(exc)
 
     def seek(self, seconds: int) -> None:
+        if getattr(self, "stream_station", ""): return
         try:
             target = max(0, min(int(seconds), int(self.state["duration"] or seconds)))
             self._mpv_command(["seek", target, "absolute"])
@@ -4916,6 +5071,7 @@ class Player:
 
     @playback_control
     def next(self, automatic: bool = False) -> None:
+        if getattr(self, "stream_station", ""): return
         with self.lock:
             if not self.queue: return
             target = self._next_target_locked(automatic)
@@ -4953,6 +5109,7 @@ class Player:
 
     @playback_control
     def previous(self) -> None:
+        if getattr(self, "stream_station", ""): return
         try:
             if float(self._mpv_command(["get_property", "time-pos"], False) or 0) > 5:
                 self.seek(0); return
@@ -4971,6 +5128,7 @@ class Player:
 
     @playback_control
     def stop(self) -> None:
+        self._stream_feedback("streamPause")
         with self.lock:
             self.play_generation = getattr(self, "play_generation", 0) + 1
             self._cancel_lyrics_locked()
@@ -5031,6 +5189,9 @@ class Player:
                     event_connection = getattr(self, "mpv_events_connected", None)
                     events_active = event_connection and event_connection.is_set()
                 idle = bool(self._mpv_command(["get_property", "idle-active"], False))
+                if idle and getattr(self, "stream_station", ""):
+                    with self.lock: self.state.update(playing=False, stopped=True, error="Поток прервался. Запустите его снова.")
+                    continue
                 if idle:
                     with self.lock:
                         if generation != getattr(self, "play_generation", 0): continue
@@ -5072,7 +5233,7 @@ class Player:
                     now = time.monotonic()
                     if paused or position > self.last_playback_position + .2:
                         self.last_playback_progress_at = now
-                    stalled = (self.had_file and not paused and not self.state.get("stopped")
+                    stalled = (not getattr(self, "stream_station", "") and self.had_file and not paused and not self.state.get("stopped")
                                and now - self.last_playback_progress_at >= AUDIO_STALL_TIMEOUT)
                     self.last_playback_position = position
                     self.active_ticks += 1
@@ -5086,14 +5247,18 @@ class Player:
                 if stalled:
                     self._play_current(resume_position=int(position))
                     continue
-                self._publish_mpris(); self._save_state()
-                self._schedule_preload()
+                if not getattr(self, "stream_station", ""):
+                    codec = str(self._mpv_command(["get_property", "audio-codec-name"], False) or "")
+                    with self.lock: self.state["audioFormat"] = codec
+                    self._publish_mpris(); self._save_state()
+                    self._schedule_preload()
             except Exception:
                 continue
 
     def status(self, include_queue: bool = False) -> dict[str, Any]:
         with self.lock:
             data = dict(self.state); data["playlists"] = list(self.playlists)
+            data["streamActive"] = bool(getattr(self, "stream_station", ""))
             data["network"] = dict(self.network)
             data["waveActive"] = getattr(self, "radio_station", "") == "user:onyourwave"
             data["likesTotal"] = (len(getattr(self, "liked_ids", set()))
@@ -5116,6 +5281,15 @@ class Player:
             loading = (curr_id in self.lyrics_loading) if hasattr(self, "lyrics_loading") else False
             data["lyrics"] = self._lyrics_response(curr_id, cached_lyr, loading=loading)
             if include_queue:
+                data["entityFeatures"] = copy.deepcopy(self.entity_features.snapshot) if getattr(self, "entity_features", None) else {}
+                data["features"] = copy.deepcopy(self.features.snapshot) if getattr(self, "features", None) else {}
+                rail = getattr(self, "rail_pins", None)
+                data["railPins"] = copy.deepcopy(rail.snapshot) if rail and rail.client is self.client else {}
+                seeds = self.current_wave_seeds()
+                data["currentWaveSeeds"] = list(seeds)
+                if seeds and rail and rail.client is self.client and rail.snapshot.get("identity") and not any(
+                        rail.snapshot.get(key) for key in ("loading", "busy", "error")):
+                    data["currentWavePinned"] = rail.wave_pinned(seeds)
                 data["catalog"] = copy.deepcopy(self.catalog)
                 data["libraryHub"] = copy.deepcopy(self.library_hub)
                 data["collection"] = copy.deepcopy(self.collection)
@@ -5136,6 +5310,10 @@ class Player:
                                  "duration": self._int(getattr(track, "duration_ms", 0)) // 1000,
                                  "current": self.detached_track is None and i == self.index})
                 data["queueTracks"] = rows
+            if data["streamActive"]:
+                data.update(queueIndex=0, queueCount=0, queueTotal=-1, duration=0, trackId="", liked=False, disliked=False)
+                data["lyrics"] = self._lyrics_response("", {}, loading=False)
+                if include_queue: data["queueTracks"] = []
             return data
 
     def handle(self, req: dict[str, Any]) -> dict[str, Any]:
@@ -5147,7 +5325,16 @@ class Player:
         if cmd == "lyrics_refresh": return self.lyrics(force=True)
         if cmd == "track_info": return self.track_info()
         if cmd == "track_info_refresh": return self.track_info(force=True)
-        if cmd == "auth": self.authenticate()
+        if cmd == "entity_feature_open": self.entity_features.open(req.get("payload", {}))
+        elif cmd == "entity_feature_action": self.entity_features.action(req.get("payload", {}))
+        elif cmd == "feature_open": self.features.open(req.get("payload", {}))
+        elif cmd == "feature_action": self.features.action(req.get("payload", {}))
+        elif cmd == "rail_pins": self.rail_pins.open({"view": "pins"})
+        elif cmd == "rail_pin_wave": self.rail_pins.action({**req.get("payload", {}), "op": "wave"})
+        elif cmd == "current_wave_pin":
+            if not self.rail_pins.action({**req.get("payload", {}), "op": "currentWavePin"}):
+                raise ValueError("Список закреплений обновляется. Проверьте состояние и повторите действие.")
+        elif cmd == "auth": self.authenticate()
         elif cmd == "auth_cancel": self.cancel_authentication()
         elif cmd == "reconnect": self.reconnect()
         elif cmd == "logout": self.logout()
@@ -5224,6 +5411,9 @@ class Player:
         elif cmd == "mute": self.toggle_mute()
         elif cmd == "mode": self.cycle_mode()
         elif cmd == "setting": self.set_preference(str(req.get("key", "")), req.get("value"))
+        elif cmd == "resume_music":
+            with self.lock: self.state.update(getattr(self, "stream_resume_origin", {}))
+            self._play_current(resume_position=getattr(self, "stream_resume_position", 0))
         elif cmd == "stop": self.stop()
         else: return {"error": f"unknown command: {cmd}"}
         return {"ok": True}

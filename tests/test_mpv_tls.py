@@ -98,6 +98,28 @@ class MpvTlsTests(unittest.TestCase):
                         player.mpv.terminate()
                         player.mpv.wait(timeout=5)
 
+    def test_live_mpv_with_refused_socket_recovers_before_sending_command(self):
+        with tempfile.TemporaryDirectory() as home:
+            ipc = Path(home) / "mpv.sock"
+            player = backend.Player.__new__(backend.Player)
+            player.mpv = None
+            player.volume = 50
+            player.control_lock = threading.RLock()
+            player._ensure_mpv_events = lambda: None
+            with patch.object(backend, "MPV_SOCKET", ipc):
+                try:
+                    player._ensure_mpv()
+                    original = player.mpv
+                    ipc.unlink()
+                    with socket.socket(socket.AF_UNIX) as stale:
+                        stale.bind(str(ipc))
+                    self.assertTrue(player._mpv_command(["get_property", "idle-active"]))
+                    self.assertIsNotNone(original.poll())
+                finally:
+                    if player.mpv:
+                        player.mpv.terminate()
+                        player.mpv.wait(timeout=5)
+
     def test_trusted_https_audio_loads_despite_insecure_user_config(self):
         self.playback("valid", "loaded")
 

@@ -13,7 +13,10 @@ NETWORK_CHUNK_BYTES = 64 * 1024
 sock_path = Path(os.environ.get("XDG_RUNTIME_DIR", f"/run/user/{os.getuid()}")) / "omarchy-yandex-music.sock"
 args = sys.argv[1:]
 request = {"command": args[0] if args else "status"}
-if request["command"] == "playlist" and len(args) > 1:
+if request["command"] in ("feature_open", "feature_action", "entity_feature_open", "entity_feature_action",
+                          "rail_pin_wave", "current_wave_pin") and len(args) == 2:
+    request["payload"] = json.loads(args[1])
+elif request["command"] == "playlist" and len(args) > 1:
     request["kind"] = args[1]
 elif request["command"] == "search" and len(args) > 1:
     request["query"] = " ".join(args[1:])

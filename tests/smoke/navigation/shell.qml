@@ -4,6 +4,8 @@ import QtTest
 import Quickshell
 import Quickshell.Io
 import "Reg.js" as Reg
+import "qml" as Plugin
+import "qml/controllers"
 
 ShellRoot {
   id: shell
@@ -53,12 +55,19 @@ ShellRoot {
     check(result.length === 1, "unique real control: " + name)
     return result[0]
   }
+  function shown(name) {
+    var result = nodes(card, function(item) { return item.objectName === name && onScreen(item) })
+    check(result.length === 1, "one visible control: " + name)
+    return result[0]
+  }
   function text(value, scope) {
     var found = nodes(scope || card, function(item) { return item.text === value && onScreen(item) })
     return found.length ? found[0] : null
   }
   function click(item, label) {
     check(onScreen(item), "visible mouse target: " + label)
+    input.mouseMove(item, item.width / 2, item.height / 2)
+    input.wait(20)
     input.mouseClick(item, item.width / 2, item.height / 2)
     input.wait(80)
   }
@@ -202,9 +211,92 @@ ShellRoot {
     until(function() { return !p.settingsOpen && p.opened }, "Escape closes settings first")
   }
 
+  function featureScenarios() {
+    tab(1)
+    var library=named("libraryPage")
+    reveal("Обзор", library); clickText("Обзор", library)
+    until(function(){return p.featureRoute && p.routeReady && p.featureDisplay.view === "overview"}, "feature snapshot identity crosses real CLI")
+    var features=named("featuresPage")
+    clickText("Чарт", features)
+    until(function(){return p.featureDisplay.view === "chart" && p.featureDisplay.rows.length === 50}, "chart browse loads without autoplay")
+    playbackCount(0)
+    reveal("Загрузить ещё",features); clickText("Загрузить ещё",features)
+    until(function(){return p.featureDisplay.rows.length === 78}, "feature list appends final page")
+    check(!p.featureDisplay.hasMore,"feature pagination finishes")
+    p.openRailShortcut("playlist", "7")
+    until(function(){return p.collectionRoute && p.routeReady && p.browseDisplay.libraryEditable}, "owned playlist loaded")
+    click(shown("navContext"), "playlist dropdown")
+    var menu = shown("artistMenuOverlay")
+    until(function(){return !!text("Редактировать плейлист", menu)}, "edit action appears in dropdown")
+    check(p.collectionRoute && !p.featureRoute, "playlist dropdown preserves the collection")
+    clickText("Редактировать плейлист", menu)
+    until(function(){return p.routeReady && p.featureDisplay.entity && p.featureDisplay.entity.editable && features.titleInput && features.titleInput.text === "В дороге"}, "playlist editor initializes native bounded fields")
+    input.wait(180); shot("BeforeFavorite-"+mode)
+    click(nodes(features, function(item) { return item.objectName === "featureFavorite" && onScreen(item) })[0], "feature favorite toggle")
+    until(function(){return p.featureDisplay.entity.favorite === true}, "favorite commits confirmed server state")
+    check(features.titleInput.text === "В дороге","favorite does not reset form")
+    features.preserveViewport(0)
+    click(features.titleInput,"playlist title bounded editor")
+    features.titleInput.selectAll(); for(var letter of "edited playlist") input.keyClick(letter); input.wait(120)
+    input.keyClick("x"); input.keyClick(Qt.Key_Backspace); input.wait(120)
+    check(features.titleInput.text === "edited playlist" && p.featureRoute, "Backspace edits playlist text without navigating")
+    check(features.dirty,"typing marks form dirty")
+    key(Qt.Key_Escape)
+    until(function(){return features.confirmation !== null},"unsaved editor requires discard confirmation")
+    clickText("Отмена",features)
+    check(features.dirty && features.titleInput.text === "edited playlist","cancel retains draft")
+    features.preserveViewport(0)
+    shot("FeaturesEditor-"+mode)
+    reveal("Сохранить",features); clickText("Сохранить",features)
+    until(function(){return !features.dirty && p.featureDisplay.message === "Готово"},"playlist save confirms through real CLI")
+    playbackCount(0)
+    tab(1); route(1,"libraryHome")
+    key(Qt.Key_1); route(0,"now")
+  }
+
   function scenarios() {
     until(function() { return p && p.authenticated && card && p.queueDisplay.length === 50 && !p.busy }, "full Panel fake CLI ready")
+    check(p.hasLoadedStatus && p.catalogInitialized, "first details initializes heavy models")
+    check(p.libraryHubDisplay.homeLoaded && p.libraryHubDisplay.items.length === 5,
+      "first details loads library metadata with unchanged revisions")
     check(p.popupLayout === mode, "fixture chooses saved layout")
+    var trackSnapshot = p.data
+    var emptyTrack = {}
+    for (var snapshotKey in trackSnapshot) emptyTrack[snapshotKey] = trackSnapshot[snapshotKey]
+    emptyTrack.title = ""
+    p.playerActionsOpen = true
+    p.lyricsOpen = true
+    p.trackInfoOpen = true
+    p.data = emptyTrack
+    var clearedTrackPanes = !p.playerActionsOpen && !p.lyricsOpen && !p.trackInfoOpen
+    p.data = trackSnapshot
+    check(clearedTrackPanes, "losing the last track closes actions, lyrics and track info")
+    if (mode !== "mini") {
+      var startupQueue = named("queueList")
+      until(function() { return startupQueue.visible && startupQueue.count === 50
+        && !!text("Have You Ever Seen The Rain", startupQueue) }, "queue rows render after status seed")
+      wheel(startupQueue, -360)
+      var startupY = startupQueue.contentY
+      var startupModel = p.queueDisplay
+      p.refresh()
+      until(function() { return !p.refreshing }, "equal-revision details refresh finishes")
+      check(p.queueDisplay === startupModel && Math.abs(startupQueue.contentY - startupY) < 3,
+        "subsequent details preserves queue model and manual scrolling")
+      startupQueue.positionViewAtBeginning()
+    }
+    console.log("STARTUP_MODELS_OK", mode)
+    // Cross the real SessionController signal -> MusicSession -> CLI boundary.
+    // Qt sequences must keep argument boundaries, including empty strings.
+    var argumentCases = [
+      { value: ["", "слова с пробелами", "a,b", 0], expected: ["", "слова с пробелами", "a,b", "0"] },
+      { value: "одно значение, с пробелами", expected: ["одно значение, с пробелами"] },
+      { value: undefined, expected: [] }
+    ]
+    for (var argumentCase of argumentCases) {
+      check(p.session.action("test_arguments", argumentCase.value), "session accepts argument fixture")
+      until(function() { return JSON.stringify(p.data.testArguments) === JSON.stringify(argumentCase.expected) },
+        "real CLI preserves argument boundaries")
+    }
     if (mode === "mini") {
       check(p.layoutMini && card.height === 101, "Mini initially visible")
       key(Qt.Key_2)
@@ -220,6 +312,7 @@ ShellRoot {
       return
     }
     var wide = mode === "wide"
+    featureScenarios()
     settingsTabs()
     lyricsErrors()
     var prefix = wide ? "X" : "Y"
@@ -235,8 +328,15 @@ ShellRoot {
     key(Qt.Key_Escape)
     route(1, "libraryHome")
     check(named("libraryPage") === libraryIdentity && p.opened, "Escape returns to same Library root instance")
+    wheel(library.viewport, 6000)
     libraryLikes()
     check(p.libraryDisplay.length === 50 && p.browseDisplay.libraryTotal === 78, "Likes loads 50 of 78 without playback")
+    var likesRefresh = shown("navContext")
+    check(likesRefresh.iconText === "󰑐" && likesRefresh.tooltipText === "Обновить", "Likes header identifies the refresh action")
+    var likesRevision = p.data.libraryRevision
+    click(likesRefresh, "refresh Likes")
+    until(function() { return p.data.libraryRevision > likesRevision && p.routeReady && !p.busy }, "Likes reloads")
+    check(p.activeRoute.args.command === "likes" && p.libraryDisplay.length === 50, "refresh keeps the Likes list open")
     shot(prefix + "2" + (wide ? "WideLikes" : "CompactLikes"))
     stale("library", function() {
       check(p.activeRoute.args.command === "likes" && p.libraryDisplay.length === 50
@@ -246,6 +346,68 @@ ShellRoot {
     clickText("Creedence Clearwater Revival", collection)
     route(1, "artist")
     check(p.catalogDisplay.entity.id === "ccr", "Likes artist stays in Library stack")
+    until(function(){return shown("entityFavorite").enabled && shown("entityFavorite").tooltipText === "Добавить в избранное"}, "native entity toggles load confirmed status")
+    check(!text("Ещё…"), "entity card has no separate actions row")
+    click(shown("entityFavorite"), "favorite toggle")
+    until(function(){return p.entityFeatureDisplay.entity.favorite === true && shown("entityFavorite").tooltipText === "Убрать из избранного"}, "native entity favorite crosses CLI")
+    until(function(){return shown("entityPin").enabled}, "pin toggle ready after favorite")
+    click(shown("entityPin"), "pin toggle")
+    until(function(){return p.entityFeatureDisplay.entity.pinned === true && shown("entityPin").tooltipText === "Открепить"}, "native entity pin crosses CLI")
+    check(p.catalogDisplay.entity.id === "ccr", "entity actions preserve the open page")
+    var artistPage = named("catalogPage")
+    var artistRoute = JSON.stringify(p.activeRoute)
+    var featureBefore = p.featureDisplay
+    artistPage.preserveViewport(90)
+    input.wait(100)
+    var artistScroll = artistPage.viewportY
+    input.wait(450) // keep distinct pointer actions outside Qt's double-click interval
+    click(named("navContext"), "artist context menu")
+    var artistOverlay = named("artistMenuOverlay")
+    until(function(){return artistOverlay.opened && shown("artistBlock").enabled}, "artist menu uses loaded card status")
+    check(JSON.stringify(p.activeRoute) === artistRoute && p.featureDisplay === featureBefore,
+      "artist menu adds no route or feature page")
+    check(Math.abs(artistPage.viewportY - artistScroll) < 1, "artist menu preserves viewport")
+    var artistMenu = shown("artistActionsMenu")
+    var menuCorner = artistMenu.mapToItem(card, 0, 0)
+    check(menuCorner.x >= 0 && menuCorner.y >= 0 && menuCorner.x + artistMenu.width <= card.width
+      && menuCorner.y + artistMenu.height <= card.height, "artist menu fits popup bounds")
+    if (wide) check(artistMenu.width < card.width / 2, "Wide artist menu is a compact popover")
+    click(shown("artistBlock"), "request artist exclusion")
+    check(artistOverlay.confirming && p.entityFeatureDisplay.entity.blocked === false, "exclusion waits for confirmation")
+    shot("ArtistMenuConfirm-" + mode)
+    click(shown("artistBlockCancel"), "cancel artist exclusion")
+    check(!artistOverlay.confirming && !p.entityFeatureDisplay.entity.blocked, "cancel leaves artist recommendations unchanged")
+    shot("ArtistMenu-" + mode)
+    input.keyClick(Qt.Key_Escape)
+    input.wait(100)
+    check(!artistOverlay.opened && p.activeRoute.kind === "artist" && named("keyCatcher").activeFocus,
+      "Escape closes artist menu and restores page focus")
+    input.wait(450)
+    click(named("navContext"), "artist menu for keyboard Back")
+    until(function(){return artistOverlay.opened}, "artist menu reopens after Escape")
+    input.keyClick(Qt.Key_Backspace)
+    input.wait(100)
+    check(!artistOverlay.opened && p.activeRoute.kind === "artist", "Back closes focused artist menu without popping route")
+    input.wait(450)
+    click(named("navContext"), "reopen artist menu")
+    until(function(){return artistOverlay.opened}, "artist menu reopens after Back")
+    input.mouseClick(artistOverlay, 20, 80)
+    input.wait(100)
+    check(!artistOverlay.opened && p.activeRoute.kind === "artist", "outside click closes menu without navigation")
+    input.wait(450)
+    click(named("navContext"), "artist menu for confirmed exclusion")
+    click(shown("artistBlock"), "artist exclusion")
+    click(shown("artistBlockConfirm"), "confirm artist exclusion")
+    until(function(){return p.entityFeatureDisplay.entity.blocked && shown("artistBlock").enabled}, "artist exclusion commits through real CLI")
+    check(shown("artistBlock").text === "Вернуть в рекомендации", "menu offers inverse confirmed action")
+    click(shown("artistBlock"), "restore artist recommendations")
+    click(shown("artistBlockConfirm"), "confirm restoring recommendations")
+    until(function(){return !p.entityFeatureDisplay.entity.blocked && shown("artistBlock").enabled}, "artist restore commits through real CLI")
+    key(Qt.Key_Escape)
+    check(p.activeRoute.kind === "artist" && Math.abs(artistPage.viewportY - artistScroll) < 1,
+      "both artist actions preserve card and viewport")
+    artistPage.preserveViewport(0)
+    playbackCount(0)
     if (wide) shot("X3WideLibraryLikesArtist")
     stale("entity", function() {
       check(p.catalogDisplay.entity.id === "ccr" && p.activeRoute.args.id === "ccr", "stale artist identity cannot replace active entity")
@@ -257,6 +419,47 @@ ShellRoot {
     click(named("navDepth0"), "Library root breadcrumb")
     route(1, "libraryHome")
     check(p.atRoot, "root breadcrumb removes whole deep path")
+
+    if (wide) {
+      var wideRail = named("wideRail")
+      var heading = text("Закреплённые", wideRail)
+      var pin = shown("railPin")
+      var likesLabel = text("Мне нравится", wideRail)
+      check(heading && likesLabel.mapToItem(wideRail, 0, 0).y < heading.mapToItem(wideRail, 0, 0).y
+          && heading.mapToItem(wideRail, 0, 0).y < pin.mapToItem(wideRail, 0, 0).y, "heading separates Likes from pins")
+      check(pin.glyph === "󰠃", "artist uses its own icon")
+      check(!text("Недавно слушали", wideRail) && !text("В дороге", wideRail)
+          && !text("Плейлисты", wideRail), "rail omits history and unpinned playlists")
+      check(!!text("В дороге", library), "unpinned playlist remains on the Library home")
+      shot("RailPins-wide")
+      click(pin, "pinned artist in rail")
+      route(1, "artist")
+      check(p.activeRoute.args.id === "ccr" && pin.selected, "rail opens and highlights the pinned artist")
+      key(Qt.Key_Escape)
+      route(1, "libraryHome")
+    }
+    library.preserveViewport(0)
+    clickText("Закреплённое", library)
+    route(1, "librarySection")
+    var pinnedPage = named("featuresPage")
+    check(p.featureSpec.view === "pins" && p.featureDisplay.rows.length === 1,
+      "pinned artist appears in the Library")
+    shot("Pins-" + mode)
+    clickText("Creedence Clearwater Revival", pinnedPage)
+    route(1, "artist")
+    until(function(){return shown("entityPin").enabled && shown("entityPin").tooltipText === "Открепить"},
+      "pinned row opens the artist with the saved pin")
+    key(Qt.Key_Escape)
+    route(1, "librarySection")
+    clickText("Открепить", pinnedPage)
+    until(function(){return p.featureDisplay.rows.length === 0}, "direct unpin removes the row through CLI")
+    if (wide) until(function() { return !text("Creedence Clearwater Revival", wideRail)
+        && !text("Закреплённые", wideRail) }, "last unpin hides the pinned section")
+    check(!!text("Здесь появится музыка, которую вы закрепите кнопкой с булавкой.", pinnedPage),
+      "unpinning the last item shows the empty state")
+    playbackCount(0)
+    key(Qt.Key_Escape)
+    route(1, "libraryHome")
 
     tab(2)
     route(2, "search")
@@ -284,6 +487,8 @@ ShellRoot {
     var savedField = field.text
     clickText("Creedence Clearwater Revival", catalog)
     route(2, "artist")
+    until(function(){return shown("entityPin").enabled && shown("entityPin").tooltipText === "Закрепить в медиатеке"},
+      "artist card reflects unpin from the Library")
     shot(wide ? "X4WideSearchArtist" : "Y3CompactSearchArtist")
     click(named("navBack"), "search artist Back")
     route(2, "search")
@@ -396,6 +601,24 @@ ShellRoot {
     playbackCount(3)
     key(Qt.Key_Escape)
     route(1, "libraryHome")
+    p.openPlayerActions()
+    until(function() {
+      var toggle = named("currentWavePin")
+      return onScreen(toggle) && toggle.enabled && toggle.text === "Закрепить текущую Волну"
+    }, "current Wave actions open with a confirmed pin status")
+    click(shown("currentWavePin"), "rejected current Wave action")
+    until(function() { return !!text("Список закреплений обновляется.")
+        && shown("currentWavePin").text === "Обновить закрепление Волны" }, "pin rejection is visible in the menu")
+    click(shown("currentWavePin"), "refresh current Wave pin status")
+    until(function() { return shown("currentWavePin").enabled
+        && shown("currentWavePin").text === "Закрепить текущую Волну" }, "refresh restores confirmed toggle")
+    click(shown("currentWavePin"), "pin current Wave")
+    until(function() { return p.data.currentWavePinned === true
+        && shown("currentWavePin").text === "Открепить текущую Волну" }, "current Wave pinned through CLI")
+    click(shown("currentWavePin"), "unpin current Wave")
+    until(function() { return p.data.currentWavePinned === false }, "current Wave unpinned through CLI")
+    playbackCount(3)
+    p.closePlayerActions()
     // Closing is terminal for the offscreen input window; exercise all pointer scenarios first.
     key(Qt.Key_3)
     route(2, "search")
@@ -429,12 +652,14 @@ ShellRoot {
     TestCase { id: input; parent: shell.card || host; name: "FullPanelNavigationInput"; when: false }
     Loader {
       id: musicLoader
-      source: Qt.resolvedUrl("MusicSession.qml")
+      source: Qt.resolvedUrl("qml/controllers/MusicSession.qml")
       onLoaded: item.panelOpened = true
     }
     Loader {
       id: panelLoader
-      source: Qt.resolvedUrl("Panel.qml")
+      // Production opens a lazy popup after the bar has already polled status.
+      active: !!musicLoader.item && musicLoader.item.snapshot.authenticated === true
+      sourceComponent: Plugin.Panel {}
       onLoaded: {
         item.bar = fakeBar
         item.settings = ({})
@@ -453,6 +678,8 @@ ShellRoot {
         shell.check(item.showAuth, "confirmed signed-out session offers sign-in")
         startupSession.snapshot = savedSnapshot
         item.session = Qt.binding(function() { return musicLoader.item })
+        shell.check(item.data.queueRevision === 1 && item.queueDisplay.length === 0,
+          "bar seeds revisions before popup receives heavy models")
         item.open()
       }
     }

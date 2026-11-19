@@ -1,7 +1,8 @@
 import json
 import socket
+import threading
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from backend import backend
 
@@ -52,6 +53,58 @@ class FakePlayer:
 
 
 class IpcConnectionTests(unittest.TestCase):
+    @staticmethod
+    def make_playback_player():
+        player = backend.Player.__new__(backend.Player)
+        player.lock = threading.RLock()
+        player.client = object()
+        player.catalog = player._empty_catalog()
+        player.catalog_search_models = {"tracks": [object()]}
+        player.catalog_entity_tracks = [object()]
+        player.catalog_generation = 0
+        player.library_results = [object()]
+        player.library_source = list(player.library_results)
+        player.library_offset = 1
+        player.library_origin = ("likes", "")
+        player.active_library_cache_key = "likes"
+        player.state = {"libraryBrowseName": "Test", "error": ""}
+        player._set_queue = Mock()
+        player._url = Mock()
+        return player
+
+    def test_invalid_playback_indices_return_errors_without_changing_playback(self):
+        player = self.make_playback_player()
+        requests = [
+            {"command": command, **extra, **index}
+            for command, extra in (("play_catalog_track", {"source": "entity"}),
+                                   ("play_catalog_track", {"source": "search"}),
+                                   ("play_library_track", {}))
+            for index in ({}, {"index": -1}, {"index": 1}, {"index": "invalid"})
+        ]
+        for request in requests:
+            with self.subTest(request=request):
+                conn = FakeConnection([(json.dumps(request) + "\n").encode()])
+                backend._serve_connection(conn, player.handle)
+                self.assertIn("индекс", conn.response().get("error", "").lower())
+                self.assertNotIn("ok", conn.response())
+        player._set_queue.assert_not_called()
+        player._url.assert_not_called()
+        self.assertEqual(player.state, {"libraryBrowseName": "Test", "error": ""})
+
+    def test_invalid_catalog_source_returns_an_error(self):
+        player = self.make_playback_player()
+        for source in (None, "", "entity,0", "unknown"):
+            with self.subTest(source=source):
+                request = {"command": "play_catalog_track", "index": 0}
+                if source is not None:
+                    request["source"] = source
+                conn = FakeConnection([(json.dumps(request) + "\n").encode()])
+                backend._serve_connection(conn, player.handle)
+                self.assertIn("источник", conn.response().get("error", "").lower())
+                self.assertNotIn("ok", conn.response())
+        player._set_queue.assert_not_called()
+        player._url.assert_not_called()
+
     def test_transport_accepts_a_plain_command_handler(self):
         conn = FakeConnection([b'{"command":"status"}\n'])
 

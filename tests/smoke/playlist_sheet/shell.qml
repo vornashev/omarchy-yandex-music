@@ -2,6 +2,8 @@ import QtQuick
 import QtQuick.Window
 import QtTest
 import Quickshell
+import "qml/components"
+import "qml/controllers"
 
 ShellRoot {
   id: shell

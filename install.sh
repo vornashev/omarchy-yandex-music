@@ -35,7 +35,7 @@ done
 VERSION="$(jq -er '.version' "$ROOT/manifest.json")"
 DEPENDENCY_DIGEST="$(sha256sum "$ROOT/requirements.txt" \
   "$ROOT/vendor/yandex_music-3.2.2-py3-none-any.whl" | cut -d' ' -f1 | sha256sum | cut -d' ' -f1)"
-BACKEND_DIGEST="$( { sha256sum "$ROOT/backend/backend.py" "$ROOT/backend/audio_cache.py" \
+BACKEND_DIGEST="$( { sha256sum "$ROOT/backend/backend.py" "$ROOT/backend/audio_cache.py" "$ROOT/backend/features.py" \
   "$ROOT/systemd/omarchy-yandex-music.service" | cut -d' ' -f1; printf '%s\n' "$CACHE_HOME"; } | sha256sum | cut -d' ' -f1)"
 RUNTIME_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 mkdir -p "$RUNTIME_DIR"
@@ -52,21 +52,13 @@ chmod 700 "$AUDIO_CACHE_DIR"
 # everything required for future automatic backend updates into that location.
 if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   mkdir -p "$PLUGIN_DIR/backend" "$PLUGIN_DIR/bin" "$PLUGIN_DIR/systemd" "$PLUGIN_DIR/vendor"
-  install -m 644 "$ROOT/manifest.json" "$ROOT/BarWidget.qml" \
-    "$ROOT/BarPlayer.qml" "$ROOT/WidgetLogic.qml" "$ROOT/Panel.qml" \
-    "$ROOT/VolumeControl.qml" \
-    "$ROOT/BoundedTextField.qml" \
-    "$ROOT/MusicSession.qml" "$ROOT/SessionController.qml" "$ROOT/DetailsReconciler.js" \
-    "$ROOT/TransportIntents.js" "$ROOT/ActionIntents.js" \
-    "$ROOT/CatalogController.qml" "$ROOT/CatalogImage.qml" "$ROOT/CatalogPage.qml" \
-    "$ROOT/LibraryController.qml" \
-    "$ROOT/LibraryPage.qml" "$ROOT/CollectionController.qml" "$ROOT/SkeletonList.qml" \
-    "$ROOT/PlaylistSheet.qml" \
-    "$ROOT/NavController.qml" "$ROOT/NavHeader.qml" "$ROOT/CollectionPage.qml" \
-    "$ROOT/AuthPage.qml" "$ROOT/BarButton.qml" "$ROOT/IconButton.qml" "$ROOT/LucideIcon.qml" "$ROOT/LucideIcons.js" \
-    "$ROOT/CompactPlayer.qml" "$ROOT/MiniBar.qml" "$ROOT/MusicSegmented.qml" "$ROOT/MusicSelect.qml" "$ROOT/NowPane.qml" "$ROOT/OptionTile.qml" "$ROOT/PageTabs.qml" "$ROOT/PlayButton.qml" \
-    "$ROOT/RailItem.qml" "$ROOT/RailPane.qml" "$ROOT/RoundImage.qml" "$ROOT/SeekBar.qml" "$ROOT/SettingRow.qml" "$ROOT/SettingsPage.qml" "$ROOT/TrackPane.qml" \
-    "$ROOT/requirements.in" "$ROOT/requirements.txt" "$PLUGIN_DIR/"
+  install -m 644 "$ROOT/manifest.json" "$ROOT/requirements.in" "$ROOT/requirements.txt" "$PLUGIN_DIR/"
+  while IFS= read -r -d '' source; do
+    relative="${source#"$ROOT/"}"
+    install -D -m 644 "$source" "$PLUGIN_DIR/$relative"
+    # Remove the known files from the former flat layout after copying them.
+    rm -f "$PLUGIN_DIR/$(basename "$source")"
+  done < <(find "$ROOT/qml" -type f \( -name '*.qml' -o -name '*.js' \) -print0)
   install -m 644 "$ROOT/vendor/README.md" \
     "$ROOT/vendor/yandex_music-3.2.2.origin.json" \
     "$ROOT/vendor/yandex_music-3.2.2-py3-none-any.whl" "$PLUGIN_DIR/vendor/"
@@ -74,6 +66,7 @@ if [[ "$(realpath "$ROOT")" != "$(realpath "$PLUGIN_DIR")" ]]; then
   install -m 755 "$ROOT/install.sh" "$ROOT/bootstrap.sh" "$ROOT/uninstall.sh" "$PLUGIN_DIR/"
   install -m 755 "$ROOT/backend/backend.py" "$PLUGIN_DIR/backend/backend.py"
   install -m 644 "$ROOT/backend/audio_cache.py" "$PLUGIN_DIR/backend/audio_cache.py"
+  install -m 644 "$ROOT/backend/features.py" "$PLUGIN_DIR/backend/features.py"
   install -m 755 "$ROOT/bin/omarchy-yandex-music" "$PLUGIN_DIR/bin/omarchy-yandex-music"
   install -m 755 "$ROOT/bin/read-clipboard.py" "$PLUGIN_DIR/bin/read-clipboard.py"
   install -m 644 "$ROOT/systemd/omarchy-yandex-music.service" \
@@ -87,7 +80,7 @@ if ((BACKEND_ONLY)) &&
   [[ -r "$DEPENDENCY_MARKER" && "$(<"$DEPENDENCY_MARKER")" == "$DEPENDENCY_DIGEST" ]] &&
   [[ -r "$BACKEND_MARKER" && "$(<"$BACKEND_MARKER")" == "$BACKEND_DIGEST" ]] &&
   [[ -r "$CACHE_MARKER" && "$(<"$CACHE_MARKER")" == "$CACHE_HOME" ]] &&
-  [[ -x "$APP_DIR/venv/bin/python" && -f "$APP_DIR/backend.py" && -f "$APP_DIR/audio_cache.py" ]] &&
+  [[ -x "$APP_DIR/venv/bin/python" && -f "$APP_DIR/backend.py" && -f "$APP_DIR/audio_cache.py" && -f "$APP_DIR/features.py" ]] &&
   [[ -x "$HOME/.local/bin/omarchy-yandex-music" && -f "$UNIT_DIR/omarchy-yandex-music.service" ]]; then
   systemctl --user daemon-reload
   systemctl --user enable --now omarchy-yandex-music.service >/dev/null
@@ -97,6 +90,7 @@ fi
 
 install -m 755 "$ROOT/backend/backend.py" "$APP_DIR/backend.py"
 install -m 644 "$ROOT/backend/audio_cache.py" "$APP_DIR/audio_cache.py"
+install -m 644 "$ROOT/backend/features.py" "$APP_DIR/features.py"
 install -m 755 "$ROOT/bin/omarchy-yandex-music" "$HOME/.local/bin/omarchy-yandex-music"
 # systemd does not expand shell variables in ReadWritePaths. Capture the same
 # absolute XDG cache path in both its environment and the narrow write allowance.

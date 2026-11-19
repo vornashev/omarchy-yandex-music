@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import "../../ActionIntents.js" as ActionIntents
+import "../../qml/controllers/ActionIntents.js" as ActionIntents
 
 TestCase {
   name: "ActionIntents"

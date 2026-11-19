@@ -50,7 +50,12 @@ class StateSaveTests(unittest.TestCase):
             self.assertEqual(path.stat().st_mode & 0o777, 0o600)
 
     def test_concurrent_state_saves_keep_the_latest_snapshot(self):
-        player = backend.Player()
+        # The save test needs an idle model only. Starting the restore worker
+        # here would attach to the desktop account and replace its mpv socket.
+        with patch.object(threading.Thread, "start"), patch.object(backend, "MprisBridge"), \
+             patch.object(backend, "AudioCache"), \
+             patch.object(backend.Player, "_load_preferences", return_value=dict(backend.DEFAULT_PREFERENCES)):
+            player = backend.Player()
         player.state.update(queueName="test", position=1, playing=False)
 
         first_in_write = threading.Event()

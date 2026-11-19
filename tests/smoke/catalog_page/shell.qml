@@ -1,5 +1,7 @@
 import QtQuick
 import Quickshell
+import "qml/controllers"
+import "qml/pages"
 
 ShellRoot {
   id: shell

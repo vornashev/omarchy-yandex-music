@@ -69,6 +69,15 @@ def bump(state, name):
 def execute(state, command, args):
     if command in ("status", "details"):
         result = copy.deepcopy(state)
+        if command == "status":
+            # Production bar polling carries revisions, never the heavy models.
+            for field in ("queueTracks", "libraryTracks", "libraryHub", "catalog", "collection", "features", "entityFeatures", "railPins"):
+                result.pop(field, None)
+            result.pop("currentWaveSeeds", None)
+        elif result.get("currentWaveSeeds") and result.get("railPins"):
+            result["currentWavePinned"] = any(row.get("action", {}).get("seeds") == result["currentWaveSeeds"]
+                                              for row in state.get("pins", []))
+        result.pop("pins", None)
         if command == "details" and state.get("testStaleKind"):
             bump(state, "testStaleReads")
             result["testStaleReads"] = state["testStaleReads"]
@@ -82,8 +91,73 @@ def execute(state, command, args):
                               libraryTracks=[dict(track(0), title="STALE COLLECTION MUST NOT APPEAR")],
                               libraryRevision=state["libraryRevision"] + 1000)
         return result
-    if command == "test_stale":
+    if command in ("entity_feature_open", "entity_feature_action"):
+        previous=state.get("features")
+        state["features"]=state.get("entityFeatures",{})
+        execute(state, command.removeprefix("entity_"), args)
+        state["entityFeatures"]=state.pop("features")
+        if previous is not None: state["features"]=previous
+        return {"ok":True}
+    if command == "feature_open":
+        spec=json.loads(args[0]); spec=spec.get("request",spec); view=spec.get("view", "overview")
+        previous=state.get("features", {})
+        state["features"]={"identity":json.dumps(spec,ensure_ascii=False,sort_keys=True,separators=(",",":")),
+            "view":view,"title":spec.get("title") or "Обзор","revision":previous.get("revision",0)+1,
+            "loading":False,"busy":False,"error":"","message":"","rows":[],"hasMore":False}
+        f=state["features"]
+        if view == "overview": f["rows"]=[{"entityType":"action","title":"Чарт","action":{"view":"chart"}}]
+        if view == "chart": f.update(rows=[track(i) for i in range(50)],hasMore=True,title="Чарт")
+        if view == "pins": f.update(title="Закреплённое", rows=state.get("pins", []))
+        if view == "entity":
+            pinned = any(row["entityType"] == spec.get("type") and row["id"] == spec.get("id")
+                         for row in state.get("pins", []))
+            f.update(title="В дороге",entity={"entityType":spec.get("type","playlist"),"id":spec.get("id","7"),"kind":"7","owner":"42",
+                "title":"В дороге","description":"Демонстрационное описание","visibility":"private",
+                "favoriteKnown":True,"favorite":False,"pinnedKnown":True,"pinned":pinned,"editable":spec.get("type") == "playlist",
+                "blockKnown":True,"blocked":False,"playlistRevision":5},rows=[track(i) for i in range(8)])
+    elif command == "rail_pins":
+        state["railPins"] = {"revision": state.get("railPins", {}).get("revision", 0) + 1,
+                            "identity": "test-pins", "rows": state.get("pins", [])}
+    elif command == "current_wave_pin":
+        command_data = json.loads(args[0])
+        seeds = state["currentWaveSeeds"]
+        assert command_data["identity"] == state["railPins"]["identity"] and command_data["seeds"] == seeds
+        if not state.get("testWavePinRejected"):
+            state["testWavePinRejected"] = True
+            return {"error": "Список закреплений обновляется."}
+        state["pins"] = ([{"title":"Моя волна", "entityType":"action", "action":{"op":"wave", "seeds":seeds}}]
+                         if command_data["value"] else [])
+        state["railPins"]["revision"] += 1
+        state["railPins"]["rows"] = state["pins"]
+    elif command == "feature_action":
+        r=json.loads(args[0]); f=state["features"]
+        if r.get("identity") == f.get("identity"):
+            f["revision"]+=1
+            if r["op"] == "favorite": f["entity"]["favorite"]=r["value"]
+            elif r["op"] == "pin":
+                f["entity"]["pinned"] = r["value"]
+                pinned = [row for row in state.get("pins", []) if row["id"] != f["entity"]["id"]]
+                if r["value"] and f["entity"]["entityType"] == "artist":
+                    pinned.append(dict(ARTIST, entityType="artist", title=ARTIST["name"], subtitle="Исполнитель",
+                                       trailing={"op":"unpin", "type":"artist", "args":[f["entity"]["id"]], "title":"Открепить"}))
+                state["pins"] = pinned
+            elif r["op"] == "unpin":
+                assert f["view"] == "pins" and r["type"] == "artist" and r["args"] == ["ccr"]
+                state["pins"] = f["rows"] = []
+            elif r["op"] == "block":
+                assert r.get("confirmed") is True, "artist exclusion needs confirmation"
+                f["entity"]["blocked"]=r["value"]
+            elif r["op"] == "savePlaylist":
+                f["entity"].update(title=r["title"],description=r["description"],visibility=r["visibility"])
+                f["message"]="Готово"
+            elif r["op"] == "more": f.update(rows=[track(i) for i in range(78)],hasMore=False)
+            if r["op"] in ("pin", "unpin") and "railPins" in state:
+                state["railPins"]["revision"] += 1
+                state["railPins"]["rows"] = state["pins"]
+    elif command == "test_stale":
         state["testStaleKind"] = args[0] if args else ""
+    elif command == "test_arguments":
+        state["testArguments"] = args
     elif command == "catalog_suggest":
         return {"query": args[1], "generation": int(args[0]), "items": []}
     elif command == "catalog_clear_suggestions":
@@ -155,6 +229,8 @@ def execute(state, command, args):
         if command == "play_library_track":
             selected = state["libraryTracks"][int(args[0])]
             state.update(title=selected["title"], trackId=selected["trackId"], playing=True)
+        elif command == "wave":
+            state["currentWaveSeeds"] = ["user:onyourwave", "settingMoodEnergy:calm"]
     elif command not in ("network", "track_info"):
         raise ValueError(f"Unsupported synthetic CLI command: {command}")
     return copy.deepcopy(state)

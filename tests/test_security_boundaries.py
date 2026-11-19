@@ -163,7 +163,7 @@ class SecurityBoundaryTests(unittest.TestCase):
         player.play_wave()
         self.assertEqual(calls[0], ["user:onyourwave", "settingMoodEnergy:fun", "settingDiversity:discover", "settingLanguage:not-russian"])
         self.assertEqual(queue_calls[0][0], ([track], "Моя волна", "user:onyourwave", "batch"))
-        self.assertEqual(queue_calls[0][1], {"radio_session_id": "session-42"})
+        self.assertEqual(queue_calls[0][1], {"radio_session_id": "session-42", "radio_seeds": calls[0]})
 
     def test_notification_cover_streams_with_a_hard_limit(self):
         response = FakeResponse([b"1234", b"56"])

@@ -1,5 +1,6 @@
 import QtQuick
 import Quickshell
+import "qml/bar"
 
 ShellRoot {
   BarWidget { id: widget }

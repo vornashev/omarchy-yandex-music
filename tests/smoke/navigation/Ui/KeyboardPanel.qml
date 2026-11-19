@@ -2,6 +2,7 @@ import QtQuick
 import QtQuick.Window
 import "../Reg.js" as Reg
 import qs.Commons
+import qs.Commons as Commons
 
 Window {
   id: root
@@ -14,7 +15,7 @@ Window {
   property int padding: Style.spacing.popupPadding
   property int contentWidth: Style.space(280)
   property int contentHeight: Style.space(200)
-  property var borderSpec: Border.surfaceSpec("popups", "border", Color.popups.border, Math.max(1, Style.space(2)))
+  property var borderSpec: Border.surfaceSpec("popups", "border", Commons.Color.popups.border, Math.max(1, Style.space(2)))
   property bool open: false
   property Item focusTarget: null
   onOpenChanged: if (open) Qt.callLater(function() {
@@ -45,7 +46,7 @@ Window {
   BorderSurface {
     id: card
     width: root.contentWidth; height: root.contentHeight
-    color: Color.popups.background
+    color: Commons.Color.popups.background
     borderSpec: root.borderSpec
     padding: root.padding
     radius: Style.cornerRadius

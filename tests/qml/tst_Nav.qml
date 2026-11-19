@@ -1,6 +1,6 @@
 import QtQuick
 import QtTest
-import "../.."
+import "../../qml/controllers"
 
 TestCase {
   name: "Nav"

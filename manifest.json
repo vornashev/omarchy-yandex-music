@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "vornashev.yandex-music",
   "name": "Yandex Music",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "author": "vornashev",
   "description": "Native Yandex Music player with catalog, owned-playlist management, library, queue and MPRIS",
   "kinds": ["bar-widget"],
-  "entryPoints": { "barWidget": "BarWidget.qml" },
+  "entryPoints": { "barWidget": "qml/bar/BarWidget.qml" },
   "barWidget": {
     "displayName": "Yandex Music",
     "description": "Play Yandex Music natively without keeping a browser open",

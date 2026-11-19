@@ -8,7 +8,7 @@ import os
 import re
 import threading
 import time
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Callable
 from urllib.parse import urlsplit
@@ -37,6 +37,7 @@ class AudioSource:
     url: str
     codec: str
     bitrate: int
+    key: str = field(default="", repr=False)
 
 
 @dataclass(frozen=True)
@@ -67,6 +68,7 @@ class AudioCache:
         self.budget = budget
         self.max_file = min(max_file, budget)
         self.condition = threading.Condition(threading.RLock())
+        self.download_lock = threading.Lock()
         self.entries: dict[str, dict] = {}
         self.protected: set[AudioIdentity] = set()
         self.protected_paths: set[Path] = set()
@@ -229,6 +231,10 @@ class AudioCache:
         return total + extra <= self.budget
 
     def _download(self, request: CacheRequest, cancel: threading.Event) -> Path | None:
+        with self.download_lock:
+            return self._download_serial(request, cancel)
+
+    def _download_serial(self, request: CacheRequest, cancel: threading.Event) -> Path | None:
         response = None
         partial = manifest_partial = None
         published = False
@@ -257,6 +263,10 @@ class AudioCache:
                 if not self._room(length + 4096 if length else 4096):
                     return None
             fd = os.open(partial, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW, 0o600)
+            decryptor = None
+            if source.key:
+                from cryptography.hazmat.primitives.ciphers import Cipher, algorithms, modes
+                decryptor = Cipher(algorithms.AES(bytes.fromhex(source.key)), modes.CTR(bytes(16))).decryptor()
             digest = hashlib.sha256()
             size = 0
             deadline = time.monotonic() + DOWNLOAD_TIMEOUT
@@ -271,6 +281,7 @@ class AudioCache:
                     with self.condition:
                         if not self._room(len(chunk) + 4096):
                             return None
+                    if decryptor: chunk = decryptor.update(chunk)
                     if file.write(chunk) != len(chunk): return None
                     digest.update(chunk)
                     size += len(chunk)

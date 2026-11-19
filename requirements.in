@@ -2,3 +2,6 @@
 dbus-next==0.2.3
 # Built and reviewed from upstream commit 9ca132e5c18a72aab779c1fc68c169380a9357d0.
 ./vendor/yandex_music-3.2.2-py3-none-any.whl
+
+# Streaming AES-CTR decryption for SDK encraw audio.
+cryptography==50.0.2

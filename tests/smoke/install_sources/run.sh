@@ -23,16 +23,24 @@ chmod +x "$home/.local/bin/omarchy-yandex-music"
 printf '#!/bin/sh\nexit 0\n' >"$probe/bin/systemctl"
 chmod +x "$probe/bin/systemctl"
 
+mkdir -p "$plugin"
+printf 'old layout\n' >"$plugin/BarWidget.qml"
+
 HOME="$home" XDG_RUNTIME_DIR="$runtime" PATH="$probe/bin:$PATH" \
   bash "$root/install.sh" --backend-only >"$probe/output" 2>&1
 
-for name in BarWidget.qml BarPlayer.qml WidgetLogic.qml Panel.qml VolumeControl.qml \
-  MusicSession.qml SessionController.qml DetailsReconciler.js TransportIntents.js ActionIntents.js \
-  CatalogController.qml CatalogImage.qml CatalogPage.qml LibraryController.qml LibraryPage.qml \
-  CollectionController.qml PlaylistSheet.qml SkeletonList.qml AuthPage.qml BarButton.qml IconButton.qml LucideIcon.qml LucideIcons.js CompactPlayer.qml MiniBar.qml MusicSegmented.qml MusicSelect.qml NavController.qml NavHeader.qml CollectionPage.qml NowPane.qml OptionTile.qml PageTabs.qml PlayButton.qml RailItem.qml RailPane.qml RoundImage.qml SeekBar.qml SettingRow.qml SettingsPage.qml TrackPane.qml; do
-  if [[ ! -f "$plugin/$name" ]] || ! cmp -s "$root/$name" "$plugin/$name"; then
-    echo "Installer omitted or changed $name" >&2
+while IFS= read -r -d '' source; do
+  relative="${source#"$root/"}"
+  if ! cmp -s "$source" "$plugin/$relative"; then
+    echo "Installer omitted or changed $relative" >&2
     exit 1
   fi
-done
+  if [[ -e "$plugin/$(basename "$source")" ]]; then
+    echo "Installer retained a file from the flat layout: $source" >&2
+    exit 1
+  fi
+done < <(find "$root/qml" -type f \( -name '*.qml' -o -name '*.js' \) -print0)
+cmp "$root/manifest.json" "$plugin/manifest.json"
+entry="$(jq -r .entryPoints.barWidget "$plugin/manifest.json")"
+[[ -f "$plugin/$entry" ]]
 echo 'Installer source copy smoke: OK'

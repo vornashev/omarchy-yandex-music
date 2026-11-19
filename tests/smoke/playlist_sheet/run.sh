@@ -7,9 +7,8 @@ trap 'rm -rf "$probe"' EXIT
 mkdir -p "$probe/harness" "$probe/home" "$probe/runtime" "$probe/config"
 chmod 700 "$probe/runtime"
 cp "$root/tests/smoke/playlist_sheet/shell.qml" "$probe/harness/shell.qml"
-for name in BoundedTextField.qml PlaylistSheet.qml CollectionController.qml CatalogImage.qml IconButton.qml LucideIcon.qml LucideIcons.js; do
-  ln -s "$root/$name" "$probe/harness/$name"
-done
+bash "$root/tests/smoke/link_qml.sh" "$root" "$probe/harness"
+
 for name in Commons Ui services; do
   ln -s "/usr/share/omarchy/shell/$name" "$probe/harness/$name"
 done

@@ -6,13 +6,28 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
-### Fixed
-
-- Replace native clipboard intake in catalog search, station filtering and playlist creation with an asynchronous, byte- and deadline-bounded Wayland reader. Clipboard changes never request text payloads; keyboard, primary-selection and context-menu paste share the same limits. Failed or stale transfers leave the field unchanged.
+## [0.13.0] - 2026-11-19
 
 ### Added
 
-- English/Russian executable-payload review notes for the exact vendored SDK 3.2.2, separating whole-package AST inventory and targeted source inspection from source correspondence, residual risks and marketplace approval.
+- Favorite or pin albums, artists and playlists from their cards. Pinned items appear next to Likes in the Library and in the Wide sidebar. Pin or unpin the current Wave from the player menu during playback.
+- Edit the title, description, visibility and track order of your playlists. Deleting a playlist requires confirmation.
+- Browse charts, new releases and genre stations, or search separately for podcast shows and episodes. Find similar music from catalog cards and the track menu. The artist menu lets you exclude an artist from recommendations or restore them.
+- Choose Wave activities and stations, resume the last Wave, or listen to continuous generative streams. Return to your saved queue after a stream.
+- The player requests lossless audio when available for your account and track, decrypts supported files and shows the actual codec. It falls back to the standard source when the file is unavailable.
+
+### Fixed
+
+- Fixed album and playlist track playback, search and other multi-argument commands on Qt 6.12. The popup reports command errors and loads the queue on first open. Restart the shell after updating.
+- The player restarts local mpv if its control socket stops accepting connections.
+- Wave pin changes are checked against the refreshed Yandex list. Pinned rows stay visible during refresh.
+- Fixed missing accent colors, tooltip errors and dismissal of actions, lyrics and track details when the current track disappears.
+- Wayland clipboard reads in search, station filtering and playlist creation have size and time limits. Failed transfers preserve the field contents.
+
+### Changed
+
+- Artist actions open over the card and preserve the scroll position. The Likes refresh button now has a matching icon and tooltip.
+- The installer moves the interface into the `qml/` directory. The README includes a mouse gesture table, and the SDK documentation records the source review for the bundled 3.2.2 release.
 
 ## [0.12.0] - 2026-10-13
 
@@ -356,7 +371,8 @@ All notable changes to this project are documented here. The format follows [Kee
 - Initial public release
 - Device OAuth, background `mpv` playback, library, search, queue, and persistent state
 
-[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.12.0...HEAD
+[Unreleased]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.13.0...HEAD
+[0.13.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.12.0...v0.13.0
 [0.12.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.1...v0.12.0
 [0.11.1]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.11.0...v0.11.1
 [0.11.0]: https://github.com/vornashev/omarchy-yandex-music/compare/v0.10.0...v0.11.0
