@@ -1314,6 +1314,65 @@ Panel {
     visible: false
   }
 
+  // Keep KeyboardPanel's fullscreen dismissal mask from swallowing pointer and
+  // wheel events aimed at our own bar widget while the popup is open.
+  TransformWatcher {
+    id: barWidgetWatcher
+    a: ("anchorWindow" in panel && panel.anchorWindow) ? panel.anchorWindow.contentItem : null
+    b: root.hostWidget
+  }
+
+  Region {
+    id: openMask
+    x: 0
+    y: 0
+    width: ("screenW" in panel) ? Math.max(0, Math.round(Number(panel.screenW) || 0)) : 0
+    height: ("screenH" in panel) ? Math.max(0, Math.round(Number(panel.screenH) || 0)) : 0
+    Region {
+      id: barWidgetHole
+      objectName: "barWidgetHole"
+      intersection: Intersection.Subtract
+      readonly property var anchorWindow: ("anchorWindow" in panel) ? panel.anchorWindow : null
+      readonly property string barPos: ("barPos" in panel) ? String(panel.barPos || "top") : "top"
+      readonly property real barW: ("barW" in panel) ? Number(panel.barW || 0) : 0
+      readonly property real barH: ("barH" in panel) ? Number(panel.barH || 0) : 0
+      readonly property bool activeHole: root.opened
+        && root.hostWidget !== null
+        && root.hostWidget !== undefined
+        && root.hostWidget.visible
+        && root.hostWidget.width > 0
+        && root.hostWidget.height > 0
+        && anchorWindow !== null
+        && anchorWindow !== undefined
+        && anchorWindow.contentItem !== null
+        && anchorWindow.contentItem !== undefined
+      readonly property point widgetPos: {
+        barWidgetWatcher.transform
+        if (!activeHole) return Qt.point(0, 0)
+        return root.hostWidget.mapToItem(anchorWindow.contentItem, 0, 0)
+      }
+      readonly property real screenOffsetX: barPos === "right" ? Math.max(0, openMask.width - barW) : 0
+      readonly property real screenOffsetY: barPos === "bottom" ? Math.max(0, openMask.height - barH) : 0
+      readonly property int holeLeft: activeHole ? Math.max(0, Math.floor(screenOffsetX + widgetPos.x)) : 0
+      readonly property int holeTop: activeHole ? Math.max(0, Math.floor(screenOffsetY + widgetPos.y)) : 0
+      readonly property int holeRight: activeHole
+        ? Math.max(holeLeft, Math.ceil(screenOffsetX + widgetPos.x + root.hostWidget.width)) : 0
+      readonly property int holeBottom: activeHole
+        ? Math.max(holeTop, Math.ceil(screenOffsetY + widgetPos.y + root.hostWidget.height)) : 0
+      x: holeLeft
+      y: holeTop
+      width: holeRight - holeLeft
+      height: holeBottom - holeTop
+    }
+  }
+
+  Binding {
+    target: panel
+    property: "mask"
+    value: openMask
+    when: ("mask" in panel)
+  }
+
   KeyboardPanel {
     id: panel
     anchorItem: leftAlignedAnchor
